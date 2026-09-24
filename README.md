@@ -15,6 +15,9 @@ Both share [common.yml](recipes/common.yml).
 - Podman removed
 - SSH (`sshd`) enabled
 - `htop`
+- Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
+  listener is off and `/etc/resolv.conf` points at the upstream servers; UDP buffers raised
+  for DNS-over-QUIC
 - `dnf` disabled on the installed system (see [Installing software](#installing-software))
 - **Bare metal:** `smartmontools` (`smartd` enabled), `nvme-cli`, and `nvtop`
 - **VM:** `qemu-guest-agent` enabled; hardware firmware and CPU microcode removed

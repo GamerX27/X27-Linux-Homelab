@@ -1,5 +1,6 @@
 cosign.key
 cosign.private
+iso-out/
 *.iso
 *.iso.sha256sum
 /.bluebuild-scripts_*
