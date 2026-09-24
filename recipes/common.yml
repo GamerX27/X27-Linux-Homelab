@@ -13,7 +13,8 @@ modules:
   # remove would take bootc with it; rpm -e --nodeps drops only podman. bootc upgrades pull
   # via skopeo/ostree, not podman. containerd.io conflicts with runc, hence --allowerasing.
   # The base has no dnf5 config-manager plugin, so the repo file is fetched with curl.
-  # No weak deps keeps docker-ce-rootless-extras out.
+  # No weak deps keeps docker-ce-rootless-extras out. audit (auditd): fedora-bootc lacks it, and
+  # without it the kernel prints every audit record (logins, service starts) to the console.
   # The Docker repo is removed again afterwards; the weekly rebuild picks up new versions.
   - type: containerfile
     snippets:
@@ -25,17 +26,18 @@ modules:
             && dnf5 -y install --allowerasing --setopt=install_weak_deps=False \
                  docker-ce docker-ce-cli containerd.io \
                  docker-buildx-plugin docker-compose-plugin \
-                 openssh-server htop \
+                 openssh-server htop audit \
             && rm -f /etc/yum.repos.d/docker-ce.repo \
             && dnf5 clean all \
             && ! rpm -q podman \
-            && rpm -q bootc docker-ce openssh-server
+            && rpm -q bootc docker-ce openssh-server audit
 
   - type: systemd
     system:
       enabled:
         - docker.service
         - sshd.service
+        - auditd.service
 
   # Set directly here, not via BlueBuild's os-release module: a value substituted into
   # the recipe by an earlier workflow step doesn't survive blue-build's own checkout.
