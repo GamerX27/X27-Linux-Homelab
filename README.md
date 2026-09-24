@@ -14,7 +14,7 @@ Both share [common.yml](recipes/common.yml).
 - Docker CE from Docker's official repo (`docker-ce`, buildx, compose plugin), enabled at boot
 - Podman removed
 - SSH (`sshd`) enabled
-- fish as the default shell for new users, and `htop`
+- fish as the default login shell (console and SSH), and `htop`
 - `autoupdate`: turn automatic updates on or off, on a schedule of your choice (see
   [Automatic updates](#automatic-updates))
 - Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
@@ -54,8 +54,10 @@ Use `x27-linux-homelab-vm` in place of `x27-linux-homelab` for a VM.
 
 To let your user run Docker without sudo: `sudo usermod -aG docker $USER`, then log in again.
 
-fish is the default shell only for users created after it was added (including the one the
-installer creates). To switch an existing user: `sudo chsh -s /usr/bin/fish $USER`.
+fish is the login shell (console and SSH) for every regular user. New users get it from
+`/etc/default/useradd`. Existing users who still have bash are switched once at boot by
+`fish-default-shell.service`. To go back to bash: `sudo chsh -s /bin/bash $USER`, and it stays
+that way.
 
 ### Image tags
 

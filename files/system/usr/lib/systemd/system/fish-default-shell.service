@@ -1,0 +1,12 @@
+[Unit]
+Description=Make fish the login shell for existing users
+ConditionPathExists=/usr/bin/fish
+Before=systemd-user-sessions.service sshd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/fish-default-shell
+
+[Install]
+WantedBy=multi-user.target
