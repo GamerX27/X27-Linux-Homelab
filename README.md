@@ -26,12 +26,25 @@ Both share [common.yml](recipes/common.yml).
 ## Install
 
 **Fresh machine:** run the `build-iso` workflow (Actions → build-iso → Run workflow) and
-download the ISO from the run's artifacts.
-
-**Already on Fedora bootc / an image-based Fedora:**
+download the ISO from the run's artifacts. Or build it locally (needs Docker and sudo,
+20 GB+ free):
 
 ```
-sudo bootc switch ghcr.io/gamerx27/x27-linux-homelab:44
+./scripts/build-iso.sh        # bare metal → iso-out/x27-linux-homelab.iso
+./scripts/build-iso.sh vm     # VM         → iso-out/x27-linux-homelab-vm.iso
+```
+
+**Already on Fedora bootc / an image-based Fedora:** rebase onto this image.
+
+```
+sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/gamerx27/x27-linux-homelab:44
+systemctl reboot
+```
+
+Then switch to verified pulls:
+
+```
+sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:44
 systemctl reboot
 ```
 
@@ -51,12 +64,14 @@ The OS image is read-only and replaced on every update:
 
 - Services: run them in Docker (`docker compose`)
 - System packages: add them to a recipe here and let CI rebuild
-- Updates: `sudo bootc upgrade`
+- Updates: `sudo rpm-ostree upgrade`, then reboot. Not `bootc upgrade` (see Notes). There are
+  no automatic updates.
 
 ## Notes
 
 - `bootc` hard-requires `podman`, so Podman is removed with `rpm -e --nodeps`, which leaves
-  bootc installed. Updates and switches still work (they pull through skopeo/ostree). The
-  podman-only features (`bootc image …`, logically bound images) do not.
+  bootc installed. `bootc upgrade`/`bootc switch` fail without Podman ("Creating imgstorage:
+  ... No such file or directory"), so updates and rebases use `rpm-ostree`, which doesn't
+  need Podman. `bootc status` still works. bootc's automatic update timer is masked.
 - Images are signed with cosign (`cosign.pub`). The repo needs the private key as the
   `SIGNING_SECRET` Actions secret.

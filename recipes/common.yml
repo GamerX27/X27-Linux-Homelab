@@ -10,8 +10,9 @@ modules:
         destination: /
 
   # Podman out, Docker CE (download.docker.com) in. bootc hard-Requires podman, so a dnf
-  # remove would take bootc with it; rpm -e --nodeps drops only podman. bootc upgrades pull
-  # via skopeo/ostree, not podman. containerd.io conflicts with runc, hence --allowerasing.
+  # remove would take bootc with it; rpm -e --nodeps drops only podman. That breaks
+  # bootc upgrade/switch (its image store runs podman), so updates go through rpm-ostree,
+  # which pulls via skopeo. containerd.io conflicts with runc, hence --allowerasing.
   # The base has no dnf5 config-manager plugin, so the repo file is fetched with curl.
   # No weak deps keeps docker-ce-rootless-extras out. audit (auditd): fedora-bootc lacks it, and
   # without it the kernel prints every audit record (logins, service starts) to the console.
@@ -38,6 +39,10 @@ modules:
         - docker.service
         - sshd.service
         - auditd.service
+      # Runs `bootc upgrade`, which fails without podman (see above).
+      masked:
+        - bootc-fetch-apply-updates.timer
+        - bootc-fetch-apply-updates.service
 
   # Set directly here, not via BlueBuild's os-release module: a value substituted into
   # the recipe by an earlier workflow step doesn't survive blue-build's own checkout.

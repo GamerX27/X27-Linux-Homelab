@@ -10,6 +10,6 @@ every update, so packages installed with dnf would not stick.
 
   Services:        run them in Docker (docker compose)
   System packages: add them to the image recipe on GitHub (X27-Linux-Homelab)
-  Updates:         sudo bootc upgrade
+  Updates:         sudo rpm-ostree upgrade
 MSG
 exit 1
