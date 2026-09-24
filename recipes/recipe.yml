@@ -7,13 +7,14 @@ base-image: quay.io/fedora/fedora-bootc
 image-version: 44
 
 modules:
-  # Disk health and GPU monitoring on real hardware. linux-firmware comes with the base image.
+  # Disk health, GPU and temperature/fan monitoring on real hardware. linux-firmware comes with the base image.
   - type: dnf
     install:
       packages:
         - smartmontools
         - nvme-cli
         - nvtop
+        - lm_sensors
 
   - type: systemd
     system:

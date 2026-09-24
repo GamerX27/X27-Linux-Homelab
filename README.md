@@ -14,14 +14,14 @@ Both share [common.yml](recipes/common.yml).
 - Docker CE from Docker's official repo (`docker-ce`, buildx, compose plugin), enabled at boot
 - Podman removed
 - SSH (`sshd`) enabled
-- fish as the default login shell (console and SSH), and `htop`
+- fish as the default login shell (console and SSH), `htop`, `git`, `wget`
 - `autoupdate`: turn automatic updates on or off, on a schedule of your choice (see
   [Automatic updates](#automatic-updates))
 - Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
   listener is off and `/etc/resolv.conf` points at the upstream servers; UDP buffers raised
   for DNS-over-QUIC
 - `dnf` disabled on the installed system (see [Installing software](#installing-software))
-- **Bare metal:** `smartmontools` (`smartd` enabled), `nvme-cli`, and `nvtop`
+- **Bare metal:** `smartmontools` (`smartd` enabled), `nvme-cli`, `nvtop`, and `lm_sensors`
 - **VM:** `qemu-guest-agent` enabled; hardware firmware and CPU microcode removed
 - `/etc/os-release` names the image and build, e.g. `X27-Linux Homelab 44 (2026-09-24)`
 

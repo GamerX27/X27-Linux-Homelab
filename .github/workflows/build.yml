@@ -54,7 +54,7 @@ jobs:
       packages: write
       id-token: write
 
-  # A GitHub Release per build, with what changed (scripts/release-notes.sh). The monthly
+  # A GitHub Release per build, with what changed (scripts/release-notes.sh). The weekly
   # scheduled build is vYYYY.MM.DD; pushes and dispatches are minor releases vYYYY.MM.DD.N.
   # Runs when no image build failed; a single-recipe dispatch skips the other image, which
   # the notes then take from its last published :44.
