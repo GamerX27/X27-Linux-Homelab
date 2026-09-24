@@ -1,0 +1,63 @@
+name: build-iso
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Image to build an installer for (all builds both)"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - x27-linux-homelab
+          - x27-linux-homelab-vm
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build-iso:
+    name: Build ISO (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ inputs.image == 'all' && fromJSON('["x27-linux-homelab","x27-linux-homelab-vm"]') || fromJSON(format('["{0}"]', inputs.image)) }}
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Maximize build space
+        uses: ublue-os/remove-unwanted-software@v9
+
+      # v1.5.0, not the v1.4.0 BlueBuild's generate-iso pins: its lorax templates strip
+      # /usr/sbin/load_policy, which Anaconda 44 runs on exit and hangs on. Stock Fedora
+      # kernel (signed), so no secure boot key enrollment.
+      - name: Generate ISO
+        uses: JasonN3/build-container-installer@v1.5.0
+        with:
+          image_repo: ghcr.io/gamerx27
+          image_name: ${{ matrix.image }}
+          image_tag: latest
+          version: "44"
+          variant: Server
+          iso_name: ${{ matrix.image }}.iso
+          web_ui: "false"
+
+      - name: Generate checksum
+        run: sha256sum ${{ matrix.image }}.iso > ${{ matrix.image }}.iso.sha256sum
+
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.image }}-iso
+          path: |
+            ${{ matrix.image }}.iso
+            ${{ matrix.image }}.iso.sha256sum
+          if-no-files-found: error
+          retention-days: 60

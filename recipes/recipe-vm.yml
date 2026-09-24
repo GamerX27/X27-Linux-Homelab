@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+
+name: x27-linux-homelab-vm
+description: X27-Linux Homelab (VM) - minimal headless Fedora bootc with Docker CE, SSH, and the QEMU guest agent
+base-image: quay.io/fedora/fedora-bootc
+image-version: 44
+
+modules:
+  # Hardware firmware blobs and CPU microcode do nothing in a VM (the hypervisor handles
+  # microcode). kernel-core only Recommends linux-firmware, so the kernel stays.
+  - type: containerfile
+    snippets:
+      - |
+        RUN set -eu \
+            && FIRMWARE="$(rpm -qa --queryformat '%{NAME}\n' | grep -E -- '-firmware$|^linux-firmware|^microcode_ctl$' || true)" \
+            && echo "Removing:" ${FIRMWARE} \
+            && if [ -n "${FIRMWARE}" ]; then dnf5 -y remove --no-autoremove ${FIRMWARE}; fi \
+            && dnf5 clean all \
+            && rpm -q kernel-core bootc
+
+  - type: dnf
+    install:
+      packages:
+        - qemu-guest-agent
+
+  - type: systemd
+    system:
+      enabled:
+        - qemu-guest-agent.service
+
+  - from-file: common.yml

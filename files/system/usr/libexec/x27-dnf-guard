@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# /usr/bin/dnf5 points here on X27-Linux Homelab. Image builds (no /run/ostree-booted) get the real dnf5.
+if [[ ! -e /run/ostree-booted ]]; then
+  exec /usr/libexec/dnf5-real "$@"
+fi
+
+cat >&2 <<'MSG'
+dnf is disabled on X27-Linux Homelab. The system image is read-only and replaced on
+every update, so packages installed with dnf would not stick.
+
+  Services:        run them in Docker (docker compose)
+  System packages: add them to the image recipe on GitHub (X27-Linux-Homelab)
+  Updates:         sudo bootc upgrade
+MSG
+exit 1

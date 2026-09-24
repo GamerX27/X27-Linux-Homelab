@@ -1,0 +1,23 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+
+name: x27-linux-homelab
+description: X27-Linux Homelab (bare metal) - minimal headless Fedora bootc with Docker CE and SSH
+base-image: quay.io/fedora/fedora-bootc
+image-version: 44
+
+modules:
+  # Disk health and GPU monitoring on real hardware. linux-firmware comes with the base image.
+  - type: dnf
+    install:
+      packages:
+        - smartmontools
+        - nvme-cli
+        - nvtop
+
+  - type: systemd
+    system:
+      enabled:
+        - smartd.service
+
+  - from-file: common.yml

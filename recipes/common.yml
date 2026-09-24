@@ -1,0 +1,61 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+
+# Shared by recipe.yml (bare metal) and recipe-vm.yml. Each recipe runs its own
+# hardware-specific modules first and pulls this in last, so the dnf guard stays the final step.
+modules:
+  - type: files
+    files:
+      - source: system
+        destination: /
+
+  # Podman out, Docker CE (download.docker.com) in. bootc hard-Requires podman, so a dnf
+  # remove would take bootc with it; rpm -e --nodeps drops only podman. bootc upgrades pull
+  # via skopeo/ostree, not podman. containerd.io conflicts with runc, hence --allowerasing.
+  # The base has no dnf5 config-manager plugin, so the repo file is fetched with curl.
+  # No weak deps keeps docker-ce-rootless-extras out.
+  # The Docker repo is removed again afterwards; the weekly rebuild picks up new versions.
+  - type: containerfile
+    snippets:
+      - |
+        RUN set -eu \
+            && rpm -e --nodeps podman \
+            && curl -fsSL -o /etc/yum.repos.d/docker-ce.repo \
+                 https://download.docker.com/linux/fedora/docker-ce.repo \
+            && dnf5 -y install --allowerasing --setopt=install_weak_deps=False \
+                 docker-ce docker-ce-cli containerd.io \
+                 docker-buildx-plugin docker-compose-plugin \
+                 openssh-server htop \
+            && rm -f /etc/yum.repos.d/docker-ce.repo \
+            && dnf5 clean all \
+            && ! rpm -q podman \
+            && rpm -q bootc docker-ce openssh-server
+
+  - type: systemd
+    system:
+      enabled:
+        - docker.service
+        - sshd.service
+
+  # Set directly here, not via BlueBuild's os-release module: a value substituted into
+  # the recipe by an earlier workflow step doesn't survive blue-build's own checkout.
+  - type: containerfile
+    snippets:
+      - |
+        RUN set -eu \
+            && BUILD_DATE="$(date -u +%Y-%m-%d)" \
+            && . /etc/os-release \
+            && sed -i --follow-symlinks -e '/^NAME=/d' -e '/^PRETTY_NAME=/d' -e '/^BUILD_ID=/d' /etc/os-release \
+            && printf 'NAME="X27-Linux Homelab"\nPRETTY_NAME="X27-Linux Homelab %s (%s)"\nBUILD_ID="%s-%s"\n' \
+                 "${VERSION_ID}" "${BUILD_DATE}" "${VERSION_ID}" "${BUILD_DATE}" >> /etc/os-release
+
+  # Last step: all dnf5 calls above are done. See files/system/usr/libexec/x27-dnf-guard.
+  - type: containerfile
+    snippets:
+      - |
+        RUN mv /usr/bin/dnf5 /usr/libexec/dnf5-real \
+            && ln -s /usr/libexec/x27-dnf-guard /usr/bin/dnf5 \
+            && test "$(readlink -f /usr/bin/dnf)" = /usr/libexec/x27-dnf-guard \
+            && dnf5 --version
+
+  - type: signing

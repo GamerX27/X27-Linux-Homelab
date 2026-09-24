@@ -1,0 +1,55 @@
+name: build
+on:
+  schedule:
+    - cron: "00 17 * * 0" # rebuild weekly, Sundays at 5:00 PM UTC, to pick up upstream Fedora/Docker updates
+  push:
+    paths:
+      - "recipes/**"
+      - "files/**"
+      - "cosign.pub"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/build-image.yml"
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "recipes/**"
+      - "files/**"
+      - "cosign.pub"
+      - ".github/workflows/build.yml"
+      - ".github/workflows/build-image.yml"
+  workflow_dispatch:
+    inputs:
+      recipe:
+        description: "Recipe to build (all runs both)"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - recipe.yml
+          - recipe-vm.yml
+
+# Both images build straight from quay.io/fedora/fedora-bootc, so they run in parallel.
+jobs:
+  bare-metal:
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","recipe.yml"]'), inputs.recipe)
+    uses: ./.github/workflows/build-image.yml
+    with:
+      recipe: recipe.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+  vm:
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","recipe-vm.yml"]'), inputs.recipe)
+    uses: ./.github/workflows/build-image.yml
+    with:
+      recipe: recipe-vm.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
