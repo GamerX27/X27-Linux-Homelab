@@ -1,0 +1,11 @@
+[Unit]
+Description=X27-Linux Homelab automatic update
+Documentation=man:rpm-ostree(1)
+ConditionPathExists=/run/ostree-booted
+Wants=network-online.target
+After=network-online.target
+
+# --reboot only reboots when an update was staged.
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rpm-ostree upgrade --reboot

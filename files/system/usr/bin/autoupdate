@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Turns automatic updates on or off. `on` writes autoupdate.timer to /etc (so the schedule
+# survives image updates); it runs the shipped autoupdate.service, which is
+# `rpm-ostree upgrade --reboot`: it reboots only when an update was staged. `off` removes it.
+set -euo pipefail
+
+TIMER=autoupdate.timer
+SERVICE=autoupdate.service
+TIMER_FILE=/etc/systemd/system/autoupdate.timer
+
+usage() {
+  cat <<'EOF'
+Usage:
+  autoupdate                                  interactive menu
+  autoupdate status                           show whether it's on, the schedule, and the next run
+  autoupdate on daily <time>
+  autoupdate on weekly <weekday> <time>
+  autoupdate on monthly <day 1-31> <time>
+  autoupdate off
+
+Time is 24-hour or 12-hour: 03:00, 23:30, 3am, 3:00 AM, 11:30pm, 12am (midnight), 12pm (noon).
+Weekday: mon tue wed thu fri sat sun (or the full name).
+
+When an update is found it's installed and the system reboots. No update, no reboot.
+
+Examples:
+  autoupdate on daily 04:00
+  autoupdate on weekly sun 3:30am
+  autoupdate on monthly 15 11pm
+EOF
+}
+
+die() {
+  echo "autoupdate: $*" >&2
+  exit 1
+}
+
+need_root() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+  fi
+}
+
+# "3:00 PM", "3pm", "15:00", "03:00" -> "15:00"
+parse_time() {
+  local raw="$*" t h m
+  t="$(tr '[:upper:]' '[:lower:]' <<<"$raw" | tr -d ' .')"
+  if [[ "$t" =~ ^([0-9]{1,2})(:([0-9]{2}))?(am|pm)$ ]]; then
+    h=$((10#${BASH_REMATCH[1]}))
+    m=$((10#${BASH_REMATCH[3]:-0}))
+    ((h >= 1 && h <= 12)) || die "invalid 12-hour time: '$raw' (hour must be 1-12)"
+    ((m <= 59)) || die "invalid time: '$raw' (minutes must be 00-59)"
+    if [[ "${BASH_REMATCH[4]}" == am && $h -eq 12 ]]; then
+      h=0
+    elif [[ "${BASH_REMATCH[4]}" == pm && $h -ne 12 ]]; then
+      h=$((h + 12))
+    fi
+  elif [[ "$t" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+    h=$((10#${BASH_REMATCH[1]}))
+    m=$((10#${BASH_REMATCH[2]}))
+    ((h <= 23)) || die "invalid 24-hour time: '$raw' (hour must be 00-23)"
+    ((m <= 59)) || die "invalid time: '$raw' (minutes must be 00-59)"
+  else
+    die "invalid time: '$raw' (use e.g. 03:00, 23:30, 3am or 11:30 PM)"
+  fi
+  printf '%02d:%02d\n' "$h" "$m"
+}
+
+parse_weekday() {
+  case "$(tr '[:upper:]' '[:lower:]' <<<"$1")" in
+    mon|monday) echo Mon ;;
+    tue|tues|tuesday) echo Tue ;;
+    wed|wednesday) echo Wed ;;
+    thu|thur|thurs|thursday) echo Thu ;;
+    fri|friday) echo Fri ;;
+    sat|saturday) echo Sat ;;
+    sun|sunday) echo Sun ;;
+    *) die "invalid weekday: '$1' (use mon, tue, wed, thu, fri, sat or sun)" ;;
+  esac
+}
+
+parse_day() {
+  [[ "$1" =~ ^[0-9]{1,2}$ ]] || die "invalid day of month: '$1' (use 1-31)"
+  local d=$((10#$1))
+  ((d >= 1 && d <= 31)) || die "invalid day of month: '$1' (use 1-31)"
+  if ((d > 28)); then
+    echo "Note: months without day ${d} are skipped." >&2
+  fi
+  echo "$d"
+}
+
+# "15:00" -> "15:00 (3:00 PM)"
+both_formats() {
+  echo "$1 ($(date -d "$1" +'%-I:%M %p'))"
+}
+
+# Unix seconds -> "Thu 25 Sep 2026 15:00 (3:00 PM)"
+fmt_unix() {
+  echo "$(date -d "@$1" +'%a %d %b %Y %H:%M') ($(date -d "@$1" +'%-I:%M %p'))"
+}
+
+show_value() {
+  systemctl show "$1" -p "$2" --value --timestamp=unix 2>/dev/null || true
+}
+
+status() {
+  local enabled next desc last result
+  enabled="$(systemctl is-enabled "$TIMER" 2>/dev/null || true)"
+  if [[ "$enabled" != enabled || ! -f "$TIMER_FILE" ]]; then
+    echo "Automatic updates: off"
+  else
+    desc="$(sed -n 's/^# Schedule: //p' "$TIMER_FILE")"
+    echo "Automatic updates: on"
+    echo "Schedule:          ${desc:-$(grep '^OnCalendar=' "$TIMER_FILE" | cut -d= -f2-)}"
+    next="$(show_value "$TIMER" NextElapseUSecRealtime)"
+    if [[ "$next" == @* ]]; then
+      echo "Next run:          $(fmt_unix "${next#@}")"
+    fi
+  fi
+  last="$(show_value "$SERVICE" ExecMainExitTimestamp)"
+  if [[ "$last" == @* ]]; then
+    result="$(show_value "$SERVICE" Result)"
+    echo "Last run:          $(fmt_unix "${last#@}") - ${result}"
+  else
+    echo "Last run:          never"
+  fi
+}
+
+turn_on() {
+  local freq="${1:-}" spec desc time day wd
+  shift || true
+  case "$freq" in
+    daily)
+      [[ $# -ge 1 ]] || die "usage: autoupdate on daily <time>"
+      time="$(parse_time "$@")"
+      spec="*-*-* ${time}:00"
+      desc="daily at $(both_formats "$time")"
+      ;;
+    weekly)
+      [[ $# -ge 2 ]] || die "usage: autoupdate on weekly <weekday> <time>"
+      wd="$(parse_weekday "$1")"
+      shift
+      time="$(parse_time "$@")"
+      spec="${wd} *-*-* ${time}:00"
+      desc="weekly on ${wd} at $(both_formats "$time")"
+      ;;
+    monthly)
+      [[ $# -ge 2 ]] || die "usage: autoupdate on monthly <day 1-31> <time>"
+      day="$(parse_day "$1")"
+      shift
+      time="$(parse_time "$@")"
+      spec="*-*-$(printf '%02d' "$day") ${time}:00"
+      desc="monthly on day ${day} at $(both_formats "$time")"
+      ;;
+    *)
+      die "choose daily, weekly or monthly (see: autoupdate help)"
+      ;;
+  esac
+
+  systemd-analyze calendar "$spec" >/dev/null 2>&1 || die "systemd rejected the schedule '$spec'"
+
+  cat >"$TIMER_FILE" <<EOF
+# Written by autoupdate. Change it with: autoupdate on ... / autoupdate off
+# Schedule: ${desc}
+[Unit]
+Description=X27-Linux Homelab automatic update schedule
+
+[Timer]
+OnCalendar=${spec}
+Persistent=true
+Unit=${SERVICE}
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --quiet "$TIMER"
+  systemctl restart "$TIMER"
+  echo "Automatic updates on: ${desc}."
+  echo "When an update is found, it's installed and the system reboots."
+  status
+}
+
+turn_off() {
+  systemctl disable --now --quiet "$TIMER" 2>/dev/null || true
+  rm -f "$TIMER_FILE"
+  systemctl daemon-reload
+  echo "Automatic updates off. Update by hand with: sudo rpm-ostree upgrade"
+}
+
+ask() {
+  local reply
+  read -rp "$1" reply
+  echo "$reply"
+}
+
+menu() {
+  status
+  echo
+  echo "1) Turn on / change schedule"
+  echo "2) Turn off"
+  echo "3) Quit"
+  case "$(ask 'Choose [1-3]: ')" in
+    1)
+      echo
+      echo "1) Daily"
+      echo "2) Weekly"
+      echo "3) Monthly"
+      case "$(ask 'How often [1-3]: ')" in
+        1) turn_on daily "$(ask 'Time (e.g. 04:00 or 4am): ')" ;;
+        2) turn_on weekly "$(ask 'Weekday (mon-sun): ')" "$(ask 'Time (e.g. 04:00 or 4am): ')" ;;
+        3) turn_on monthly "$(ask 'Day of month (1-31): ')" "$(ask 'Time (e.g. 04:00 or 4am): ')" ;;
+        *) die "choose 1, 2 or 3" ;;
+      esac
+      ;;
+    2) turn_off ;;
+    3) ;;
+    *) die "choose 1, 2 or 3" ;;
+  esac
+}
+
+case "${1:-}" in
+  "")
+    need_root "$@"
+    menu
+    ;;
+  on)
+    need_root "$@"
+    shift
+    turn_on "$@"
+    ;;
+  off)
+    need_root "$@"
+    turn_off
+    ;;
+  status)
+    status
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

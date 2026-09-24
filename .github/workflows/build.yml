@@ -1,7 +1,7 @@
 name: build
 on:
   schedule:
-    - cron: "00 17 * * 0" # rebuild weekly, Sundays at 5:00 PM UTC, to pick up upstream Fedora/Docker updates
+    - cron: "0 2 * * 0" # rebuild weekly, Sundays at 02:00 UTC, to pick up upstream Fedora/Docker updates
   push:
     paths:
       - "recipes/**"
@@ -53,3 +53,36 @@ jobs:
       contents: read
       packages: write
       id-token: write
+
+  # A GitHub Release per build, with what changed (scripts/release-notes.sh). The monthly
+  # scheduled build is vYYYY.MM.DD; pushes and dispatches are minor releases vYYYY.MM.DD.N.
+  # Runs when no image build failed; a single-recipe dispatch skips the other image, which
+  # the notes then take from its last published :44.
+  release:
+    needs: [bare-metal, vm]
+    if: >-
+      always() && github.event_name != 'pull_request'
+      && contains(needs.*.result, 'success')
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Log in to ghcr.io
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: ./scripts/release-notes.sh
