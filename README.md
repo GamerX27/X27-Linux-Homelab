@@ -20,6 +20,7 @@ Both share [common.yml](recipes/common.yml).
 - Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
   listener is off and `/etc/resolv.conf` points at the upstream servers; UDP buffers raised
   for DNS-over-QUIC
+- Quiet login screen: the console only shows kernel errors (the rest is in `journalctl -k`)
 - `dnf` disabled on the installed system (see [Installing software](#installing-software))
 - **Bare metal:** `smartmontools` (`smartd` enabled), `nvme-cli`, `nvtop`, and `lm_sensors`
 - **VM:** `qemu-guest-agent` enabled; hardware firmware and CPU microcode removed
