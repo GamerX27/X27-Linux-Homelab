@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Run by autoupdate.service. Stages an update with rpm-ostree and reboots only when one
+# was staged (like `rpm-ostree upgrade --reboot`), sending a Gotify message first when
+# `autoupdate gotify` is set up. Failures are sent too; "already up to date" is not.
+set -euo pipefail
+
+NOTIFY=/usr/libexec/autoupdate-notify
+host="$(hostname)"
+
+notify() {
+  "$NOTIFY" "$@" || echo "autoupdate: Gotify message failed" >&2
+}
+
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+
+rc=0
+rpm-ostree upgrade --unchanged-exit-77 >"$log" 2>&1 || rc=$?
+cat "$log"
+
+case "$rc" in
+  77)
+    echo "No update available."
+    exit 0
+    ;;
+  0) ;;
+  *)
+    notify 8 "Update failed on ${host}" \
+      "rpm-ostree upgrade exited with ${rc}. Last output:
+$(tail -n 15 "$log")"
+    exit "$rc"
+    ;;
+esac
+
+# Deployments are listed staged first, then booted.
+versions="$(rpm-ostree status --json --jsonpath '$.deployments[*].version' 2>/dev/null |
+  grep -o '"[^"]*"' | tr -d '"' || true)"
+new="$(sed -n 1p <<<"$versions")"
+old="$(sed -n 2p <<<"$versions")"
+
+notify 5 "Updating ${host}" \
+  "Update installed (${old:-?} -> ${new:-?}). Rebooting now."
+
+systemctl reboot

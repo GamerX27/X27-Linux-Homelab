@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Sends a Gotify message: autoupdate-notify <priority> <title> <message>
+# Reads GOTIFY_URL and GOTIFY_TOKEN from $AUTOUPDATE_CONF (default /etc/autoupdate.conf).
+# Does nothing when that file doesn't exist, so the update service can always call it.
+set -euo pipefail
+
+CONF="${AUTOUPDATE_CONF:-/etc/autoupdate.conf}"
+[[ -f "$CONF" ]] || exit 0
+
+# Read the values instead of sourcing the file.
+conf_value() {
+  sed -n "s/^$1=//p" "$CONF" | tail -n1
+}
+
+url="$(conf_value GOTIFY_URL)"
+token="$(conf_value GOTIFY_TOKEN)"
+[[ -n "$url" && -n "$token" ]] || {
+  echo "autoupdate-notify: GOTIFY_URL or GOTIFY_TOKEN missing in $CONF" >&2
+  exit 1
+}
+
+# The token goes in on stdin (-H @-) so it doesn't show up in the process list.
+# --form-string so a message starting with @ or < isn't read as a file name.
+printf 'X-Gotify-Key: %s\n' "$token" |
+  curl -fsS --max-time 20 --retry 3 --retry-connrefused -o /dev/null \
+    -H @- \
+    --form-string "priority=$1" \
+    --form-string "title=$2" \
+    --form-string "message=$3" \
+    "${url%/}/message"

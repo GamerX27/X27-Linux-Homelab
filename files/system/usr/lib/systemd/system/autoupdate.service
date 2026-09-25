@@ -5,7 +5,7 @@ ConditionPathExists=/run/ostree-booted
 Wants=network-online.target
 After=network-online.target
 
-# --reboot only reboots when an update was staged.
+# Reboots only when an update was staged. Sends a Gotify message first if set up.
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/rpm-ostree upgrade --reboot
+ExecStart=/usr/libexec/autoupdate-run

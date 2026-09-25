@@ -16,7 +16,7 @@ Both share [common.yml](recipes/common.yml).
 - SSH (`sshd`) enabled
 - fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
 - `autoupdate`: turn automatic updates on or off, on a schedule of your choice (see
-  [Automatic updates](#automatic-updates))
+  [Automatic updates](#automatic-updates)), with optional [Gotify](https://gotify.net) messages
 - Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
   listener is off and `/etc/resolv.conf` points at the upstream servers; UDP buffers raised
   for DNS-over-QUIC
@@ -91,8 +91,24 @@ autoupdate off
 
 Times can be 24-hour (`04:00`, `23:30`) or 12-hour (`4am`, `3:30 PM`, `12am` = midnight).
 `autoupdate on` writes `/etc/systemd/system/autoupdate.timer`, which runs `autoupdate.service`
-(`rpm-ostree upgrade --reboot`). It lives in `/etc`, so the schedule survives updates. If the
-machine was off at the scheduled time, the update runs at the next boot.
+(`rpm-ostree upgrade`, then a reboot only if an update was staged). It lives in `/etc`, so the
+schedule survives updates. If the machine was off at the scheduled time, the update runs at the
+next boot.
+
+### Gotify messages
+
+Optional. With a [Gotify](https://gotify.net) server set up, you get a message just before the
+machine reboots into an update (with the old and new version), and one when an update fails.
+Nothing is sent when there's no update. Create an app in Gotify for its token, then:
+
+```
+autoupdate gotify https://gotify.example.com   # asks for the app token, sends a test message
+autoupdate gotify test                         # send another test message
+autoupdate gotify off
+```
+
+The URL and token are stored in `/etc/autoupdate.conf` (root only). Nothing is saved if the
+test message fails.
 
 ## Releases
 

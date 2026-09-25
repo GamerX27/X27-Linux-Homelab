@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Turns automatic updates on or off. `on` writes autoupdate.timer to /etc (so the schedule
 # survives image updates); it runs the shipped autoupdate.service, which is
-# `rpm-ostree upgrade --reboot`: it reboots only when an update was staged. `off` removes it.
+# /usr/libexec/autoupdate-run: it reboots only when an update was staged. `off` removes it.
+# `gotify` stores a Gotify server and app token in /etc/autoupdate.conf; the service then
+# sends a message before rebooting into an update, and when an update fails.
 set -euo pipefail
 
 TIMER=autoupdate.timer
 SERVICE=autoupdate.service
 TIMER_FILE=/etc/systemd/system/autoupdate.timer
+CONF=/etc/autoupdate.conf
+NOTIFY=/usr/libexec/autoupdate-notify
 
 usage() {
   cat <<'EOF'
@@ -17,16 +21,21 @@ Usage:
   autoupdate on weekly <weekday> <time>
   autoupdate on monthly <day 1-31> <time>
   autoupdate off
+  autoupdate gotify <url> [token]             send Gotify messages (asks for the token if left out)
+  autoupdate gotify test                      send a test message
+  autoupdate gotify off                       stop sending Gotify messages
 
 Time is 24-hour or 12-hour: 03:00, 23:30, 3am, 3:00 AM, 11:30pm, 12am (midnight), 12pm (noon).
 Weekday: mon tue wed thu fri sat sun (or the full name).
 
 When an update is found it's installed and the system reboots. No update, no reboot.
+With Gotify set up, you get a message before that reboot and when an update fails.
 
 Examples:
   autoupdate on daily 04:00
   autoupdate on weekly sun 3:30am
   autoupdate on monthly 15 11pm
+  autoupdate gotify https://gotify.example.com
 EOF
 }
 
@@ -124,6 +133,13 @@ status() {
   else
     echo "Last run:          never"
   fi
+  if [[ ! -f "$CONF" ]]; then
+    echo "Gotify:            off"
+  elif [[ -r "$CONF" ]]; then
+    echo "Gotify:            $(sed -n 's/^GOTIFY_URL=//p' "$CONF" | tail -n1)"
+  else
+    echo "Gotify:            on"
+  fi
 }
 
 turn_on() {
@@ -188,6 +204,48 @@ turn_off() {
   echo "Automatic updates off. Update by hand with: sudo rpm-ostree upgrade"
 }
 
+gotify_on() {
+  local url="${1:-}" token="${2:-}" tmp
+  [[ -n "$url" ]] || die "usage: autoupdate gotify <url> [token]"
+  [[ "$url" =~ ^https?://[^[:space:]]+$ ]] || die "invalid URL: '$url' (use e.g. https://gotify.example.com)"
+  if [[ -z "$token" ]]; then
+    read -rsp "Gotify app token: " token
+    echo
+  fi
+  [[ "$token" =~ ^[[:graph:]]+$ ]] || die "invalid token"
+
+  tmp="$(mktemp /etc/.autoupdate.conf.XXXXXX)"
+  trap 'rm -f "$tmp"' EXIT
+  chmod 600 "$tmp"
+  printf '# Written by autoupdate. Change it with: autoupdate gotify ... / autoupdate gotify off\nGOTIFY_URL=%s\nGOTIFY_TOKEN=%s\n' \
+    "${url%/}" "$token" >"$tmp"
+  AUTOUPDATE_CONF="$tmp" "$NOTIFY" 5 "autoupdate on $(hostname)" "Gotify messages are set up." ||
+    die "couldn't send a test message to ${url} (check the URL and app token). Nothing was saved."
+  mv "$tmp" "$CONF"
+  trap - EXIT
+  echo "Gotify on: ${url%/}. A test message was sent."
+  echo "You'll get a message before an update reboot, and when an update fails."
+}
+
+gotify_test() {
+  [[ -f "$CONF" ]] || die "Gotify isn't set up (see: autoupdate gotify <url>)"
+  "$NOTIFY" 5 "autoupdate on $(hostname)" "Test message." || die "couldn't send the test message"
+  echo "Test message sent."
+}
+
+gotify_off() {
+  rm -f "$CONF"
+  echo "Gotify off."
+}
+
+gotify() {
+  case "${1:-}" in
+    test) gotify_test ;;
+    off) gotify_off ;;
+    *) gotify_on "$@" ;;
+  esac
+}
+
 ask() {
   local reply
   read -rp "$1" reply
@@ -199,8 +257,9 @@ menu() {
   echo
   echo "1) Turn on / change schedule"
   echo "2) Turn off"
-  echo "3) Quit"
-  case "$(ask 'Choose [1-3]: ')" in
+  echo "3) Gotify messages"
+  echo "4) Quit"
+  case "$(ask 'Choose [1-4]: ')" in
     1)
       echo
       echo "1) Daily"
@@ -214,8 +273,20 @@ menu() {
       esac
       ;;
     2) turn_off ;;
-    3) ;;
-    *) die "choose 1, 2 or 3" ;;
+    3)
+      echo
+      echo "1) Set up / change server"
+      echo "2) Send a test message"
+      echo "3) Turn off"
+      case "$(ask 'Choose [1-3]: ')" in
+        1) gotify_on "$(ask 'Gotify URL (e.g. https://gotify.example.com): ')" ;;
+        2) gotify_test ;;
+        3) gotify_off ;;
+        *) die "choose 1, 2 or 3" ;;
+      esac
+      ;;
+    4) ;;
+    *) die "choose 1, 2, 3 or 4" ;;
   esac
 }
 
@@ -232,6 +303,11 @@ case "${1:-}" in
   off)
     need_root "$@"
     turn_off
+    ;;
+  gotify)
+    need_root "$@"
+    shift
+    gotify "$@"
     ;;
   status)
     status
