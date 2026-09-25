@@ -27,11 +27,11 @@ modules:
             && dnf5 -y install --allowerasing --setopt=install_weak_deps=False \
                  docker-ce docker-ce-cli containerd.io \
                  docker-buildx-plugin docker-compose-plugin \
-                 openssh-server htop audit fish wget git pciutils \
+                 openssh-server htop audit fish wget git pciutils ncdu zip unzip \
             && rm -f /etc/yum.repos.d/docker-ce.repo \
             && dnf5 clean all \
             && ! rpm -q podman \
-            && rpm -q bootc docker-ce openssh-server audit fish git pciutils \
+            && rpm -q bootc docker-ce openssh-server audit fish git pciutils ncdu zip unzip \
             && command -v wget
 
   - type: systemd
