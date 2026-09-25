@@ -43,6 +43,9 @@ download the ISO from the run's artifacts. Or build it locally (needs Docker and
 ./scripts/build-iso.sh vm     # VM         → iso-out/x27-linux-homelab-vm.iso
 ```
 
+The installer defaults to ext4 (on LVM) for automatic partitioning instead of Fedora Server's
+XFS (`iso/ext4.tmpl`). You can still pick another filesystem in custom partitioning.
+
 **Already on Fedora bootc / an image-based Fedora:** rebase onto this image.
 
 ```

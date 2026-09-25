@@ -60,18 +60,21 @@ fi
 # Not `bluebuild generate-iso`: BlueBuild CLI (v0.9.37) pins build-container-installer v1.4.0,
 # whose lorax templates strip /usr/sbin/load_policy. Anaconda 44.30 runs it on exit, crashes,
 # and hangs at the end-of-install Reboot button. v1.5.0 keeps it. Same args as iso.yml:
-# stock Fedora kernel (signed), so no secure boot key enrollment, and no Flatpaks.
+# stock Fedora kernel (signed), so no secure boot key enrollment, and no Flatpaks, plus
+# iso/ext4.tmpl to make ext4 the installer's default filesystem.
 echo "Building ${ISO_NAME} from ${IMAGE_REF}"
 rm -f "${OUT_DIR}/${ISO_NAME}" "${OUT_DIR}/${ISO_NAME}.sha256sum"
 sudo docker pull "$IMAGE_REF"
 sudo docker run --rm --privileged \
   -v "${OUT_DIR}:/build-container-installer/build" \
   -v dnf-cache:/cache/dnf/ \
+  -v "${REPO_ROOT}/iso:/x27-iso:ro" \
   "${INSTALLER_IMAGE}" \
   VARIANT=Server \
   "ISO_NAME=build/${ISO_NAME}" \
   DNF_CACHE=/cache/dnf \
   WEB_UI=false \
+  ADDITIONAL_TEMPLATES=/x27-iso/ext4.tmpl \
   "IMAGE_NAME=${IMAGE}" \
   "IMAGE_REPO=${REGISTRY}" \
   IMAGE_TAG=latest \

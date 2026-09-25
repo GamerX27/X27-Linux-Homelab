@@ -1,0 +1,4 @@
+## Lorax template for the installer ISO (additional_templates in iso.yml, build-iso.sh).
+## Anaconda's Fedora Server profile defaults to XFS; conf.d is read after the profile, so this
+## makes ext4 the default for automatic and "create them automatically" partitioning.
+append etc/anaconda/conf.d/90-x27-ext4.conf "[Storage]\nfile_system_type = ext4"

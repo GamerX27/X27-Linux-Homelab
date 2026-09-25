@@ -37,7 +37,8 @@ jobs:
 
       # v1.5.0, not the v1.4.0 BlueBuild's generate-iso pins: its lorax templates strip
       # /usr/sbin/load_policy, which Anaconda 44 runs on exit and hangs on. Stock Fedora
-      # kernel (signed), so no secure boot key enrollment.
+      # kernel (signed), so no secure boot key enrollment. The repo is mounted at
+      # /github/workspace inside the builder; iso/ext4.tmpl makes ext4 the installer default.
       - name: Generate ISO
         uses: JasonN3/build-container-installer@v1.5.0
         with:
@@ -48,6 +49,7 @@ jobs:
           variant: Server
           iso_name: ${{ matrix.image }}.iso
           web_ui: "false"
+          additional_templates: /github/workspace/iso/ext4.tmpl
 
       - name: Generate checksum
         run: sha256sum ${{ matrix.image }}.iso > ${{ matrix.image }}.iso.sha256sum
