@@ -15,4 +15,5 @@ complete -c autoupdate -n "__fish_seen_subcommand_from on; and not __fish_seen_s
 complete -c autoupdate -n "__fish_seen_subcommand_from weekly; and not __fish_seen_subcommand_from $weekdays" -a "$weekdays"
 
 complete -c autoupdate -n "__fish_seen_subcommand_from gotify; and __fish_is_nth_token 2" -a test -d "Send a test message"
+complete -c autoupdate -n "__fish_seen_subcommand_from gotify; and __fish_is_nth_token 2" -a show -d "Show the stored URL and app token"
 complete -c autoupdate -n "__fish_seen_subcommand_from gotify; and __fish_is_nth_token 2" -a off -d "Stop sending Gotify messages"

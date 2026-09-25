@@ -116,6 +116,7 @@ Nothing is sent when there's no update. Create an app in Gotify for its token, t
 ```
 autoupdate gotify https://gotify.example.com   # asks for the app token, sends a test message
 autoupdate gotify test                         # send another test message
+autoupdate gotify show                         # show the stored URL and app token
 autoupdate gotify off
 ```
 
