@@ -1,0 +1,630 @@
+#!/usr/bin/env bash
+# docker-compose-update
+# Scans a directory tree for Docker Compose files (docker-compose.yml / compose.yml)
+# AND enumerates running containers deployed elsewhere (other compose files,
+# Portainer / external stacks, or plain `docker run`). Every image is checked
+# against its registry for a newer version and presented in an interactive,
+# category-grouped terminal UI so you can pick exactly what to update.
+#
+# Controls:
+#   Up / Down  (or k / j) ... move the cursor
+#   Space ................... toggle selection of the highlighted image
+#   a ....................... select / deselect all
+#   Enter ................... update the selected images
+#   q / Esc ................. quit without changing anything
+#
+# Only the images you select are pulled and recreated. Everything you leave
+# unselected is ignored, even if an update is available.
+#
+# How each category is updated:
+#   Compose (scanned)        -> docker compose -f <file> up -d
+#   Compose (other host file)-> docker compose -f <file> up -d
+#   External / Portainer     -> image pulled; redeploy in Portainer to apply
+#   Standalone (docker run)  -> image pulled; optional best-effort recreate (runlike)
+
+set -uo pipefail
+
+# ===========================================================================
+# USER CONFIG
+# ===========================================================================
+# Base directory that holds your compose stacks, one service per sub-folder,
+# e.g.:
+#   /home/x27/docker/jellyfin/compose.yml
+#   /home/x27/docker/nextcloud/docker-compose.yml
+# The script searches recursively under this path for compose files.
+#
+# Leave COMPOSE_ROOT empty to auto-detect the current user's home directory and
+# use "<home>/<COMPOSE_SUBDIR>" (e.g. /home/x27/docker). The detection also works
+# when the script is run with sudo (it resolves the original user's home).
+#
+# Override order (highest priority first):
+#   1. Path given as the first CLI argument
+#   2. COMPOSE_ROOT environment variable
+#   3. The value set here
+#   4. Auto-detected  <home>/<COMPOSE_SUBDIR>
+# If none resolve to a real directory you will be prompted.
+COMPOSE_ROOT=""
+COMPOSE_SUBDIR="docker"
+
+# ---------------------------------------------------------------------------
+# Styling
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_RESET=$'\e[0m'; C_BOLD=$'\e[1m'; C_DIM=$'\e[2m'; C_INV=$'\e[7m'
+  C_RED=$'\e[31m'; C_GREEN=$'\e[32m'; C_YELLOW=$'\e[33m'
+else
+  C_RESET="" C_BOLD="" C_DIM="" C_INV="" C_RED="" C_GREEN="" C_YELLOW=""
+fi
+
+CHECK="${C_GREEN}✔${C_RESET}"
+CROSS="${C_RED}✘${C_RESET}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+die()  { echo "${C_RED}[ERROR]${C_RESET} $*" >&2; exit 1; }
+info() { echo "[INFO] $*"; }
+ok()   { echo "${C_GREEN}[OK]${C_RESET} $*"; }
+warn() { echo "${C_YELLOW}[WARN]${C_RESET} $*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+abspath() {
+  if have realpath; then realpath -m "$1" 2>/dev/null
+  else readlink -f "$1" 2>/dev/null || echo "$1"; fi
+}
+
+# Pad (or truncate with an ellipsis) a string to an exact visible width.
+pad_trunc() {
+  local s="$1" n="$2" len pad
+  len=${#s}
+  if (( len > n )); then
+    s="${s:0:n-1}…"; len=$n
+  fi
+  pad=$(( n - len )); (( pad < 0 )) && pad=0
+  printf '%s%*s' "$s" "$pad" ''
+}
+
+# Resolve the home directory of the human running the script, even under sudo.
+user_home() {
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    local h; h=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+    [[ -n "$h" ]] && { printf '%s' "$h"; return; }
+  fi
+  printf '%s' "${HOME:-/root}"
+}
+
+# Resolve the `docker compose` (v2) or `docker-compose` (v1) invocation.
+COMPOSE_CMD=()
+detect_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD=(docker compose)
+  elif have docker-compose; then
+    COMPOSE_CMD=(docker-compose)
+  else
+    COMPOSE_CMD=()
+  fi
+}
+
+require_deps() {
+  have docker || die "docker is not installed or not in PATH."
+  docker info >/dev/null 2>&1 || \
+    die "Cannot talk to the Docker daemon. Are you in the 'docker' group / is the daemon running?"
+  detect_compose
+}
+
+compose_images() {
+  local file="$1"
+  [[ ${#COMPOSE_CMD[@]} -gt 0 ]] || return 0
+  "${COMPOSE_CMD[@]}" -f "$file" config --images 2>/dev/null | sed '/^$/d'
+}
+
+# Read a single label from a container; prints empty string if absent.
+container_label() {
+  local name="$1" label="$2" val
+  val=$(docker inspect -f "{{index .Config.Labels \"$label\"}}" "$name" 2>/dev/null)
+  [[ "$val" == "<no value>" ]] && val=""
+  printf '%s' "$val"
+}
+
+# Local digest of an image (empty = not present locally).
+local_digest() {
+  docker image inspect "$1" --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n 's/.*@//p' | head -n1
+}
+
+# Remote digest of an image's tag without pulling layers.
+remote_digest() {
+  local image="$1" d=""
+  if docker buildx version >/dev/null 2>&1; then
+    d=$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}' 2>/dev/null) || d=""
+    [[ -n "$d" ]] && { printf '%s\n' "$d"; return 0; }
+  fi
+  if have skopeo; then
+    d=$(skopeo inspect --format '{{.Digest}}' "docker://$image" 2>/dev/null) || d=""
+    [[ -n "$d" ]] && { printf '%s\n' "$d"; return 0; }
+  fi
+  d=$(docker manifest inspect "$image" 2>/dev/null | grep -m1 -oE 'sha256:[0-9a-f]{64}') || d=""
+  [[ -n "$d" ]] && { printf '%s\n' "$d"; return 0; }
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Data model (parallel arrays)
+# ---------------------------------------------------------------------------
+declare -a U_IMAGE=()     # image reference
+declare -a U_CAT=()       # compose | compose-ext | external | standalone
+declare -a U_FILE=()      # compose file (compose/compose-ext) else ""
+declare -a U_CONTAINER=() # container name (running containers) else ""
+declare -a U_STATE=()     # update | new
+declare -a U_SEL=()       # 1 = selected, 0 = ignored
+
+declare -A CHK_CACHE=()    # image -> state
+declare -A CAND_SEEN=()    # dedupe key -> 1
+declare -A SCANNED_FILES=() # abs path -> 1
+
+# Running-container index (built once, up front).
+declare -a CT_NAME=() CT_IMAGE=() CT_PROJ=() CT_CFG=()
+declare -A CN_BY_KEY=()    # "<absfile>|<image>" -> container name
+declare -A CN_BY_IMAGE=()  # image -> container name (fallback)
+
+CAT_ORDER=(compose compose-ext external standalone)
+
+cat_label() {
+  case "$1" in
+    compose)     printf '%s' "Compose files (scanned directory)" ;;
+    compose-ext) printf '%s' "Compose (other files on this host)" ;;
+    external)    printf '%s' "External / Portainer-managed stacks" ;;
+    standalone)  printf '%s' "Standalone containers (docker run)" ;;
+    *)           printf '%s' "$1" ;;
+  esac
+}
+
+# image -> update state, cached.
+classify_state() {
+  local image="$1"
+  if [[ -n "${CHK_CACHE[$image]:-}" ]]; then printf '%s' "${CHK_CACHE[$image]}"; return; fi
+  local ld rd state
+  ld=$(local_digest "$image")
+  if ! rd=$(remote_digest "$image"); then state="unreachable"
+  elif [[ -z "$ld" ]]; then state="new"
+  elif [[ "$ld" != "$rd" ]]; then state="update"
+  else state="uptodate"; fi
+  CHK_CACHE[$image]="$state"
+  printf '%s' "$state"
+}
+
+SPIN='|/-\'; SI=0
+add_candidate() {
+  local image="$1" cat="$2" file="$3" container="$4"
+  [[ -z "$image" || "$image" == sha256:* ]] && return 0
+
+  local key="$cat|$file|$image|$container"
+  [[ -n "${CAND_SEEN[$key]:-}" ]] && return 0
+  CAND_SEEN[$key]=1
+
+  local label="${container:-$image}"
+  printf '  %s%s%s checking %s ...' "$C_DIM" "${SPIN:SI++%${#SPIN}:1}" "$C_RESET" "$label"
+
+  local st; st=$(classify_state "$image")
+  case "$st" in
+    update)
+      printf '\r\e[2K  %b %s  %supdate available%s\n' "$CHECK" "$label" "$C_GREEN" "$C_RESET"
+      U_IMAGE+=("$image"); U_CAT+=("$cat"); U_FILE+=("$file"); U_CONTAINER+=("$container")
+      U_STATE+=("update"); U_SEL+=("1") ;;
+    new)
+      printf '\r\e[2K  %b %s  %snot pulled yet%s\n' "$CHECK" "$label" "$C_YELLOW" "$C_RESET"
+      U_IMAGE+=("$image"); U_CAT+=("$cat"); U_FILE+=("$file"); U_CONTAINER+=("$container")
+      U_STATE+=("new"); U_SEL+=("1") ;;
+    unreachable)
+      printf '\r\e[2K  %b %s  %s(registry unreachable, skipped)%s\n' "$CROSS" "$label" "$C_DIM" "$C_RESET" ;;
+    *)
+      printf '\r\e[2K  %b %s  %sup to date%s\n' "$CHECK" "$label" "$C_DIM" "$C_RESET" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Collection
+# ---------------------------------------------------------------------------
+# Index every running container once so we can show container names next to
+# their images (and reuse the data when classifying non-compose containers).
+build_container_index() {
+  local -a names=()
+  mapfile -t names < <(docker ps --format '{{.Names}}' 2>/dev/null | sort)
+  [[ ${#names[@]} -gt 0 ]] || return 0
+
+  local name image proj cfg first abs
+  for name in "${names[@]}"; do
+    image=$(docker inspect -f '{{.Config.Image}}' "$name" 2>/dev/null) || continue
+    proj=$(container_label "$name" "com.docker.compose.project")
+    cfg=$(container_label "$name" "com.docker.compose.project.config_files")
+
+    CT_NAME+=("$name"); CT_IMAGE+=("$image"); CT_PROJ+=("$proj"); CT_CFG+=("$cfg")
+
+    if [[ -n "$proj" ]]; then
+      first="${cfg%%,*}"
+      if [[ -n "$first" ]]; then
+        abs=$(abspath "$first")
+        CN_BY_KEY["$abs|$image"]="$name"
+      fi
+    fi
+    CN_BY_IMAGE["$image"]="$name"
+  done
+}
+
+# Best-effort container name for a compose image in a given file.
+lookup_container() {
+  local abs="$1" image="$2"
+  if [[ -n "${CN_BY_KEY["$abs|$image"]:-}" ]]; then printf '%s' "${CN_BY_KEY["$abs|$image"]}"; return; fi
+  printf '%s' "${CN_BY_IMAGE["$image"]:-}"
+}
+
+collect_compose() {
+  local root="$1"
+  local -a files=()
+  mapfile -t files < <(
+    find "$root" -type f \
+      \( -name 'docker-compose.yml' -o -name 'docker-compose.yaml' \
+         -o -name 'compose.yml' -o -name 'compose.yaml' \) 2>/dev/null | sort
+  )
+
+  if [[ ${#files[@]} -eq 0 ]]; then
+    warn "No docker-compose.yml / compose.yml files found under: $root"
+    return 0
+  fi
+  if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
+    warn "Found compose files but no 'docker compose' binary; skipping compose scan."
+    return 0
+  fi
+
+  info "Scanning ${C_BOLD}${#files[@]}${C_RESET} compose file(s) under ${C_BOLD}$root${C_RESET}"
+  local file image abs
+  for file in "${files[@]}"; do
+    abs=$(abspath "$file"); SCANNED_FILES[$abs]=1
+    echo "› ${C_BOLD}$file${C_RESET}"
+    local -a imgs=(); mapfile -t imgs < <(compose_images "$file")
+    if [[ ${#imgs[@]} -eq 0 ]]; then
+      echo "  ${C_DIM}(no resolvable images)${C_RESET}"; continue
+    fi
+    for image in "${imgs[@]}"; do
+      add_candidate "$image" "compose" "$abs" ""
+    done
+  done
+  echo
+}
+
+collect_containers() {
+  [[ ${#CT_NAME[@]} -gt 0 ]] || return 0
+
+  info "Inspecting ${C_BOLD}${#CT_NAME[@]}${C_RESET} running container(s) deployed on this host"
+  local i name image proj cfg first abs
+  for i in "${!CT_NAME[@]}"; do
+    name="${CT_NAME[$i]}"; image="${CT_IMAGE[$i]}"
+    proj="${CT_PROJ[$i]}"; cfg="${CT_CFG[$i]}"
+
+    if [[ -n "$proj" ]]; then
+      first="${cfg%%,*}"
+      if [[ -n "$first" && -r "$first" ]]; then
+        abs=$(abspath "$first")
+        if [[ -n "${SCANNED_FILES[$abs]:-}" ]]; then
+          continue   # already covered by the directory scan
+        fi
+        add_candidate "$image" "compose-ext" "$abs" "$name"
+      else
+        # compose-labelled but the file isn't reachable here (typical of
+        # Portainer stacks that live inside Portainer's own volume).
+        add_candidate "$image" "external" "" "$name"
+      fi
+    else
+      add_candidate "$image" "standalone" "" "$name"
+    fi
+  done
+  echo
+}
+
+# Reorder entries so the UI groups them by category.
+reorder_by_category() {
+  local -a I=() C=() F=() N=() S=() L=()
+  local cat i
+  for cat in "${CAT_ORDER[@]}"; do
+    for i in "${!U_IMAGE[@]}"; do
+      [[ "${U_CAT[$i]}" == "$cat" ]] || continue
+      I+=("${U_IMAGE[$i]}"); C+=("${U_CAT[$i]}"); F+=("${U_FILE[$i]}")
+      N+=("${U_CONTAINER[$i]}"); S+=("${U_STATE[$i]}"); L+=("${U_SEL[$i]}")
+    done
+  done
+  U_IMAGE=("${I[@]}"); U_CAT=("${C[@]}"); U_FILE=("${F[@]}")
+  U_CONTAINER=("${N[@]}"); U_STATE=("${S[@]}"); U_SEL=("${L[@]}")
+}
+
+# ---------------------------------------------------------------------------
+# Interactive selection UI
+# ---------------------------------------------------------------------------
+clear_screen() { [[ -t 1 ]] && printf '\e[H\e[2J'; }
+cursor_hide() { [[ -t 1 ]] && printf '\e[?25l'; }
+cursor_show() { [[ -t 1 ]] && printf '\e[?25h'; }
+
+# Global kill switch: Ctrl+C (SIGINT) / SIGTERM aborts cleanly at any point,
+# restoring the cursor and leaving the system untouched from here on.
+on_interrupt() {
+  cursor_show
+  printf '\n'
+  echo "${C_YELLOW}Interrupted (Ctrl+C) — aborting. No further changes will be made.${C_RESET}" >&2
+  exit 130
+}
+trap on_interrupt INT TERM
+trap cursor_show EXIT
+
+draw_menu() {
+  local cursor="$1"
+  local NAME_W=22 IMG_W=40 SRC_W=14
+  clear_screen
+  echo "${C_BOLD}docker-compose-update${C_RESET}: choose which images to update"
+  echo
+  echo "  ${C_BOLD}↑/↓${C_RESET} move    ${C_BOLD}Space${C_RESET} toggle    ${C_BOLD}a${C_RESET} all    ${C_BOLD}Enter${C_RESET} update    ${C_BOLD}q / Ctrl+C${C_RESET} quit"
+
+  local count=0 i
+  for i in "${!U_IMAGE[@]}"; do [[ "${U_SEL[$i]}" == "1" ]] && ((count++)); done
+
+  # Column header
+  echo
+  printf '    %-4s %-8s %-*s %-*s %s\n' "SEL" "STATE" "$NAME_W" "CONTAINER" "$IMG_W" "IMAGE" "SOURCE"
+  printf '    %s\n' "${C_DIM}────────────────────────────────────────────────────────────────────────────────${C_RESET}"
+
+  local last_cat=""
+  for i in "${!U_IMAGE[@]}"; do
+    if [[ "${U_CAT[$i]}" != "$last_cat" ]]; then
+      last_cat="${U_CAT[$i]}"
+      local cnt=0 j
+      for j in "${!U_CAT[@]}"; do [[ "${U_CAT[$j]}" == "$last_cat" ]] && ((cnt++)); done
+      echo
+      echo "  ${C_BOLD}$(cat_label "$last_cat")${C_RESET} ${C_DIM}(${cnt})${C_RESET}"
+    fi
+
+    # checkbox
+    local cb_str state_str name_str img_str src_str pointer name src
+    if [[ "${U_SEL[$i]}" == "1" ]]; then cb_str="${C_GREEN}[x]${C_RESET}"; else cb_str="${C_DIM}[ ]${C_RESET}"; fi
+    # state badge (fixed width 8)
+    if [[ "${U_STATE[$i]}" == "new" ]]; then
+      state_str="${C_YELLOW}$(printf '%-8s' 'new')${C_RESET}"
+    else
+      state_str="${C_GREEN}$(printf '%-8s' 'update')${C_RESET}"
+    fi
+
+    name="${U_CONTAINER[$i]:--}"
+    if [[ -n "${U_FILE[$i]}" ]]; then src="${U_FILE[$i]##*/}"; else src="-"; fi
+
+    name_str=$(pad_trunc "$name" "$NAME_W")
+    img_str=$(pad_trunc "${U_IMAGE[$i]}" "$IMG_W")
+    src_str=$(pad_trunc "$src" "$SRC_W")
+
+    if [[ "$i" -eq "$cursor" ]]; then
+      # Highlighted row: pointer + reverse video on the container/image.
+      pointer="${C_BOLD}❯${C_RESET}"
+      printf '  %b %b %b  %b%s %s%b  %b\n' \
+        "$pointer" "$cb_str" "$state_str" \
+        "$C_INV" "$name_str" "$img_str" "$C_RESET" "${C_DIM}${src_str}${C_RESET}"
+    else
+      printf '    %b %b  %s %s  %b\n' \
+        "$cb_str" "$state_str" "$name_str" "$img_str" "${C_DIM}${src_str}${C_RESET}"
+    fi
+  done
+
+  echo
+  printf '  %bupdate%b = newer image available    %bnew%b = not pulled yet\n' "$C_GREEN" "$C_RESET" "$C_YELLOW" "$C_RESET"
+  echo "  ${C_BOLD}${count}${C_RESET} of ${C_BOLD}${#U_IMAGE[@]}${C_RESET} image(s) selected for update"
+}
+
+select_images() {
+  local cursor=0 key key2 n="${#U_IMAGE[@]}"
+  cursor_hide
+  while true; do
+    draw_menu "$cursor"
+    IFS= read -rsn1 key || key=""
+    case "$key" in
+      $'\x1b')
+        read -rsn2 -t 0.0005 key2 || key2=""
+        case "$key2" in
+          '[A') ((cursor = (cursor - 1 + n) % n)) ;;
+          '[B') ((cursor = (cursor + 1) % n)) ;;
+          '')   cursor_show; return 1 ;;
+        esac ;;
+      'k') ((cursor = (cursor - 1 + n) % n)) ;;
+      'j') ((cursor = (cursor + 1) % n)) ;;
+      ' ') [[ "${U_SEL[$cursor]}" == "1" ]] && U_SEL[$cursor]=0 || U_SEL[$cursor]=1 ;;
+      'a')
+        local all=1 i
+        for i in "${!U_SEL[@]}"; do [[ "${U_SEL[$i]}" == "1" ]] || { all=0; break; }; done
+        for i in "${!U_SEL[@]}"; do [[ "$all" -eq 1 ]] && U_SEL[$i]=0 || U_SEL[$i]=1; done ;;
+      'q') cursor_show; return 1 ;;
+      '')  cursor_show; return 0 ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Standalone recreate (best-effort, via runlike)
+# ---------------------------------------------------------------------------
+ensure_runlike() {
+  docker image inspect assaflavie/runlike >/dev/null 2>&1 && return 0
+  info "Pulling helper image assaflavie/runlike (used to rebuild the run command)"
+  docker pull assaflavie/runlike >/dev/null 2>&1
+}
+
+recreate_standalone() {
+  local name="$1" cmd ts backup
+  cmd=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock assaflavie/runlike "$name" 2>/dev/null)
+  if [[ "$cmd" != docker\ run* ]]; then
+    warn "Could not rebuild run command for '$name'; image pulled, recreate it manually."
+    return 1
+  fi
+
+  ts=$(date +%s); backup="${name}__old_${ts}"
+  docker stop "$name" >/dev/null 2>&1 || true
+  docker rename "$name" "$backup" >/dev/null 2>&1 || { warn "Could not back up '$name'."; return 1; }
+
+  if eval "$cmd" >/dev/null 2>&1; then
+    ok "Recreated '$name' on the new image."
+    docker rm "$backup" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  warn "Recreate failed for '$name'; restoring the previous container."
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker rename "$backup" "$name" >/dev/null 2>&1 || true
+  docker start "$name" >/dev/null 2>&1 || true
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Apply updates
+# ---------------------------------------------------------------------------
+apply_updates() {
+  local -a sel=()
+  local i
+  for i in "${!U_IMAGE[@]}"; do [[ "${U_SEL[$i]}" == "1" ]] && sel+=("$i"); done
+  if [[ ${#sel[@]} -eq 0 ]]; then warn "Nothing selected. No changes made."; return 0; fi
+
+  clear_screen
+  echo "${C_BOLD}The following images will be updated:${C_RESET}"
+  echo
+  local last_cat=""
+  for i in "${sel[@]}"; do
+    if [[ "${U_CAT[$i]}" != "$last_cat" ]]; then
+      last_cat="${U_CAT[$i]}"; echo "  ${C_BOLD}$(cat_label "$last_cat")${C_RESET}"
+    fi
+    local origin="${U_CONTAINER[$i]:-${U_FILE[$i]}}"
+    echo "    ${CHECK} ${U_IMAGE[$i]}  ${C_DIM}${origin}${C_RESET}"
+  done
+  echo
+  read -r -p "Proceed? [y/N] " ans
+  [[ "${ans,,}" == "y" ]] || { warn "Aborted by user."; return 0; }
+  echo
+
+  # 1) Pull every selected image (deduped).
+  local -A pulled=()
+  for i in "${sel[@]}"; do
+    [[ -n "${pulled[${U_IMAGE[$i]}]:-}" ]] && continue
+    pulled[${U_IMAGE[$i]}]=1
+    info "Pulling ${C_BOLD}${U_IMAGE[$i]}${C_RESET}"
+    docker pull "${U_IMAGE[$i]}" || warn "Failed to pull ${U_IMAGE[$i]}"
+  done
+  echo
+
+  # 2) Recreate compose-backed services (only changed images recreate).
+  local -A files=()
+  for i in "${sel[@]}"; do
+    case "${U_CAT[$i]}" in compose|compose-ext) [[ -n "${U_FILE[$i]}" ]] && files["${U_FILE[$i]}"]=1 ;; esac
+  done
+  local f
+  for f in "${!files[@]}"; do
+    info "Recreating affected services from ${C_BOLD}$f${C_RESET}"
+    "${COMPOSE_CMD[@]}" -f "$f" up -d && ok "Updated services in $f" || warn "compose up failed for $f"
+  done
+
+  # 3) External / Portainer stacks: image is pulled, redeploy needed.
+  local -a ext=()
+  for i in "${sel[@]}"; do [[ "${U_CAT[$i]}" == "external" ]] && ext+=("$i"); done
+  if [[ ${#ext[@]} -gt 0 ]]; then
+    echo
+    warn "External / Portainer-managed stacks — new images pulled, but they must be"
+    warn "redeployed in their manager to take effect (Portainer: 'Re-pull & redeploy'):"
+    for i in "${ext[@]}"; do echo "    • ${U_CONTAINER[$i]}  ${C_DIM}(${U_IMAGE[$i]})${C_RESET}"; done
+  fi
+
+  # 4) Standalone containers: optional best-effort recreate.
+  local -a standalone=()
+  for i in "${sel[@]}"; do [[ "${U_CAT[$i]}" == "standalone" ]] && standalone+=("$i"); done
+  if [[ ${#standalone[@]} -gt 0 ]]; then
+    echo
+    warn "Standalone containers were created with 'docker run'. The new image is pulled,"
+    warn "but the container must be recreated to use it."
+    read -r -p "Recreate ${#standalone[@]} standalone container(s) now? (best-effort) [y/N] " rec
+    if [[ "${rec,,}" == "y" ]]; then
+      if ensure_runlike; then
+        for i in "${standalone[@]}"; do
+          info "Recreating ${C_BOLD}${U_CONTAINER[$i]}${C_RESET}"
+          recreate_standalone "${U_CONTAINER[$i]}"
+        done
+      else
+        warn "Could not obtain the runlike helper; recreate the containers manually."
+      fi
+    else
+      echo "  ${C_DIM}Left as-is. Recreate them yourself to apply the new image.${C_RESET}"
+    fi
+  fi
+
+  echo
+  read -r -p "Remove old dangling images to reclaim space? [y/N] " prune
+  if [[ "${prune,,}" == "y" ]]; then
+    docker image prune -f >/dev/null && ok "Pruned dangling images."
+  fi
+  echo
+  ok "Done."
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+${C_BOLD}docker-compose-update${C_RESET}
+
+Usage: $(basename "$0") [DIRECTORY]
+
+Scans DIRECTORY (recursively) for docker-compose.yml / compose.yml files and
+also enumerates running containers deployed elsewhere (other compose files,
+Portainer / external stacks, plain docker run). Checks every image for a newer
+registry version and lets you interactively pick which ones to update.
+
+The search root is resolved in this order:
+  1. DIRECTORY argument
+  2. COMPOSE_ROOT environment variable
+  3. COMPOSE_ROOT set at the top of this script (currently: ${COMPOSE_ROOT:-auto})
+  4. Auto-detected: <your home>/${COMPOSE_SUBDIR:-docker}  (e.g. $(user_home)/${COMPOSE_SUBDIR:-docker})
+If none point to a real directory you will be prompted (default: current dir).
+EOF
+}
+
+main() {
+  case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+  require_deps
+
+  # Resolve the search root:
+  #   CLI arg > COMPOSE_ROOT (env/config) > auto-detected <home>/<subdir> > prompt.
+  local root="${1:-${COMPOSE_ROOT:-}}"
+  if [[ -z "$root" ]]; then
+    root="$(user_home)/${COMPOSE_SUBDIR:-docker}"
+    info "Auto-detected compose path: ${C_BOLD}$root${C_RESET}"
+  fi
+  if [[ -n "$root" && ! -d "$root" ]]; then
+    warn "Compose path does not exist: $root"
+    root=""
+  fi
+  if [[ -z "$root" ]]; then
+    read -r -p "Directory to scan for compose files [.]: " root
+    root="${root:-.}"
+  fi
+  root="${root%/}"
+  [[ -d "$root" ]] || die "Not a directory: $root"
+  info "Using compose path: ${C_BOLD}$root${C_RESET}"
+
+  build_container_index
+  collect_compose "$root"
+  collect_containers
+
+  if [[ ${#U_IMAGE[@]} -eq 0 ]]; then
+    ok "Everything is already up to date."
+    exit 0
+  fi
+
+  reorder_by_category
+
+  if select_images; then
+    apply_updates
+  else
+    clear_screen
+    warn "Quit — no images were updated."
+  fi
+}
+
+main "$@"

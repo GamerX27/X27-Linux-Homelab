@@ -1,7 +1,11 @@
 # X27-Linux Homelab
 
-Minimal headless Fedora 44 server images, built with [BlueBuild](https://blue-build.org/)
-on the official [`quay.io/fedora/fedora-bootc`](https://quay.io/repository/fedora/fedora-bootc) image.
+Docker-first, minimal headless Fedora 44 server images, built with
+[BlueBuild](https://blue-build.org/) on the official
+[`quay.io/fedora/fedora-bootc`](https://quay.io/repository/fedora/fedora-bootc) image.
+
+**Docker first:** the OS is a small, read-only base that updates itself. Everything you run
+on it (services, apps, tools) goes in Docker containers, managed with `docker compose`.
 
 - Bare metal: `ghcr.io/gamerx27/x27-linux-homelab`: [recipe.yml](recipes/recipe.yml)
 - VM: `ghcr.io/gamerx27/x27-linux-homelab-vm`: [recipe-vm.yml](recipes/recipe-vm.yml)
@@ -12,6 +16,8 @@ Both share [common.yml](recipes/common.yml).
 
 - No desktop, no extras: Fedora bootc plus the items below
 - Docker CE from Docker's official repo (`docker-ce`, buildx, compose plugin), enabled at boot
+- `docker-compose-update`: check your containers for newer images and pick which to update (see
+  [Updating containers](#updating-containers))
 - Podman removed
 - SSH (`sshd`) enabled
 - fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
@@ -109,6 +115,29 @@ autoupdate gotify off
 
 The URL and token are stored in `/etc/autoupdate.conf` (root only). Nothing is saved if the
 test message fails.
+
+## Updating containers
+
+`docker-compose-update` checks every image your containers use against its registry and shows
+the ones with a newer version in a menu, so you pick exactly what gets updated.
+
+```
+docker-compose-update                 # scans ~/docker for compose files
+docker-compose-update /srv/stacks     # or another directory
+```
+
+Keys: `↑/↓` (or `k/j`) move, `Space` toggles, `a` selects all, `Enter` updates, `q` quits.
+
+It finds images in four places, and updates each accordingly:
+
+- Compose files under the scanned directory: pulled, then `docker compose up -d`
+- Compose files elsewhere on the host (from running containers): same
+- Portainer / external stacks: pulled; redeploy them in Portainer to apply
+- `docker run` containers: pulled; optionally recreated with the same settings (via
+  [runlike](https://github.com/lavie/runlike))
+
+Afterwards it offers to remove the old images. Only what you select is changed. Set
+`COMPOSE_ROOT` to scan somewhere other than `~/docker` by default.
 
 ## Releases
 
