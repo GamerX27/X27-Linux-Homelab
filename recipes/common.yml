@@ -41,6 +41,7 @@ modules:
         - sshd.service
         - auditd.service
         - fish-default-shell.service
+        - docker-group.service
       # Runs `bootc upgrade`, which fails without podman (see above).
       masked:
         - bootc-fetch-apply-updates.timer

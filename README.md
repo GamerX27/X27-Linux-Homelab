@@ -62,7 +62,10 @@ systemctl reboot
 
 Use `x27-linux-homelab-vm` in place of `x27-linux-homelab` for a VM.
 
-To let your user run Docker without sudo: `sudo usermod -aG docker $USER`, then log in again.
+Regular users (UID 1000+) are added to the `docker` group at boot by `docker-group.service`,
+so the user made in the installer runs Docker without sudo. A user added later gets it at the
+next boot (or run `sudo usermod -aG docker <user>` and log in again). Each user is added once,
+so `sudo gpasswd -d <user> docker` stays. Membership in `docker` is effectively root access.
 
 fish is the login shell (console and SSH) for every regular user. New users get it from
 `/etc/default/useradd`. Existing users who still have bash are switched once at boot by

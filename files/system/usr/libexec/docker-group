@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# docker-group.service: adds regular users (UID 1000-59999) to the docker group so they can
+# run docker without sudo. This covers the user made in the installer at first boot, and users
+# added later at the next boot. Once per user (tracked in $STATE): a later
+# `gpasswd -d <user> docker` is kept.
+# After a rebase, /etc/group keeps the old system's groups, so docker may be missing there
+# (or only in /usr/lib/group, which usermod can't change). It's added to /etc first.
+set -euo pipefail
+
+STATE=/var/lib/docker-group/done
+
+mkdir -p "${STATE%/*}"
+touch "$STATE"
+
+if ! grep -q '^docker:' /etc/group; then
+  line="$(grep '^docker:' /usr/lib/group 2>/dev/null || true)"
+  if [[ -n "$line" ]]; then
+    echo "$line" >>/etc/group
+    grep -q '^docker:' /etc/gshadow || echo "docker:!::" >>/etc/gshadow
+  else
+    groupadd -r docker
+  fi
+  echo "docker group added to /etc/group"
+fi
+
+awk -F: '$3 >= 1000 && $3 < 60000 { print $1 }' /etc/passwd | while read -r user; do
+  grep -qx "$user" "$STATE" && continue
+  usermod -aG docker "$user"
+  echo "${user}: added to the docker group"
+  echo "$user" >>"$STATE"
+done

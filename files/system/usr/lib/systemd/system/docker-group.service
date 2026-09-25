@@ -1,0 +1,11 @@
+[Unit]
+Description=Add regular users to the docker group
+Before=docker.service systemd-user-sessions.service sshd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/docker-group
+
+[Install]
+WantedBy=multi-user.target
