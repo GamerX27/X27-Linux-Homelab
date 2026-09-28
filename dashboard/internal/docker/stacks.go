@@ -313,3 +313,43 @@ func (c *Client) StackAction(o Owner, name, action string) (string, error) {
 	}
 	return "", errors.New("unknown stack action")
 }
+
+// RemoveStack runs `docker compose down` and, when asked, deletes the stack's folder in
+// ~/docker with everything in it (including root-owned data Docker created). A folder that
+// is a symlink is unlinked, never followed.
+func (c *Client) RemoveStack(o Owner, name string, deleteFolder bool) (string, error) {
+	out, err := c.StackAction(o, name, "remove")
+	if err != nil || !deleteFolder {
+		return out, err
+	}
+	msg, err := DeleteStackFolder(o, name)
+	return strings.TrimSpace(out + "\n" + msg), err
+}
+
+func DeleteStackFolder(o Owner, name string) (string, error) {
+	dir, err := StackDir(o, name)
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Clean(o.Root())
+	if filepath.Dir(dir) != root || dir == root {
+		return "", errors.New("refusing to delete " + dir)
+	}
+	st, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		return "Removed the link " + dir + " (its target was left alone).", os.Remove(dir)
+	}
+	if !st.IsDir() {
+		return "", errors.New(dir + " isn't a folder")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return "", err
+	}
+	return "Deleted " + dir + ".", nil
+}

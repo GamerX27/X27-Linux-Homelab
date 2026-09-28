@@ -109,3 +109,44 @@ func TestCloneSpec(t *testing.T) {
 		t.Error("inspect was modified")
 	}
 }
+
+func TestDeleteStackFolder(t *testing.T) {
+	o := testOwner(t)
+	root := o.Root()
+	os.MkdirAll(filepath.Join(root, "Keep"), 0o755)
+	os.MkdirAll(filepath.Join(root, "Gone", "data"), 0o755)
+	os.WriteFile(filepath.Join(root, "Gone", "compose.yml"), []byte("x"), 0o644)
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "important"), []byte("x"), 0o644)
+	os.Symlink(outside, filepath.Join(root, "linked"))
+
+	if _, err := DeleteStackFolder(o, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Gone")); !os.IsNotExist(err) {
+		t.Fatal("folder not deleted")
+	}
+	if _, err := os.Stat(filepath.Join(root, "Keep")); err != nil {
+		t.Fatal("other folder touched")
+	}
+	if _, err := DeleteStackFolder(o, "linked"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "important")); err != nil {
+		t.Fatal("symlink target deleted")
+	}
+	for _, bad := range []string{"..", "", "../x"} {
+		if _, err := DeleteStackFolder(o, bad); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+func TestApplyAllOverlap(t *testing.T) {
+	u := NewUpdater(New())
+	u.applying.Lock()
+	if _, err := u.ApplyAll(); err != ErrUpdateRunning {
+		t.Fatalf("got %v", err)
+	}
+	u.applying.Unlock()
+}

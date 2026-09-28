@@ -158,9 +158,15 @@ For each node it shows:
 - **Overview:** CPU, memory, disks, network, temperatures, uptime, OS and image version
 - **Updates:** the OS image: the running version, whether a newer one is out (checked every
   6 hours), and buttons to update (same as `autoupdate`: install and reboot), reboot or roll back
-- **Docker:** containers (start, stop, restart, **pull & recreate**, remove, logs, stats), stacks
-  (see below), images, volumes, networks, and pruning. Published ports are links that open the
-  service. **Image updates** checks every container image against its registry and updates it
+- **Docker:** three sections. **Apps** lists each stack with its containers inside, image
+  update badges, one button for what's needed (Update or Start) and a ⋯ menu for the rest
+  (restart, stop, pull & recreate, edit, logs, stats, remove); containers started with
+  `docker run` are grouped as Standalone. A strip on top checks all images against their
+  registries and updates them. **Images** and **Storage** (volumes, networks) are for cleanup.
+  Published ports are links that open the service on the node it runs on
+- **Files:** your home folder: browse, edit text files, upload (drag and drop), download
+  (folders as `.tar.gz`), rename, move and delete. It runs as your user, so you have exactly
+  the permissions you have over SSH
 - **Terminal:** a shell in the browser, as the user you logged in with
 - **Features:** automatic updates (schedule, on/off), Gotify messages, and turning services
   (SSH, smartd, Docker, ...) on or off
@@ -183,14 +189,23 @@ compose projects running on the node, with Start/Stop, Restart, **Pull & recreat
   mounts is kept. For a container started with plain `docker run` it makes a new container with
   the same ports, environment, volumes (anonymous ones too), networks and restart policy, and puts
   the old one back if anything fails. Image updates do the same.
-- **Remove** runs `docker compose down`: the folder, its files and named volumes stay.
+- **Remove** runs `docker compose down`; named volumes stay. Its folder stays too, unless you
+  tick "Also delete the folder" in the dialog, which deletes the folder and everything in it.
 
 On a paired node, stacks live in the same user's `~/docker` on that node.
 
 Your picture in the sidebar comes from [Gravatar](https://gravatar.com): click your name and enter
 your email. Only a hash of it is stored, and your browser loads the picture from gravatar.com.
 
-The main page lists every node with its version and a badge when an OS or container update is
+The main page has two update panels for all nodes at once:
+
+- **OS updates:** check every node for a newer image, then **Update all**: each node installs it
+  and reboots, paired nodes first and the main node last (you log in again after it reboots).
+  **Reboot staged** finishes updates that are downloaded but waiting for a reboot.
+- **Container updates:** check every node's images, then **Update all** pulls and recreates only
+  what has a newer image; containers that are up to date aren't restarted.
+
+It also lists every node with its version and a badge when an OS or container update is
 available.
 
 ### Main node

@@ -1,6 +1,7 @@
 // Fetch wrapper. Every request that changes something carries the session's CSRF token.
 let csrf = '';
 export const setCSRF = (t) => { csrf = t; };
+export const csrfToken = () => csrf;
 
 export class HTTPError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -37,6 +38,7 @@ export function node(id) {
     id,
     get: (p) => get(base + p),
     post: (p, b) => post(base + p, b),
+    url: (p) => base + p,
     wsURL: (p) => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${base}${p}`,
   };
 }

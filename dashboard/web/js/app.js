@@ -5,6 +5,7 @@ import { renderOverview } from './views/overview.js';
 import { renderUpdates } from './views/updates.js';
 import { renderDocker } from './views/docker.js';
 import { renderTerminal } from './views/terminal.js';
+import { renderFiles } from './views/files.js';
 import { renderFeatures } from './views/features.js';
 import { renderSettings } from './views/settings.js';
 
@@ -13,6 +14,7 @@ const TABS = [
   ['updates', 'Updates', renderUpdates],
   ['docker', 'Docker', renderDocker],
   ['terminal', 'Terminal', renderTerminal],
+  ['files', 'Files', renderFiles],
   ['features', 'Features', renderFeatures],
   ['settings', 'Settings', renderSettings],
 ];
@@ -231,7 +233,7 @@ function route() {
         'aria-selected': String(id === tab[0]) }, name))),
     body);
   drawHead();
-  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, me: state.me, refreshNodes });
+  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes });
 }
 
 window.addEventListener('hashchange', route);

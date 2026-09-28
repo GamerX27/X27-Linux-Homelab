@@ -167,3 +167,67 @@ export function when(unix) {
 }
 
 export function pct(n) { return (n ?? 0).toFixed(0) + '%'; }
+
+// "⋯" button with a popover of actions: [{label, onclick, danger?, hidden?}, …].
+// One menu is open at a time; it closes on outside click, Escape, or choosing an item.
+let openMenu = null;
+export const menuOpen = () => !!openMenu;
+
+function closeMenu() {
+  if (!openMenu) return;
+  openMenu.pop.remove();
+  openMenu.btn.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('mousedown', openMenu.outside, true);
+  document.removeEventListener('keydown', openMenu.keys, true);
+  window.removeEventListener('scroll', closeMenu, true);
+  openMenu = null;
+}
+
+export function menu(items, label = 'More actions') {
+  const btn = h('button.btn.small.icon-btn', { type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: label, 'aria-label': label }, '⋯');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (openMenu?.btn === btn) { closeMenu(); return; }
+    closeMenu();
+    const list = items.filter((i) => i && !i.hidden);
+    const pop = h('div.menu', { role: 'menu' }, list.map((i) =>
+      h('button.menu-item', { type: 'button', role: 'menuitem', class: i.danger ? 'danger' : '',
+        onclick: (ev) => { ev.stopPropagation(); closeMenu(); i.onclick(); } }, i.label)));
+    document.body.append(pop);
+    const r = btn.getBoundingClientRect();
+    const w = pop.offsetWidth, ht = pop.offsetHeight;
+    pop.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px';
+    pop.style.top = (r.bottom + ht + 8 > innerHeight ? r.top - ht - 4 : r.bottom + 4) + 'px';
+    const outside = (ev) => { if (!pop.contains(ev.target) && ev.target !== btn) closeMenu(); };
+    const keys = (ev) => {
+      const els = [...pop.querySelectorAll('.menu-item')];
+      const i = els.indexOf(document.activeElement);
+      if (ev.key === 'Escape') { ev.preventDefault(); closeMenu(); btn.focus(); }
+      else if (ev.key === 'ArrowDown') { ev.preventDefault(); els[(i + 1) % els.length]?.focus(); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); els[(i - 1 + els.length) % els.length]?.focus(); }
+      else if (ev.key === 'Tab') closeMenu();
+    };
+    openMenu = { btn, pop, outside, keys };
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('mousedown', outside, true);
+    document.addEventListener('keydown', keys, true);
+    window.addEventListener('scroll', closeMenu, true);
+    pop.querySelector('.menu-item')?.focus();
+  });
+  return btn;
+}
+
+// Monospace editor: Tab inserts two spaces.
+export function codeArea(value, rows) {
+  const ta = h('textarea.code', { rows, spellcheck: false, autocapitalize: 'off', autocomplete: 'off' });
+  ta.value = value;
+  ta.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+    e.preventDefault();
+    ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+  });
+  return ta;
+}
+
+// Is a modal dialog open? Views pause their auto-refresh while one is.
+export const modalOpen = () => !!document.querySelector('.modal-back');

@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os/user"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +22,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/docker"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/features"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/osupdate"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/system"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/terminal"
@@ -73,6 +77,7 @@ type Local struct {
 	checker *osupdate.Checker
 	docker  *docker.Client
 	updater *docker.Updater
+	files   files.Runner
 
 	osMu     sync.Mutex
 	osCached osupdate.Status
@@ -82,7 +87,8 @@ type Local struct {
 func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	d := docker.New()
 	l := &Local{Version: version, Dev: dev, Upgrader: up,
-		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d)}
+		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d),
+		files: files.Runner{Dev: dev}}
 	go func() {
 		time.Sleep(time.Minute)
 		for {
@@ -114,6 +120,7 @@ type Summary struct {
 	UpdateAvailable  bool        `json:"updateAvailable"`
 	UpdateVersion    string      `json:"updateVersion"`
 	UpdateStaged     bool        `json:"updateStaged"`
+	Updating         bool        `json:"updating"` // an OS update is being installed
 	ContainerUpdates int         `json:"containerUpdates"`
 	Running          int         `json:"running"`
 	Containers       int         `json:"containers"`
@@ -130,6 +137,7 @@ func (l *Local) summary() Summary {
 	}
 	s.UpdateAvailable, s.UpdateVersion = os.Check.Available, os.Check.Version
 	s.UpdateStaged = os.Staged != nil
+	s.Updating = os.Updating
 	for _, i := range l.updater.Status().Images {
 		if i.State == "update" {
 			s.ContainerUpdates++
@@ -172,7 +180,11 @@ func (l *Local) Handler() http.Handler {
 		result(w, r, "check for OS update", "Checking…", l.checker.CheckAsync())
 	})
 	mux.HandleFunc("POST /os/update", func(w http.ResponseWriter, r *http.Request) {
-		result(w, r, "start OS update", "Update started. The node reboots if an update is installed.", osupdate.Update())
+		err := osupdate.Update()
+		l.osMu.Lock()
+		l.osAt = time.Time{} // show "updating" in the next summary, not after the cache expires
+		l.osMu.Unlock()
+		result(w, r, "start OS update", "Update started. The node reboots if an update is installed.", err)
 	})
 	mux.HandleFunc("POST /os/rollback", func(w http.ResponseWriter, r *http.Request) {
 		result(w, r, "roll back OS", "Rolled back. Rebooting…", osupdate.Rollback())
@@ -195,6 +207,9 @@ func (l *Local) Handler() http.Handler {
 		}
 		if a == "recreate" {
 			out, err := l.docker.Recreate(id)
+			if err == nil {
+				go l.updater.Check() // clear its "update available" badge
+			}
 			result(w, r, "pull and recreate container "+id, out, err)
 			return
 		}
@@ -315,8 +330,32 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		name, a := r.PathValue("name"), r.PathValue("action")
+		if a == "remove" {
+			var body struct{ DeleteFolder bool }
+			readJSON(r, &body) // an empty body means keep the folder
+			out, err := l.docker.RemoveStack(o, name, body.DeleteFolder)
+			what := "remove stack " + name
+			if body.DeleteFolder {
+				what += " and delete its folder"
+			}
+			result(w, r, what, out, err)
+			return
+		}
 		out, err := l.docker.StackAction(o, name, a)
+		if err == nil && a == "recreate" {
+			go l.updater.Check() // clear its "update available" badge
+		}
 		result(w, r, "stack "+a+" "+name, out, err)
+	})
+	mux.HandleFunc("POST /docker/updates/apply-all", func(w http.ResponseWriter, r *http.Request) {
+		res, err := l.updater.ApplyAll()
+		if err != nil {
+			log.Printf("%s: update all images failed: %v", userOf(r), err)
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		log.Printf("%s: update all images: %d updated, %d failed", userOf(r), res.Updated, res.Failed)
+		writeJSON(w, http.StatusOK, res)
 	})
 	mux.HandleFunc("GET /docker/updates", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, l.updater.Status())
@@ -333,6 +372,76 @@ func (l *Local) Handler() http.Handler {
 		}
 		out, err := l.updater.Apply(body.Image)
 		result(w, r, "update image "+body.Image, out, err)
+	})
+
+	// Files: the acting user's home folder, with that user's permissions (see internal/files).
+	fsUser := func(r *http.Request) string { return userOf(r) }
+	mux.HandleFunc("GET /files/list", func(w http.ResponseWriter, r *http.Request) {
+		var out json.RawMessage
+		err := l.files.Run(fsUser(r), "list", files.Args{Path: r.URL.Query().Get("path")}, nil, &out)
+		ok(w, out, err)
+	})
+	mux.HandleFunc("GET /files/read", func(w http.ResponseWriter, r *http.Request) {
+		var out json.RawMessage
+		err := l.files.Run(fsUser(r), "read", files.Args{Path: r.URL.Query().Get("path")}, nil, &out)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+	fileOp := func(op string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Path, To, Content string
+				Create            bool
+			}
+			if err := readJSON(r, &body); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			var stdin io.Reader
+			if op == "write" {
+				stdin = strings.NewReader(body.Content)
+			}
+			err := l.files.Run(fsUser(r), op, files.Args{Path: body.Path, To: body.To, Create: body.Create}, stdin, nil)
+			what := "files " + op + " ~/" + body.Path
+			if body.To != "" {
+				what += " -> ~/" + body.To
+			}
+			result(w, r, what, "", err)
+		}
+	}
+	mux.HandleFunc("POST /files/write", fileOp("write"))
+	mux.HandleFunc("POST /files/mkdir", fileOp("mkdir"))
+	mux.HandleFunc("POST /files/move", fileOp("move"))
+	mux.HandleFunc("POST /files/delete", fileOp("delete"))
+	mux.HandleFunc("POST /files/upload", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		a := files.Args{Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1"}
+		var out struct{ Size int64 }
+		err := l.files.Run(fsUser(r), "upload", a, http.MaxBytesReader(w, r.Body, files.MaxUpload+1), &out)
+		result(w, r, "files upload ~/"+path.Join(a.Path, a.Name), "", err)
+	})
+	mux.HandleFunc("GET /files/download", func(w http.ResponseWriter, r *http.Request) {
+		a := files.Args{Path: r.URL.Query().Get("path")}
+		var st files.Stat
+		if err := l.files.Run(fsUser(r), "stat", a, nil, &st); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		name, ctype := st.Name, "application/octet-stream"
+		if st.IsDir {
+			name, ctype = st.Name+".tar.gz", "application/gzip"
+		} else {
+			w.Header().Set("Content-Length", strconv.FormatInt(st.Size, 10))
+		}
+		w.Header().Set("Content-Type", ctype)
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+		log.Printf("%s: files download ~/%s", userOf(r), a.Path)
+		if err := l.files.Stream(r.Context(), fsUser(r), a, w); err != nil {
+			log.Printf("%s: download ~/%s failed: %v", userOf(r), a.Path, err)
+		}
 	})
 
 	// Terminal

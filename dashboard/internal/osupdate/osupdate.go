@@ -153,6 +153,9 @@ func ParseCheck(out string) (version, digest string) {
 }
 
 func (c *Checker) Status() Status {
+	if Fake {
+		return fakeStatus()
+	}
 	if !Supported() {
 		return Status{Error: "not an rpm-ostree system"}
 	}
@@ -203,6 +206,10 @@ func (c *Checker) Run() {
 
 // CheckAsync starts a check and returns at once; the UI polls Status.
 func (c *Checker) CheckAsync() error {
+	if Fake {
+		fakeCheck()
+		return nil
+	}
 	if !Supported() {
 		return errors.New("not an rpm-ostree system")
 	}
@@ -211,6 +218,10 @@ func (c *Checker) CheckAsync() error {
 }
 
 func Update() error {
+	if Fake {
+		fakeUpdate()
+		return nil
+	}
 	if !Supported() {
 		return errors.New("not an rpm-ostree system")
 	}

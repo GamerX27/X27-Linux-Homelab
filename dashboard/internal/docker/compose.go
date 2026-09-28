@@ -98,9 +98,10 @@ type UpdateCheck struct {
 // Updater compares each image's local digest with the registry's, the same way
 // docker-compose-update does (docker buildx imagetools inspect), without pulling.
 type Updater struct {
-	c     *Client
-	mu    sync.Mutex
-	check UpdateCheck
+	c        *Client
+	mu       sync.Mutex
+	check    UpdateCheck
+	applying sync.Mutex // one ApplyAll at a time
 }
 
 func NewUpdater(c *Client) *Updater { return &Updater{c: c} }
@@ -244,4 +245,49 @@ func (u *Updater) Apply(image string) (string, error) {
 	}
 	u.mu.Unlock()
 	return strings.TrimSpace(strings.Join(log, "\n")), nil
+}
+
+type ApplyAllResult struct {
+	Updated int    `json:"updated"`
+	Failed  int    `json:"failed"`
+	Output  string `json:"output"`
+}
+
+var ErrUpdateRunning = errors.New("an update is already running on this node")
+
+// ApplyAll checks every image against its registry again and updates the ones that
+// changed. Containers whose images are up to date aren't touched.
+func (u *Updater) ApplyAll() (ApplyAllResult, error) {
+	if !u.applying.TryLock() {
+		return ApplyAllResult{}, ErrUpdateRunning
+	}
+	defer u.applying.Unlock()
+	for u.Status().Checking { // a check started elsewhere; wait for it, then check fresh
+		time.Sleep(time.Second)
+	}
+	u.Check()
+	st := u.Status()
+	var res ApplyAllResult
+	var log []string
+	if st.Error != "" {
+		return res, errors.New(st.Error)
+	}
+	for _, img := range st.Images {
+		if img.State != "update" {
+			continue
+		}
+		out, err := u.Apply(img.Image)
+		log = append(log, "== "+img.Image, out)
+		if err != nil {
+			res.Failed++
+			log = append(log, "failed: "+err.Error())
+			continue
+		}
+		res.Updated++
+	}
+	if res.Updated == 0 && res.Failed == 0 {
+		log = append(log, "All images are up to date.")
+	}
+	res.Output = strings.TrimSpace(strings.Join(log, "\n"))
+	return res, nil
 }

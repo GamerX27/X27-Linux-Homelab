@@ -1,4 +1,4 @@
-import { h, clear, modal, toast } from '../ui.js';
+import { h, clear, modal, toast, codeArea } from '../ui.js';
 import * as mainAPI from '../api.js';
 
 const BLANK = `services:
@@ -14,17 +14,6 @@ const BLANK = `services:
 
 // Same rule as docker compose for a folder's project name.
 export const projectName = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '');
-
-function codeArea(value, rows) {
-  const ta = h('textarea.code', { rows, spellcheck: false, autocapitalize: 'off', autocomplete: 'off' });
-  ta.value = value;
-  ta.addEventListener('keydown', (e) => {
-    if (e.key !== 'Tab' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-    e.preventDefault();
-    ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
-  });
-  return ta;
-}
 
 // Create (no name) or edit a stack in ~/docker/<name>/. Resolves true when something was saved.
 export async function openStackEditor({ api, root, name, onDone }) {

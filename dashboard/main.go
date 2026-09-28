@@ -22,7 +22,9 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/api"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/nodes"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/osupdate"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/tlsutil"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/web"
 )
@@ -79,6 +81,9 @@ func main() {
 		return
 	}
 	switch args[0] {
+	case "fsop":
+		// Internal: one Files-tab operation, run as the logged-in user through runuser.
+		os.Exit(files.Fsop(args[1:], os.Stdin, os.Stdout, os.Stderr))
 	case "serve":
 		serve(args[1:])
 	case "enable":
@@ -314,6 +319,7 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatalf("certificate: %v", err)
 	}
+	osupdate.Fake = *dev && os.Getenv("DASHBOARD_FAKE_OS") == "1"
 	opts := api.Options{Version: version, Mode: cfg.Mode, Dev: *dev, Cert: c, Web: web.FS, Auth: auth.PAM, Presets: cfg.Presets}
 	if *dev {
 		opts.Auth = func(u, p string) error {
