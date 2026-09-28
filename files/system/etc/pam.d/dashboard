@@ -1,0 +1,5 @@
+#%PAM-1.0
+# Web dashboard login: same password and account checks as SSH.
+auth       include      password-auth
+account    required     pam_nologin.so
+account    include      password-auth

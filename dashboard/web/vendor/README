@@ -1,0 +1,4 @@
+Vendored, unmodified except for the removed sourceMappingURL line:
+  @xterm/xterm 6.0.0      xterm.mjs, xterm.css
+  @xterm/addon-fit 0.11.0 addon-fit.mjs
+Both MIT, see LICENSE.xterm. To update: fetch the tarballs from registry.npmjs.org.

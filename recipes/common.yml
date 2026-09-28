@@ -9,6 +9,12 @@ modules:
       - source: system
         destination: /
 
+  # The web dashboard, built in the recipe's dashboard stage. Off until `dashboard enable`.
+  - type: copy
+    from: dashboard
+    src: /out/dashboard
+    dest: /usr/bin/dashboard
+
   # Podman out, Docker CE (download.docker.com) in. bootc hard-Requires podman, so a dnf
   # remove would take bootc with it; rpm -e --nodeps drops only podman. That breaks
   # bootc upgrade/switch (its image store runs podman), so updates go through rpm-ostree,

@@ -6,6 +6,26 @@ description: X27-Linux Homelab (VM) - minimal headless Fedora bootc with Docker 
 base-image: quay.io/fedora/fedora-bootc
 image-version: 44
 
+# Compiles the dashboard (dashboard/, Go) on the same Fedora release as the image, so the
+# cgo PAM binding links against the same glibc and libpam. Tests run first: a failing test
+# fails the image build. common.yml copies the binary in.
+stages:
+  - name: dashboard
+    from: quay.io/fedora/fedora:44
+    modules:
+      - type: containerfile
+        snippets:
+          - COPY dashboard /src
+          - |
+            RUN set -eu \
+                && dnf5 -y install --setopt=install_weak_deps=False golang pam-devel \
+                && cd /src \
+                && export GOFLAGS=-mod=readonly CGO_ENABLED=1 \
+                && go vet ./... \
+                && go test ./... \
+                && go build -trimpath -ldflags "-s -w -X main.version=$(date -u +%Y.%m.%d)" -o /out/dashboard . \
+                && /out/dashboard help >/dev/null
+
 modules:
   # Hardware firmware blobs and CPU microcode do nothing in a VM (the hypervisor handles
   # microcode). kernel-core only Recommends linux-firmware, so the kernel stays.

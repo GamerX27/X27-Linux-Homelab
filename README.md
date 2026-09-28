@@ -18,6 +18,8 @@ Both share [common.yml](recipes/common.yml).
 - Docker CE from Docker's official repo (`docker-ce`, buildx, compose plugin), enabled at boot
 - `docker-compose-update`: check your containers for newer images and pick which to update (see
   [Updating containers](#updating-containers))
+- `dashboard`: a web admin UI for this server and your other servers running the image (see
+  [Dashboard](#dashboard)). Off by default
 - Podman removed
 - SSH (`sshd`) enabled
 - fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
@@ -145,6 +147,71 @@ It finds images in four places, and updates each accordingly:
 
 Afterwards it offers to remove the old images. Only what you select is changed. Set
 `COMPOSE_ROOT` to scan somewhere other than `~/docker` by default.
+
+## Dashboard
+
+A web admin UI, off by default. One server is the **main node** and serves the UI. Other
+servers running this image can be added to it as **nodes** and managed from the same page.
+
+For each node it shows:
+
+- **Overview:** CPU, memory, disks, network, temperatures, uptime, OS and image version
+- **Updates:** the running image version, whether a newer one is out (checked every 6 hours), and
+  buttons to update (same as `autoupdate`: install and reboot), reboot or roll back. Also checks
+  every container image against its registry and updates it (pull, then `docker compose up -d`)
+- **Docker:** containers (start, stop, restart, remove, logs, stats), compose projects (up,
+  down, pull, restart), images, volumes, networks, and pruning
+- **Terminal:** a shell in the browser, as the user you logged in with
+- **Features:** automatic updates (schedule, on/off), Gotify messages, and turning services
+  (SSH, smartd, Docker, ...) on or off
+- **Settings:** hostname, time zone, network time, reboot and shut down
+
+The main page lists every node with its version and a badge when an OS or container update is
+available.
+
+### Main node
+
+```
+dashboard enable        # prints the address, e.g. https://192.168.1.10:9090
+```
+
+Log in with your Linux username and password. Only users in the `wheel` group can log in (in
+the installer, tick "Make this user administrator"). The certificate is self-signed, so the
+browser warns the first time; `dashboard status` prints its fingerprint to compare.
+
+### Adding a node
+
+On the other server:
+
+```
+dashboard enable node   # prints a one-time pairing password, e.g. K7QM-2XRT-9HVA-PWE4-CN3S
+```
+
+In the main node's UI: **Add node**, then its address (IP or hostname, `:port` if not 9090)
+and the pairing password. The main node gets an access token for the node and pins the
+node's certificate, so it refuses to talk to anything else at that address later. The
+password works once; `dashboard pair` on the node prints a new one (pairing again replaces the
+old main node). Removing a node in the UI makes it forget the token.
+
+The browser only talks to the main node, which passes requests on to the nodes. A node's
+terminal opens as the same username on that node, so that user needs an account in `wheel`
+there too.
+
+### Commands
+
+```
+dashboard status        # on/off, mode, address, paired or not, certificate fingerprint
+dashboard pair          # node: new pairing password
+dashboard unpair        # node: forget the main node
+dashboard port 9443     # change the port (default 9090)
+dashboard nodes         # main: list paired nodes
+dashboard disable
+```
+
+Settings are in `/etc/dashboard.conf`; the certificate and node list are in
+`/var/lib/dashboard`. The image has no firewall, so the port is open to your network once the
+dashboard is on. Anyone who logs in gets root-level control (Docker, updates, services), so keep
+it on your LAN or behind a VPN, not exposed to the internet.
 
 ## Releases
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=X27-Linux Homelab dashboard
+Documentation=https://github.com/gamerx27/X27-Linux-Homelab#dashboard
+Wants=network-online.target
+After=network-online.target docker.service
+
+# Off by default: `dashboard enable` (main node) or `dashboard enable node` turns it on.
+# Runs as root: it manages Docker, rpm-ostree and systemd, and opens terminals as the
+# logged-in user through runuser.
+[Service]
+ExecStart=/usr/bin/dashboard serve
+StateDirectory=dashboard
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
