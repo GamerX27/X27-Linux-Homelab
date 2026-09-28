@@ -156,11 +156,11 @@ servers running this image can be added to it as **nodes** and managed from the 
 For each node it shows:
 
 - **Overview:** CPU, memory, disks, network, temperatures, uptime, OS and image version
-- **Updates:** the running image version, whether a newer one is out (checked every 6 hours), and
-  buttons to update (same as `autoupdate`: install and reboot), reboot or roll back. Also checks
-  every container image against its registry and updates it (pull, then `docker compose up -d`)
+- **Updates:** the OS image: the running version, whether a newer one is out (checked every
+  6 hours), and buttons to update (same as `autoupdate`: install and reboot), reboot or roll back
 - **Docker:** containers (start, stop, restart, remove, logs, stats), compose projects (up,
-  down, pull, restart), images, volumes, networks, and pruning
+  down, pull, restart), images, volumes, networks, and pruning. **Image updates** checks every
+  container image against its registry and updates it (pull, then `docker compose up -d`)
 - **Terminal:** a shell in the browser, as the user you logged in with
 - **Features:** automatic updates (schedule, on/off), Gotify messages, and turning services
   (SSH, smartd, Docker, ...) on or off

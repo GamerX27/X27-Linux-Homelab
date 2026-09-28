@@ -1,6 +1,7 @@
 import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct } from '../ui.js';
+import { renderImageUpdates } from './imageupdates.js';
 
-const SECTIONS = ['Containers', 'Compose', 'Images', 'Volumes', 'Networks'];
+const SECTIONS = ['Containers', 'Compose', 'Images', 'Image updates', 'Volumes', 'Networks'];
 
 function stateStatus(s) {
   return s === 'running' ? 'good' : s === 'restarting' || s === 'paused' ? 'warn' : s === 'dead' ? 'crit' : 'idle';
@@ -13,8 +14,9 @@ function ago(unix) {
   return `${Math.round(d / 86400)} d ago`;
 }
 
-export function renderDocker(el, { api }) {
-  let section = 'Containers', timer, stopped = false;
+export function renderDocker(el, { api, node, refreshNodes }) {
+  let section = 'Containers', timer, stopped = false, sub = null;
+  let pending = node?.summary?.containerUpdates;
   const body = h('div');
   const filter = h('input.filter-input', { type: 'search', placeholder: 'Filter…', 'aria-label': 'Filter', oninput: () => draw() });
   const nav = h('div.btn-group');
@@ -40,19 +42,32 @@ export function renderDocker(el, { api }) {
 
   function drawNav() {
     clear(nav, SECTIONS.map((s) => h('button.btn.small', { class: s === section ? 'primary' : '',
-      onclick: () => { section = s; filter.value = ''; drawNav(); load(); } }, s)));
-    pruneBtn.classList.toggle('hidden', section === 'Compose');
+      onclick: () => { section = s; filter.value = ''; drawNav(); load(); } },
+      s, s === 'Image updates' && pending ? h('span.badge.update', { style: { marginLeft: '2px' } }, String(pending)) : null)));
+    pruneBtn.classList.toggle('hidden', section === 'Compose' || section === 'Image updates');
+    filter.classList.toggle('hidden', section === 'Image updates');
+    refreshBtn.classList.toggle('hidden', section === 'Image updates');
   }
 
   async function load() {
     clearTimeout(timer);
+    sub?.();
+    sub = null;
+    if (section === 'Image updates') {
+      sub = renderImageUpdates(body, { api, refreshNodes });
+      return;
+    }
     const path = { Containers: '/docker/containers', Compose: '/docker/compose', Images: '/docker/images',
       Volumes: '/docker/volumes', Networks: '/docker/networks' }[section];
+    const sec = section;
     try {
-      data[section] = await api.get(path);
-      if (section === 'Images' && !data.Containers) data.Containers = await api.get('/docker/containers');
+      const d = await api.get(path);
+      if (sec === 'Images' && !data.Containers) data.Containers = await api.get('/docker/containers');
+      if (sec !== section || stopped) return; // switched sections while loading
+      data[sec] = d;
       draw();
     } catch (e) {
+      if (sec !== section || stopped) return;
       clear(body, h('div.notice.warn', e.message));
     }
     if (!stopped && (section === 'Containers' || section === 'Compose')) timer = setTimeout(load, 5000);
@@ -198,5 +213,11 @@ export function renderDocker(el, { api }) {
 
   drawNav();
   load();
-  return () => { stopped = true; clearTimeout(timer); };
+  // The node list refreshes every 15 s; keep the pending-updates count current.
+  const onNodes = (e) => {
+    const n = e.detail.find((x) => x.id === node?.id);
+    if (n && n.summary?.containerUpdates !== pending) { pending = n.summary?.containerUpdates; drawNav(); }
+  };
+  document.addEventListener('nodes', onNodes);
+  return () => { stopped = true; clearTimeout(timer); sub?.(); document.removeEventListener('nodes', onNodes); };
 }
