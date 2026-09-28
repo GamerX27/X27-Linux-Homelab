@@ -23,6 +23,10 @@ const (
 	ModeNode = "node"
 
 	DefaultPort = 9090
+
+	// Compose presets offered when creating a stack: a Forgejo/Gitea repository with one
+	// folder per service under Composes/.
+	DefaultPresetsRepo = "https://codeberg.org/X27/Docker-X27-Composes"
 )
 
 // Path and StateDir can be moved for development with DASHBOARD_CONF / DASHBOARD_STATE.
@@ -43,10 +47,11 @@ type Config struct {
 	Port      int
 	PairHash  string // node: hash of the pending pairing password, empty when none
 	TokenHash string // node: hash of the API token the paired main node uses
+	Presets   string // main: repository the compose presets come from
 }
 
 func Default() Config {
-	return Config{Mode: ModeMain, Port: DefaultPort}
+	return Config{Mode: ModeMain, Port: DefaultPort, Presets: DefaultPresetsRepo}
 }
 
 // Load returns the defaults when the file doesn't exist yet.
@@ -83,6 +88,10 @@ func Load() (Config, error) {
 			c.PairHash = v
 		case "TOKEN_HASH":
 			c.TokenHash = v
+		case "PRESETS_REPO":
+			if v != "" {
+				c.Presets = v
+			}
 		}
 	}
 	return c, sc.Err()
@@ -93,7 +102,7 @@ func ValidPort(p int) bool { return p >= 1 && p <= 65535 }
 // Save writes atomically with mode 600.
 func (c Config) Save() error {
 	body := fmt.Sprintf("# Written by dashboard. Change it with: dashboard enable ... / dashboard port ... / dashboard pair\n"+
-		"MODE=%s\nPORT=%d\nPAIR_HASH=%s\nTOKEN_HASH=%s\n", c.Mode, c.Port, c.PairHash, c.TokenHash)
+		"MODE=%s\nPORT=%d\nPAIR_HASH=%s\nTOKEN_HASH=%s\nPRESETS_REPO=%s\n", c.Mode, c.Port, c.PairHash, c.TokenHash, c.Presets)
 	tmp, err := os.CreateTemp(filepath.Dir(Path), ".dashboard.conf.")
 	if err != nil {
 		return err

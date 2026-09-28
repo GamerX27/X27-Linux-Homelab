@@ -8,7 +8,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os/user"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -191,6 +193,11 @@ func (l *Local) Handler() http.Handler {
 			writeErr(w, http.StatusBadRequest, errors.New("bad container id"))
 			return
 		}
+		if a == "recreate" {
+			out, err := l.docker.Recreate(id)
+			result(w, r, "pull and recreate container "+id, out, err)
+			return
+		}
 		result(w, r, "container "+a+" "+id, "", l.docker.ContainerAction(id, a))
 	})
 	mux.HandleFunc("GET /docker/containers/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
@@ -239,14 +246,77 @@ func (l *Local) Handler() http.Handler {
 		n, err := l.docker.Prune(r.PathValue("what"))
 		result(w, r, "prune "+r.PathValue("what"), "Freed "+humanBytes(n)+".", err)
 	})
-	mux.HandleFunc("GET /docker/compose", func(w http.ResponseWriter, r *http.Request) {
+	// Stacks: compose projects in the acting user's ~/docker, plus any others Docker runs.
+	mux.HandleFunc("GET /docker/stacks", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 		cs, err := l.docker.Containers()
-		ok(w, docker.Projects(cs), err)
+		ok(w, map[string]any{"root": o.Root(), "stacks": docker.ListStacks(o, cs)}, err)
 	})
-	mux.HandleFunc("POST /docker/compose/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /docker/stacks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		f, err := docker.ReadStack(o, r.PathValue("name"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, f)
+	})
+	saveStack := func(w http.ResponseWriter, r *http.Request, name string, create bool) {
+		var body struct {
+			Name, Compose, Env string
+			Start              bool // start (create) or pull & recreate (edit) after saving
+		}
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if create {
+			name = body.Name
+		}
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		out, err := docker.SaveStack(o, name, body.Compose, body.Env, create)
+		if err == nil && body.Start {
+			action := "recreate"
+			if create {
+				action = "start"
+			}
+			var out2 string
+			out2, err = l.docker.StackAction(o, name, action)
+			out = strings.TrimSpace(out + "\n" + out2)
+		}
+		verb := "save"
+		if create {
+			verb = "create"
+		}
+		result(w, r, verb+" stack "+name, out, err)
+	}
+	mux.HandleFunc("POST /docker/stacks", func(w http.ResponseWriter, r *http.Request) {
+		saveStack(w, r, "", true)
+	})
+	mux.HandleFunc("POST /docker/stacks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		saveStack(w, r, r.PathValue("name"), false)
+	})
+	mux.HandleFunc("POST /docker/stacks/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 		name, a := r.PathValue("name"), r.PathValue("action")
-		out, err := l.docker.ComposeAction(name, a)
-		result(w, r, "compose "+a+" "+name, out, err)
+		out, err := l.docker.StackAction(o, name, a)
+		result(w, r, "stack "+a+" "+name, out, err)
 	})
 	mux.HandleFunc("GET /docker/updates", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, l.updater.Status())
@@ -355,6 +425,18 @@ func (l *Local) Handler() http.Handler {
 		result(w, r, "ntp "+strconv.FormatBool(body.Enabled), "", system.SetNTP(body.Enabled))
 	})
 	return mux
+}
+
+// owner is whose ~/docker holds the stacks: the acting user, or in --dev whoever runs
+// the server (the dev login accepts any name).
+func (l *Local) owner(r *http.Request) (docker.Owner, error) {
+	name := userOf(r)
+	if l.Dev {
+		if u, err := user.Current(); err == nil {
+			name = u.Username
+		}
+	}
+	return docker.LookupOwner(name)
 }
 
 func humanBytes(n uint64) string {

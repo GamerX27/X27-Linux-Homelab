@@ -314,7 +314,7 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatalf("certificate: %v", err)
 	}
-	opts := api.Options{Version: version, Mode: cfg.Mode, Dev: *dev, Cert: c, Web: web.FS, Auth: auth.PAM}
+	opts := api.Options{Version: version, Mode: cfg.Mode, Dev: *dev, Cert: c, Web: web.FS, Auth: auth.PAM, Presets: cfg.Presets}
 	if *dev {
 		opts.Auth = func(u, p string) error {
 			if u == "" || p == "" {

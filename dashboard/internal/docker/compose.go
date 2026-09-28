@@ -2,6 +2,7 @@ package docker
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"sort"
@@ -76,40 +77,6 @@ func composeArgs(p Project, action ...string) []string {
 		args = append(args, "-f", f)
 	}
 	return append(args, action...)
-}
-
-// ComposeAction runs up/down/pull/restart for a project found on this host.
-func (c *Client) ComposeAction(name, action string) (string, error) {
-	cs, err := c.Containers()
-	if err != nil {
-		return "", err
-	}
-	i := slices.IndexFunc(Projects(cs), func(p Project) bool { return p.Name == name })
-	if i < 0 {
-		return "", errors.New("no such compose project")
-	}
-	p := Projects(cs)[i]
-	var verb []string
-	switch action {
-	case "up":
-		verb = []string{"up", "-d"}
-	case "down":
-		verb = []string{"down"}
-	case "pull":
-		verb = []string{"pull"}
-	case "restart":
-		verb = []string{"restart"}
-	default:
-		return "", errors.New("unknown compose action")
-	}
-	// down and restart work from the project name alone; up and pull need the files.
-	if !p.FilesExist && (action == "up" || action == "pull") {
-		return "", errors.New("the compose files for this project aren't on this host (Portainer or another tool manages it)")
-	}
-	if !p.FilesExist {
-		p.Files, p.Dir = nil, ""
-	}
-	return run.Cmd(15*time.Minute, "docker", composeArgs(p, verb...)...)
 }
 
 // ImageUpdate is one image in use by containers on this host.
@@ -224,8 +191,9 @@ func (u *Updater) Check() {
 	u.mu.Unlock()
 }
 
-// Apply pulls the image and recreates the compose projects that use it. Containers
-// started with plain `docker run` keep the old image until they're recreated by hand.
+// Apply pulls the image and recreates what uses it: compose projects with `up -d`, and
+// containers started with plain `docker run` through Recreate (same settings and volumes).
+// Projects whose compose files aren't on this host (Portainer) are left to be redeployed there.
 func (u *Updater) Apply(image string) (string, error) {
 	var log []string
 	out, err := run.Cmd(15*time.Minute, "docker", "pull", image)
@@ -237,7 +205,7 @@ func (u *Updater) Apply(image string) (string, error) {
 	if err != nil {
 		return strings.Join(log, "\n"), err
 	}
-	standalone := 0
+	pending := false
 	for _, p := range Projects(cs) {
 		uses := false
 		for _, c := range cs {
@@ -249,6 +217,7 @@ func (u *Updater) Apply(image string) (string, error) {
 			continue
 		}
 		if !p.FilesExist {
+			pending = true
 			log = append(log, "Project "+p.Name+": compose files not on this host, redeploy it where it's managed.")
 			continue
 		}
@@ -260,18 +229,19 @@ func (u *Updater) Apply(image string) (string, error) {
 	}
 	for _, c := range cs {
 		if c.Image == image && c.Labels[labelProject] == "" {
-			standalone++
+			out, err := u.c.Recreate(c.ID)
+			log = append(log, out)
+			if err != nil {
+				return strings.Join(log, "\n"), fmt.Errorf("%s: %w", c.Name(), err)
+			}
 		}
-	}
-	if standalone > 0 {
-		log = append(log, "Image pulled. Containers started with docker run keep the old image until you recreate them.")
 	}
 	u.mu.Lock()
 	for i := range u.check.Images {
-		if u.check.Images[i].Image == image && standalone == 0 {
+		if u.check.Images[i].Image == image && !pending {
 			u.check.Images[i].State = "uptodate"
 		}
 	}
 	u.mu.Unlock()
-	return strings.Join(log, "\n"), nil
+	return strings.TrimSpace(strings.Join(log, "\n")), nil
 }

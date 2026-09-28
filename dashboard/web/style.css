@@ -282,3 +282,34 @@ pre.output {
   .meter-row .num { text-align: left; }
   .term-wrap { height: calc(100vh - 200px); }
 }
+
+/* Profile & avatar */
+.profile-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px; margin: 0 -6px;
+  border: 0; background: none; border-radius: 8px; cursor: pointer; text-align: left; font-size: 13px;
+}
+.profile-btn:hover { background: var(--surface-2); }
+.profile-btn:focus-visible { outline: 2px solid var(--accent); }
+.avatar {
+  flex: none; border-radius: 50%; object-fit: cover; background: var(--accent-soft); color: var(--text);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 650;
+}
+
+/* Compose editor */
+textarea.code {
+  width: 100%; resize: vertical; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: #0f0f0e; color: #e8e7e2; font: 12.5px/1.55 var(--mono); tab-size: 2; white-space: pre;
+}
+textarea.code:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+details > summary { cursor: pointer; font-size: 13px; margin-bottom: 6px; }
+pre.error-output { background: color-mix(in srgb, var(--critical) 14%, var(--surface)); color: var(--text); max-height: 220px; }
+
+/* Published ports */
+.ports { display: flex; flex-wrap: wrap; gap: 4px; }
+.port {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border);
+  font: 12px/1.6 var(--mono); color: var(--accent); text-decoration: none; white-space: nowrap;
+}
+a.port:hover { background: var(--accent-soft); color: var(--text); border-color: var(--accent); }
+a.port::after { content: " ↗"; font-size: 10px; }
+.port.udp { color: var(--text-2); }

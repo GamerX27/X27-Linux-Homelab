@@ -42,7 +42,7 @@ func TestSaveLoad(t *testing.T) {
 	if err != nil || c != Default() {
 		t.Fatalf("missing file: %+v %v", c, err)
 	}
-	c = Config{Mode: ModeNode, Port: 9443, PairHash: "a:b", TokenHash: "c:d"}
+	c = Config{Mode: ModeNode, Port: 9443, PairHash: "a:b", TokenHash: "c:d", Presets: "https://example.org/a/b"}
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
 	}

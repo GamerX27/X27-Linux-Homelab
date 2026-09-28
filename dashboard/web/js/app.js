@@ -1,4 +1,4 @@
-import { h, clear, icon, toast } from './ui.js';
+import { h, clear, icon, toast, modal } from './ui.js';
 import * as api from './api.js';
 import { renderFleet, addNodeDialog } from './views/fleet.js';
 import { renderOverview } from './views/overview.js';
@@ -90,7 +90,9 @@ function showApp() {
       nav,
       h('button.side-link', { onclick: () => addNodeDialog(refreshNodes) }, icon('plus', 16), h('span.name', 'Add node')),
       h('div.side-foot',
-        h('div.row', h('span.muted', 'Signed in as'), h('strong', state.me.user)),
+        h('button.profile-btn', { onclick: profileDialog, title: 'Profile picture (Gravatar)' },
+          state.avatarEl = avatar(state.me.user, state.me.gravatar),
+          h('span', h('span.muted', { style: { display: 'block', fontSize: '11.5px' } }, 'Signed in as'), h('strong', state.me.user))),
         h('div.row', h('span.muted', 'Theme'), themeSel),
         h('div.row', h('span.faint', `dashboard ${state.me.version}`),
           h('button.btn.small.ghost', { onclick: logout, title: 'Log out' }, icon('logout', 14), 'Log out')))),
@@ -102,6 +104,44 @@ function showApp() {
   clearInterval(state.nodesTimer);
   state.nodesTimer = setInterval(refreshNodes, 15000);
   route();
+}
+
+// Gravatar picture, or the user's initials when there's none (d=404 makes Gravatar fail
+// instead of serving its default image, so the fallback shows).
+function avatar(user, hash, size = 32) {
+  const initials = h('span.avatar', { 'aria-hidden': 'true', style: { width: size + 'px', height: size + 'px' } },
+    (user || '?').slice(0, 2).toUpperCase());
+  if (!hash) return initials;
+  const img = h('img.avatar', { alt: '', width: size, height: size, referrerpolicy: 'no-referrer',
+    src: `https://www.gravatar.com/avatar/${hash}?s=${size * 2}&d=404` });
+  img.addEventListener('error', () => img.replaceWith(initials));
+  return img;
+}
+
+async function profileDialog() {
+  const email = h('input', { type: 'email', placeholder: 'you@example.com', autocomplete: 'email' });
+  const err = h('div.error-text');
+  const body = h('div.stack',
+    h('div.row', avatar(state.me.user, state.me.gravatar, 56), h('div', h('strong', state.me.user),
+      h('div.muted', state.me.gravatar ? 'Picture from Gravatar' : 'No Gravatar set'))),
+    h('label.field', 'Gravatar email', email),
+    h('p.faint', { style: { margin: 0, fontSize: '12.5px' } },
+      'Only a hash of the address is stored. Your browser loads the picture from gravatar.com. Leave empty to remove it.'),
+    err);
+  await modal('Profile', body, [
+    { label: 'Cancel', value: false },
+    { label: 'Save', class: 'primary', onclick: async () => {
+      try {
+        const r = await api.post('/api/profile', { email: email.value });
+        state.me.gravatar = r.gravatar;
+        const next = avatar(state.me.user, r.gravatar);
+        state.avatarEl.replaceWith(next);
+        state.avatarEl = next;
+        toast(r.gravatar ? 'Profile picture set.' : 'Profile picture removed.');
+        return true;
+      } catch (e) { err.textContent = e.message; return false; }
+    } },
+  ]);
 }
 
 async function logout() {

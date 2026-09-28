@@ -16,6 +16,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/nodes"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/presets"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/tlsutil"
 )
 
@@ -26,12 +27,13 @@ type Options struct {
 	Cert    tls.Certificate
 	Web     fs.FS
 	Auth    auth.Authenticator
+	Presets string // repository URL for compose presets (main node)
 }
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://gravatar.com https://www.gravatar.com; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		if r.TLS != nil {
@@ -51,6 +53,11 @@ func NewMain(o Options) (http.Handler, error) {
 	local := NewLocal(o.Version, o.Dev, &websocket.Upgrader{})
 	localAPI := local.Handler()
 	sessions := auth.NewManager(o.Auth, !o.Dev)
+	profiles := auth.NewProfiles(config.StateDir)
+	if o.Presets == "" {
+		o.Presets = config.DefaultPresetsRepo
+	}
+	presetSrc, presetErr := presets.New(o.Presets)
 	fingerprint := tlsutil.Fingerprint(o.Cert)
 
 	mux := http.NewServeMux()
@@ -89,7 +96,8 @@ func NewMain(o Options) (http.Handler, error) {
 		}
 		host, _ := os.Hostname()
 		writeJSON(w, http.StatusOK, map[string]string{"user": s.User, "csrf": s.CSRF,
-			"version": o.Version, "hostname": host, "fingerprint": fingerprint})
+			"version": o.Version, "hostname": host, "fingerprint": fingerprint,
+			"gravatar": profiles.Gravatar(s.User)})
 	})
 
 	api := http.NewServeMux()
@@ -154,6 +162,43 @@ func NewMain(o Options) (http.Handler, error) {
 			go store.Unpair(n)
 		}
 		result(w, r, "remove node "+n.Name, "", err)
+	})
+	api.HandleFunc("POST /api/profile", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Email string }
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		hash, err := profiles.SetEmail(userOf(r), body.Email)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"gravatar": hash})
+	})
+	api.HandleFunc("GET /api/presets", func(w http.ResponseWriter, r *http.Request) {
+		if presetErr != nil {
+			writeErr(w, http.StatusBadGateway, presetErr)
+			return
+		}
+		list, err := presetSrc.List()
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"source": presetSrc.URL(), "presets": list})
+	})
+	api.HandleFunc("GET /api/presets/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if presetErr != nil {
+			writeErr(w, http.StatusBadGateway, presetErr)
+			return
+		}
+		f, err := presetSrc.Get(r.PathValue("name"))
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, f)
 	})
 	api.HandleFunc("/api/n/{id}/", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

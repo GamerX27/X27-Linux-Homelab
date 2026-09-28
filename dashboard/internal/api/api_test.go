@@ -121,6 +121,16 @@ func TestPairAndProxy(t *testing.T) {
 		t.Fatalf("node without token: %v %v", resp.StatusCode, err)
 	}
 
+	// Stack names can't leave ~/docker.
+	for _, bad := range []string{"../etc", "a/b", "", "UPPER"} {
+		if code, r := call("POST", "/api/n/local/docker/stacks", csrf, map[string]string{"name": bad, "compose": "services: {}"}); code != 400 {
+			t.Fatalf("stack name %q: %d %v", bad, code, r)
+		}
+	}
+	if code, r := call("POST", "/api/profile", csrf, map[string]string{"email": "Root@Example.com"}); code != 200 || r["gravatar"] == "" {
+		t.Fatalf("profile: %d %v", code, r)
+	}
+
 	// Removing the node unpairs it; the proxy then 404s.
 	if code, _ := call("DELETE", "/api/nodes/"+id, csrf, nil); code != 200 {
 		t.Fatalf("remove: %d", code)

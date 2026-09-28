@@ -1,7 +1,38 @@
 import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct } from '../ui.js';
 import { renderImageUpdates } from './imageupdates.js';
+import { openStackEditor } from './stackeditor.js';
 
-const SECTIONS = ['Containers', 'Compose', 'Images', 'Image updates', 'Volumes', 'Networks'];
+const SECTIONS = ['Containers', 'Stacks', 'Images', 'Image updates', 'Volumes', 'Networks'];
+
+// Host to open published ports on: the page's own host for the main node, the node's
+// address for paired nodes.
+function portHost(node) {
+  if (!node || node.local || node.id === 'local' || !node.address) return location.hostname;
+  const a = node.address;
+  const m = a.match(/^\[([^\]]+)\]/);
+  return m ? `[${m[1]}]` : a.replace(/:\d+$/, '');
+}
+
+// Published ports as links (tcp) or plain text (udp); one entry per host port.
+function portLinks(ports, host) {
+  const seen = new Set();
+  const out = [];
+  for (const p of (ports || []).filter((x) => x.PublicPort && x.IP !== '127.0.0.1' && x.IP !== '::1')
+    .sort((a, b) => a.PublicPort - b.PublicPort)) {
+    const key = `${p.PublicPort}/${p.Type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const label = p.PublicPort === p.PrivatePort ? `${p.PublicPort}` : `${p.PublicPort}→${p.PrivatePort}`;
+    if (p.Type === 'tcp') {
+      const scheme = [443, 8443, 9443].includes(p.PrivatePort) ? 'https' : 'http';
+      out.push(h('a.port', { href: `${scheme}://${host}:${p.PublicPort}`, target: '_blank', rel: 'noopener noreferrer',
+        title: `Open ${scheme}://${host}:${p.PublicPort}` }, label));
+    } else {
+      out.push(h('span.port.udp', { title: 'UDP' }, `${label}/udp`));
+    }
+  }
+  return out.length ? h('div.ports', out) : h('span.faint', '—');
+}
 
 function stateStatus(s) {
   return s === 'running' ? 'good' : s === 'restarting' || s === 'paused' ? 'warn' : s === 'dead' ? 'crit' : 'idle';
@@ -36,15 +67,19 @@ export function renderDocker(el, { api, node, refreshNodes }) {
   } }, 'Prune unused');
 
   const refreshBtn = h('button.btn', { onclick: () => load(), title: 'Refresh' }, icon('refresh', 15));
+  const newStackBtn = h('button.btn.primary', { onclick: () =>
+    openStackEditor({ api, root: data.Stacks?.root || '~/docker', onDone: () => load() }) }, icon('plus', 15), 'New stack');
+  const host = portHost(node);
   clear(el, h('div.card',
-    h('div.card-head', nav, h('div.row', filter, refreshBtn, pruneBtn)),
+    h('div.card-head', nav, h('div.row', filter, refreshBtn, pruneBtn, newStackBtn)),
     body));
 
   function drawNav() {
     clear(nav, SECTIONS.map((s) => h('button.btn.small', { class: s === section ? 'primary' : '',
       onclick: () => { section = s; filter.value = ''; drawNav(); load(); } },
       s, s === 'Image updates' && pending ? h('span.badge.update', { style: { marginLeft: '2px' } }, String(pending)) : null)));
-    pruneBtn.classList.toggle('hidden', section === 'Compose' || section === 'Image updates');
+    pruneBtn.classList.toggle('hidden', section === 'Stacks' || section === 'Image updates');
+    newStackBtn.classList.toggle('hidden', section !== 'Stacks');
     filter.classList.toggle('hidden', section === 'Image updates');
     refreshBtn.classList.toggle('hidden', section === 'Image updates');
   }
@@ -57,7 +92,7 @@ export function renderDocker(el, { api, node, refreshNodes }) {
       sub = renderImageUpdates(body, { api, refreshNodes });
       return;
     }
-    const path = { Containers: '/docker/containers', Compose: '/docker/compose', Images: '/docker/images',
+    const path = { Containers: '/docker/containers', Stacks: '/docker/stacks', Images: '/docker/images',
       Volumes: '/docker/volumes', Networks: '/docker/networks' }[section];
     const sec = section;
     try {
@@ -70,7 +105,7 @@ export function renderDocker(el, { api, node, refreshNodes }) {
       if (sec !== section || stopped) return;
       clear(body, h('div.notice.warn', e.message));
     }
-    if (!stopped && (section === 'Containers' || section === 'Compose')) timer = setTimeout(load, 5000);
+    if (!stopped && (section === 'Containers' || section === 'Stacks')) timer = setTimeout(load, 5000);
   }
 
   const match = (...fields) => {
@@ -89,9 +124,14 @@ export function renderDocker(el, { api, node, refreshNodes }) {
         .sort((a, b) => (a.Names[0] || '').localeCompare(b.Names[0] || ''))
         .map(containerRow);
       clear(body, table(['Name', 'Image', 'State', 'Ports', ''], rows, 'No containers.'));
-    } else if (section === 'Compose') {
-      const rows = d.filter((p) => match(p.name, p.dir)).map(projectRow);
-      clear(body, table(['Project', 'Containers', 'Status', ''], rows, 'No compose projects running.'));
+    } else if (section === 'Stacks') {
+      const st = data.Stacks || {};
+      const rows = (st.stacks || []).filter((p) => match(p.name, p.dir, p.containers?.join(' '))).map(stackRow);
+      clear(body,
+        h('div.faint', { style: { marginBottom: '8px', fontSize: '12.5px' } }, 'Stacks folder: ', h('span.mono', st.root || '~/docker'),
+          ' · one folder per stack with its compose.yml'),
+        rows.length ? table(['Stack', 'Containers', 'Ports', 'Status', ''], rows, '')
+          : h('div.empty', 'No stacks yet. ', h('button.btn.small.primary', { onclick: () => newStackBtn.click() }, 'Create one')));
     } else if (section === 'Images') {
       const used = new Set((data.Containers || []).map((c) => c.ImageID));
       const rows = d.filter((i) => match(i.RepoTags?.join(' '), i.Id))
@@ -133,44 +173,66 @@ export function renderDocker(el, { api, node, refreshNodes }) {
       } }, label);
       return b;
     };
-    const ports = [...new Set((c.Ports || []).filter((p) => p.PublicPort).map((p) => `${p.PublicPort}→${p.PrivatePort}/${p.Type}`))];
+    const project = c.Labels?.['com.docker.compose.project'];
+    const recreate = h('button.btn.small', { title: 'Pull the newest image and recreate this container, keeping its data', onclick: async () => {
+      const how = project
+        ? `Pulls the newest ${c.Image} and recreates ${name} through its compose stack (${project}).`
+        : `Pulls the newest ${c.Image} and recreates ${name} with the same settings: ports, environment, networks, restart policy.`;
+      if (!await confirmAction('Pull & recreate', `${how} Volumes and bind mounts are kept, so its data stays.`, 'Pull & recreate', false)) return;
+      const r = await busy(recreate, () => api.post(`/docker/containers/${c.Id}/recreate`), '');
+      if (r) {
+        toast(`${name} recreated.`);
+        if (r.output) modal(`Pull & recreate: ${name}`, h('pre.output', r.output), [{ label: 'Close', value: true, class: 'primary' }]);
+      }
+      load();
+    } }, 'Pull & recreate');
     return h('tr',
       h('td', h('strong', name), c.Labels?.['com.docker.compose.project'] ? h('div.sub', 'compose: ' + c.Labels['com.docker.compose.project']) : null),
       h('td.mono', { style: { maxWidth: '280px', overflowWrap: 'anywhere' } }, c.Image),
       h('td', h('span.status', { class: stateStatus(c.State) }, c.State), h('div.sub', c.Status)),
-      h('td.mono', ports.join(', ') || h('span.faint', '—')),
+      h('td', portLinks(c.Ports, host)),
       h('td.actions', h('div.btn-group',
         h('button.btn.small', { onclick: () => showLogs(name, c.Id) }, 'Logs'),
         running ? h('button.btn.small', { onclick: () => showStats(name, c.Id) }, 'Stats') : null,
         running ? act('Restart', 'restart') : null,
         running ? act('Stop', 'stop') : act('Start', 'start'),
+        recreate,
         act('Remove', 'remove', 'danger'))));
   }
 
-  function projectRow(p) {
-    const act = (label, action, confirmMsg, cls = '') => {
-      const b = h('button.btn.small', { class: cls, onclick: async () => {
-        if (confirmMsg && !await confirmAction(`${label} ${p.name}`, confirmMsg, label)) return;
-        const r = await busy(b, () => api.post(`/docker/compose/${encodeURIComponent(p.name)}/${action}`), '');
+  function stackRow(p) {
+    const act = (label, action, opts = {}) => {
+      const b = h('button.btn.small', { class: opts.cls || '', title: opts.title || '', onclick: async () => {
+        if (opts.confirm && !await confirmAction(`${label}: ${p.name}`, opts.confirm, label, !!opts.danger)) return;
+        const r = await busy(b, () => api.post(`/docker/stacks/${encodeURIComponent(p.name)}/${action}`), '');
         if (r) {
-          toast(`${p.name}: ${action} done.`);
-          if (r.output) modal(`docker compose ${action}: ${p.name}`, h('pre.output', r.output), [{ label: 'Close', value: true, class: 'primary' }]);
+          toast(`${p.name}: ${label.toLowerCase()} done.`);
+          if (r.output && opts.showOutput) modal(`${label}: ${p.name}`, h('pre.output', r.output), [{ label: 'Close', value: true, class: 'primary' }]);
         }
         load();
       } }, label);
       return b;
     };
-    const cls = p.running === p.total ? 'good' : p.running ? 'warn' : 'idle';
+    const running = p.running > 0;
+    const cls = !p.total ? 'idle' : p.running === p.total ? 'good' : p.running ? 'warn' : 'idle';
+    const status = !p.total ? 'Not started' : `${p.running}/${p.total} running`;
     return h('tr',
-      h('td', h('strong', p.name), h('div.sub.mono', p.files?.[0] || p.dir || ''),
-        !p.filesExist ? h('div.sub', 'compose files not on this host (managed elsewhere)') : null),
-      h('td', p.containers.join(', ')),
-      h('td', h('span.status', { class: cls }, `${p.running}/${p.total} running`)),
+      h('td', h('strong', p.name), h('div.sub.mono', p.file || p.dir || ''),
+        !p.filesExist ? h('div.sub', 'compose files not on this host (managed elsewhere)')
+          : !p.inRoot ? h('div.sub', 'outside the stacks folder') : null),
+      h('td', p.containers?.length ? p.containers.join(', ') : h('span.faint', '—')),
+      h('td', portLinks(p.ports, host)),
+      h('td', h('span.status', { class: cls }, status)),
       h('td.actions', h('div.btn-group',
-        p.filesExist ? act('Pull', 'pull') : null,
-        p.filesExist ? act('Up', 'up') : null,
-        act('Restart', 'restart'),
-        act('Down', 'down', `Stop and remove ${p.name}'s containers? Named volumes are kept.`, 'danger'))));
+        running ? act('Stop', 'stop') : p.filesExist ? act('Start', 'start') : null,
+        running ? act('Restart', 'restart') : null,
+        p.filesExist ? act('Pull & recreate', 'recreate', { cls: 'primary', showOutput: true,
+          title: 'Pull newer images and recreate the containers; volumes and bind mounts are kept',
+          confirm: `Pull the newest images for ${p.name} and recreate its containers? Data in volumes and bind mounts is kept.` }) : null,
+        p.inRoot ? h('button.btn.small', { onclick: () =>
+          openStackEditor({ api, root: data.Stacks?.root, name: p.name, onDone: () => load() }) }, 'Edit') : null,
+        p.total ? act('Remove', 'remove', { cls: 'danger', danger: true,
+          confirm: `Stop and remove ${p.name}'s containers? The stack folder, its files and named volumes are kept, so Start brings it back.` }) : null)));
   }
 
   async function showLogs(name, id) {

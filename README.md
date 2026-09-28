@@ -158,13 +158,37 @@ For each node it shows:
 - **Overview:** CPU, memory, disks, network, temperatures, uptime, OS and image version
 - **Updates:** the OS image: the running version, whether a newer one is out (checked every
   6 hours), and buttons to update (same as `autoupdate`: install and reboot), reboot or roll back
-- **Docker:** containers (start, stop, restart, remove, logs, stats), compose projects (up,
-  down, pull, restart), images, volumes, networks, and pruning. **Image updates** checks every
-  container image against its registry and updates it (pull, then `docker compose up -d`)
+- **Docker:** containers (start, stop, restart, **pull & recreate**, remove, logs, stats), stacks
+  (see below), images, volumes, networks, and pruning. Published ports are links that open the
+  service. **Image updates** checks every container image against its registry and updates it
 - **Terminal:** a shell in the browser, as the user you logged in with
 - **Features:** automatic updates (schedule, on/off), Gotify messages, and turning services
   (SSH, smartd, Docker, ...) on or off
 - **Settings:** hostname, time zone, network time, reboot and shut down
+
+### Stacks
+
+A stack is a compose project in your `~/docker/<name>/` folder (e.g. `/home/sindre/docker/jellyfin/compose.yml`),
+the same place `docker-compose-update` looks. The Stacks section lists those folders plus any other
+compose projects running on the node, with Start/Stop, Restart, **Pull & recreate**, Edit and Remove.
+
+- **New stack:** name it, write the `compose.yml` (and an optional `.env`), then Save or Save & start.
+  Start from a blank template or a **preset** from
+  [X27/Docker-X27-Composes](https://codeberg.org/X27/Docker-X27-Composes) (fetched by the main
+  node; its notes are shown). Set `PRESETS_REPO=https://host/owner/repo` in `/etc/dashboard.conf`
+  to use another Forgejo/Gitea repository with the same `Composes/<name>/compose.yml` layout.
+- Files are checked with `docker compose config` before anything is written, and are owned by
+  you. Editing keeps the previous version as `compose.yml.bak`.
+- **Pull & recreate** pulls newer images and recreates the containers; data in volumes and bind
+  mounts is kept. For a container started with plain `docker run` it makes a new container with
+  the same ports, environment, volumes (anonymous ones too), networks and restart policy, and puts
+  the old one back if anything fails. Image updates do the same.
+- **Remove** runs `docker compose down`: the folder, its files and named volumes stay.
+
+On a paired node, stacks live in the same user's `~/docker` on that node.
+
+Your picture in the sidebar comes from [Gravatar](https://gravatar.com): click your name and enter
+your email. Only a hash of it is stored, and your browser loads the picture from gravatar.com.
 
 The main page lists every node with its version and a badge when an OS or container update is
 available.
