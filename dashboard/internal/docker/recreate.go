@@ -195,7 +195,7 @@ func (c *Client) Recreate(id string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		svc, _ := labels["com.docker.compose.service"].(string)
+		svc, _ := labels[labelService].(string)
 		for _, p := range Projects(cs) {
 			if p.Name == proj && p.FilesExist && svc != "" {
 				out, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, "pull", svc)...)
@@ -203,7 +203,13 @@ func (c *Client) Recreate(id string) (string, error) {
 					return out, err
 				}
 				out2, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, "up", "-d", "--force-recreate", "--no-deps", svc)...)
-				return strings.TrimSpace(out + "\n" + out2), err
+				if err != nil {
+					return strings.TrimSpace(out + "\n" + out2), err
+				}
+				// Then the whole project, so services depending on this one (like ones sharing its
+				// network through network_mode: service:x) are recreated against the new container.
+				out3, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, "up", "-d")...)
+				return strings.TrimSpace(out + "\n" + out2 + "\n" + out3), err
 			}
 		}
 	}

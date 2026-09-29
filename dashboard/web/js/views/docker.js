@@ -47,6 +47,12 @@ function portLinks(ports, host) {
   return out.length ? h('div.ports', out) : null;
 }
 
+// Names of the containers whose image has an update, sorted.
+const outdated = (cs, upd) => cs.filter((c) => upd.get(c.Image) === 'update').map(cname).sort();
+
+// "a, b, c +2" for a badge; the full list goes in its title.
+const shortList = (names, max = 3) => names.length > max ? `${names.slice(0, max).join(', ')} +${names.length - max}` : names.join(', ');
+
 function showOutput(title, text) {
   if (text) modal(title, h('pre.output', text), [{ label: 'Close', value: true, class: 'primary' }]);
 }
@@ -122,14 +128,19 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
 
   // ---- Apps: stacks with their containers, and image updates --------------------------
 
-  function updateStrip() {
+  // pending: [{ label, names }] per stack / standalone group with containers to update.
+  function updateStrip(pending) {
     const u = data.updates || {};
     const avail = (u.images || []).filter((i) => i.state === 'update');
+    const summary = pending.map((p) => `${p.label} (${p.names.join(', ')})`).join('; ');
     const check = h('button.btn.small', { disabled: u.checking, onclick: () =>
       busy(check, () => api.post('/docker/updates/check'), '').then(() => setTimeout(load, 1000)) },
       icon('refresh', 14), u.checking ? 'Checking…' : 'Check now');
     const all = avail.length ? h('button.btn.small.primary', { onclick: async () => {
-      if (!await confirmAction('Update all', `Pull the newer images and recreate what uses them? ${avail.map((i) => i.image).join(', ')}. Data is kept.`, 'Update all', false)) return;
+      const list = h('ul', { style: { margin: '8px 0', paddingLeft: '20px' } },
+        pending.map((p) => h('li', h('strong', p.label), ': ', p.names.join(', '))));
+      const msg = h('span', 'Pull the newer images and recreate these containers, one pass per stack? Containers that depend on them may restart too. Data is kept.', list);
+      if (!await confirmAction('Update all', msg, 'Update all', false)) return;
       const r = await busy(all, () => api.post('/docker/updates/apply-all'), '');
       if (r) {
         toast(`${r.updated} updated${r.failed ? `, ${r.failed} failed` : ''}.`, r.failed > 0);
@@ -140,10 +151,12 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     } }, `Update all (${avail.length})`) : null;
     const status = u.checking ? h('span.status.idle', 'Checking registries…')
       : !u.checkedAt ? h('span.status.idle', 'Images not checked yet')
-      : avail.length ? h('span.status.warn', `${avail.length} image update${avail.length > 1 ? 's' : ''} available`)
+      : avail.length ? h('span.status.warn', { title: summary }, `${avail.length} image update${avail.length > 1 ? 's' : ''} available`)
       : h('span.status.good', 'All images up to date');
     const checked = u.checkedAt ? when(u.checkedAt).replace(/^.*\((.*)\)$/, '$1') : '';
-    return h('div.update-strip', status, checked ? h('span.faint', `· checked ${checked}`) : null,
+    return h('div.update-strip', status,
+      !u.checking && pending.length ? h('span.muted.update-list', { title: summary }, pending.map((p) => `${p.label}: ${shortList(p.names)}`).join(' · ')) : null,
+      checked ? h('span.faint', `· checked ${checked}`) : null,
       u.error ? h('span.faint', `· ${u.error}`) : null, h('span.spacer'), check, all);
   }
 
@@ -156,9 +169,11 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     const standalone = cs.filter((c) => !known.has(c.Labels?.[PROJECT] || ''));
     if (standalone.length) groups.push({ key: 'standalone', containers: standalone });
 
+    const pending = groups.map((g) => ({ label: g.stack?.name || 'standalone', names: outdated(g.containers, upd) }))
+      .filter((p) => p.names.length);
     const visible = groups.filter((g) => match(g.stack?.name, g.stack?.dir, ...g.containers.map(cname), ...g.containers.map((c) => c.Image)));
     clear(body,
-      updateStrip(),
+      updateStrip(pending),
       visible.length ? h('div.apps', visible.map((g) => groupEl(g, upd)))
         : h('div.card.empty', stacks.length || cs.length ? 'Nothing matches the filter.'
           : ['No apps yet. ', h('button.btn.small.primary', { onclick: () => newStackBtn.click() }, 'Create a stack')]),
@@ -167,7 +182,8 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
 
   function groupEl(g, upd) {
     const s = g.stack;
-    const updates = new Set(g.containers.filter((c) => upd.get(c.Image) === 'update').map((c) => c.Image)).size;
+    const names = outdated(g.containers, upd);
+    const updates = names.length;
     const running = g.containers.filter((c) => c.State === 'running').length;
     const total = s ? s.total : g.containers.length;
     const troubled = total > 0 && running < total;
@@ -187,13 +203,15 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         if (r) {
           toast(`${s.name}: ${label.toLowerCase()} done.`);
           if (opts.output) showOutput(`${label}: ${s.name}`, r.output);
-          if (action === 'recreate') refreshNodes?.();
+          if (action === 'recreate' || action === 'update') refreshNodes?.();
         }
         load();
       };
       let primary = null;
       if (updates && s.filesExist) {
-        primary = h('button.btn.small.primary', { onclick: (e) => act('Update', 'recreate', { output: true })(e.currentTarget) }, 'Update');
+        primary = h('button.btn.small.primary', { title: `Update ${names.join(', ')}`, onclick: (e) => act('Update', 'update', { output: true,
+          confirm: `Pull the newer images for ${names.join(', ')} and recreate ${updates > 1 ? 'them' : 'it'}? Containers that depend on ${updates > 1 ? 'them' : 'it'} (like ones sharing its network) may restart too. Data in volumes and bind mounts is kept.` })(e.currentTarget) },
+          `Update ${updates}`);
       } else if (running === 0 && s.filesExist) {
         primary = h('button.btn.small', { onclick: (e) => act('Start', 'start')(e.currentTarget) }, 'Start');
       }
@@ -201,8 +219,8 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         { label: 'Start', onclick: () => act('Start', 'start')(), hidden: running > 0 || !s.filesExist },
         { label: 'Stop', onclick: () => act('Stop', 'stop')(), hidden: running === 0 },
         { label: 'Restart', onclick: () => act('Restart', 'restart')(), hidden: running === 0 },
-        { label: 'Pull & recreate', hidden: !s.filesExist, onclick: () => act('Pull & recreate', 'recreate', { output: true,
-          confirm: `Pull the newest images for ${s.name} and recreate its containers? Data in volumes and bind mounts is kept.` })() },
+        { label: 'Pull & recreate all', hidden: !s.filesExist, onclick: () => act('Pull & recreate', 'recreate', { output: true,
+          confirm: `Pull the newest images for every service in ${s.name} and recreate all its containers? Data in volumes and bind mounts is kept.` })() },
         { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: () => load() }) },
         { label: 'Remove…', danger: true, hidden: !total && !s.inRoot, onclick: () => removeStack(s) },
       ], `Actions for ${s.name}`)];
@@ -216,7 +234,7 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       h('button.chev', { class: open ? 'open' : '', 'aria-expanded': String(open), 'aria-label': `${open ? 'Collapse' : 'Expand'} ${title}`, onclick: toggle }, '›'),
       h('div.app-title',
         h('div.row', { style: { gap: '8px' } }, h('strong', title),
-          updates ? h('span.badge.update', `${updates} update${updates > 1 ? 's' : ''}`) : null,
+          updates ? h('span.badge.update', { title: `Updates for ${names.join(', ')}` }, `${updates > 1 ? 'Updates' : 'Update'}: ${shortList(names)}`) : null,
           s && !s.filesExist ? h('span.badge', 'managed elsewhere') : s && !s.inRoot ? h('span.badge', 'outside ~/docker') : null),
         h('div.sub.mono', sub)),
       h('div.app-status', status),
@@ -224,11 +242,11 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       h('div.app-actions', actions));
     return h('div.app-group', { class: open ? 'open' : '' }, head,
       open ? h('div.app-body', g.containers.length
-        ? g.containers.sort((a, b) => cname(a).localeCompare(cname(b))).map((c) => containerEl(c, upd, !s))
+        ? g.containers.sort((a, b) => cname(a).localeCompare(cname(b))).map((c) => containerEl(c, upd))
         : h('div.faint', { style: { padding: '10px 14px' } }, 'No containers. Start the stack to create them.')) : null);
   }
 
-  function containerEl(c, upd, standalone) {
+  function containerEl(c, upd) {
     const name = cname(c);
     const running = c.State === 'running';
     const hasUpdate = upd.get(c.Image) === 'update';
@@ -242,14 +260,14 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       load();
     };
     const recreateMsg = c.Labels?.[PROJECT]
-      ? `Pulls the newest ${c.Image} and recreates ${name} through its stack. Volumes and bind mounts are kept.`
+      ? `Pulls the newest ${c.Image} and recreates ${name} through its stack; containers that depend on it are recreated too. Volumes and bind mounts are kept.`
       : `Pulls the newest ${c.Image} and recreates ${name} with the same ports, environment, volumes, networks and restart policy. Its data is kept.`;
-    const updateBtn = hasUpdate && standalone ? h('button.btn.small.primary', { onclick: async (e) => {
+    const updateBtn = hasUpdate ? h('button.btn.small.primary', { title: `Pull the newer ${c.Image} and recreate ${name}`, onclick: async (e) => {
       const r = await busy(e.currentTarget, () => api.post(`/docker/containers/${c.Id}/recreate`), '');
       if (r) { toast(`${name} updated.`); showOutput(`Update: ${name}`, r.output); refreshNodes?.(); }
       load();
     } }, 'Update') : null;
-    return h('div.ct-row',
+    return h('div.ct-row', { class: hasUpdate ? 'has-update' : '' },
       h('div.ct-name', h('span.dot', { class: stateClass(c.State), 'aria-hidden': 'true' }),
         h('button.link-btn', { onclick: () => showLogs(name, c.Id), title: 'Show logs' }, name)),
       h('div.ct-image.mono', { title: c.Image }, c.Image, hasUpdate ? h('span.badge.update', { style: { marginLeft: '6px' } }, 'update') : null),

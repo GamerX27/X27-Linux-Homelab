@@ -17,6 +17,7 @@ const (
 	labelProject = "com.docker.compose.project"
 	labelFiles   = "com.docker.compose.project.config_files"
 	labelDir     = "com.docker.compose.project.working_dir"
+	labelService = "com.docker.compose.service"
 )
 
 type Project struct {
@@ -101,7 +102,7 @@ type Updater struct {
 	c        *Client
 	mu       sync.Mutex
 	check    UpdateCheck
-	applying sync.Mutex // one ApplyAll at a time
+	applying sync.Mutex // one update run at a time
 }
 
 func NewUpdater(c *Client) *Updater { return &Updater{c: c} }
@@ -192,59 +193,66 @@ func (u *Updater) Check() {
 	u.mu.Unlock()
 }
 
-// Apply pulls the image and recreates what uses it: compose projects with `up -d`, and
-// containers started with plain `docker run` through Recreate (same settings and volumes).
-// Projects whose compose files aren't on this host (Portainer) are left to be redeployed there.
-func (u *Updater) Apply(image string) (string, error) {
-	var log []string
-	out, err := run.Cmd(15*time.Minute, "docker", "pull", image)
-	log = append(log, out)
-	if err != nil {
-		return strings.Join(log, "\n"), err
-	}
-	cs, err := u.c.Containers()
-	if err != nil {
-		return strings.Join(log, "\n"), err
-	}
-	pending := false
+// projectUpdate is one compose project an update touches: the services whose images
+// changed, and those images.
+type projectUpdate struct {
+	Project  Project
+	Services []string
+	Images   []string
+}
+
+// updatePlan groups the containers using a set of images by what updates them: compose
+// projects (all their changed services in one pass), standalone containers, and projects
+// whose compose files aren't on this host (Portainer), which have to be redeployed there.
+type updatePlan struct {
+	Projects   []projectUpdate
+	Standalone []Container
+	Elsewhere  []projectUpdate
+}
+
+func planUpdates(cs []Container, images map[string]bool) updatePlan {
+	var pl updatePlan
 	for _, p := range Projects(cs) {
-		uses := false
+		pu := projectUpdate{Project: p}
 		for _, c := range cs {
-			if c.Labels[labelProject] == p.Name && c.Image == image {
-				uses = true
+			if c.Labels[labelProject] != p.Name || !images[c.Image] {
+				continue
+			}
+			if svc := c.Labels[labelService]; svc != "" && !slices.Contains(pu.Services, svc) {
+				pu.Services = append(pu.Services, svc)
+			}
+			if !slices.Contains(pu.Images, c.Image) {
+				pu.Images = append(pu.Images, c.Image)
 			}
 		}
-		if !uses {
+		if len(pu.Images) == 0 {
 			continue
 		}
-		if !p.FilesExist {
-			pending = true
-			log = append(log, "Project "+p.Name+": compose files not on this host, redeploy it where it's managed.")
-			continue
-		}
-		out, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, "up", "-d")...)
-		log = append(log, out)
-		if err != nil {
-			return strings.Join(log, "\n"), err
+		sort.Strings(pu.Services)
+		if p.FilesExist {
+			pl.Projects = append(pl.Projects, pu)
+		} else {
+			pl.Elsewhere = append(pl.Elsewhere, pu)
 		}
 	}
 	for _, c := range cs {
-		if c.Image == image && c.Labels[labelProject] == "" {
-			out, err := u.c.Recreate(c.ID)
-			log = append(log, out)
-			if err != nil {
-				return strings.Join(log, "\n"), fmt.Errorf("%s: %w", c.Name(), err)
-			}
+		if c.Labels[labelProject] == "" && images[c.Image] {
+			pl.Standalone = append(pl.Standalone, c)
 		}
 	}
-	u.mu.Lock()
-	for i := range u.check.Images {
-		if u.check.Images[i].Image == image && !pending {
-			u.check.Images[i].State = "uptodate"
-		}
+	return pl
+}
+
+// updateProject pulls the given services (all of them when none are given) and runs one
+// `up -d`, so compose recreates exactly the containers whose image changed plus the ones
+// that depend on them (depends_on, network_mode: service:x), and leaves the rest alone.
+func updateProject(p Project, services []string) (string, error) {
+	out, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, append([]string{"pull"}, services...)...)...)
+	if err != nil {
+		return out, err
 	}
-	u.mu.Unlock()
-	return strings.TrimSpace(strings.Join(log, "\n")), nil
+	out2, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, "up", "-d")...)
+	return strings.TrimSpace(out + "\n" + out2), err
 }
 
 type ApplyAllResult struct {
@@ -253,10 +261,86 @@ type ApplyAllResult struct {
 	Output  string `json:"output"`
 }
 
+// applyPlan updates each project and standalone container in the plan, and marks the
+// images whose users all updated as up to date.
+func (u *Updater) applyPlan(pl updatePlan) ApplyAllResult {
+	var res ApplyAllResult
+	var log []string
+	stale := map[string]bool{} // images some user of which wasn't updated
+	for _, pu := range pl.Projects {
+		log = append(log, "== "+pu.Project.Name+": "+strings.Join(pu.Services, ", "))
+		out, err := updateProject(pu.Project, pu.Services)
+		log = append(log, out)
+		if err != nil {
+			res.Failed++
+			log = append(log, "failed: "+err.Error())
+			for _, img := range pu.Images {
+				stale[img] = true
+			}
+			continue
+		}
+		res.Updated++
+	}
+	for _, c := range pl.Standalone {
+		log = append(log, "== "+c.Name())
+		out, err := u.c.Recreate(c.ID)
+		log = append(log, out)
+		if err != nil {
+			res.Failed++
+			log = append(log, "failed: "+err.Error())
+			stale[c.Image] = true
+			continue
+		}
+		res.Updated++
+	}
+	for _, pu := range pl.Elsewhere {
+		log = append(log, "== "+pu.Project.Name+": compose files not on this host, redeploy it where it's managed.")
+		for _, img := range pu.Images {
+			stale[img] = true
+		}
+	}
+	done := map[string]bool{}
+	for _, pu := range pl.Projects {
+		for _, img := range pu.Images {
+			done[img] = true
+		}
+	}
+	for _, c := range pl.Standalone {
+		done[c.Image] = true
+	}
+	u.mu.Lock()
+	for i, img := range u.check.Images {
+		if done[img.Image] && !stale[img.Image] {
+			u.check.Images[i].State = "uptodate"
+		}
+	}
+	u.mu.Unlock()
+	res.Output = strings.TrimSpace(strings.Join(log, "\n"))
+	return res
+}
+
 var ErrUpdateRunning = errors.New("an update is already running on this node")
 
+// Apply updates what uses one image: each compose project through updateProject, and
+// containers started with plain `docker run` through Recreate (same settings and volumes).
+func (u *Updater) Apply(image string) (string, error) {
+	if !u.applying.TryLock() {
+		return "", ErrUpdateRunning
+	}
+	defer u.applying.Unlock()
+	cs, err := u.c.Containers()
+	if err != nil {
+		return "", err
+	}
+	res := u.applyPlan(planUpdates(cs, map[string]bool{image: true}))
+	if res.Failed > 0 {
+		return res.Output, fmt.Errorf("%d of %d failed", res.Failed, res.Failed+res.Updated)
+	}
+	return res.Output, nil
+}
+
 // ApplyAll checks every image against its registry again and updates the ones that
-// changed. Containers whose images are up to date aren't touched.
+// changed, one pass per stack. Containers whose images are up to date aren't touched.
 func (u *Updater) ApplyAll() (ApplyAllResult, error) {
 	if !u.applying.TryLock() {
 		return ApplyAllResult{}, ErrUpdateRunning
@@ -267,27 +351,52 @@ func (u *Updater) ApplyAll() (ApplyAllResult, error) {
 	}
 	u.Check()
 	st := u.Status()
-	var res ApplyAllResult
-	var log []string
 	if st.Error != "" {
-		return res, errors.New(st.Error)
+		return ApplyAllResult{}, errors.New(st.Error)
 	}
+	images := map[string]bool{}
 	for _, img := range st.Images {
-		if img.State != "update" {
-			continue
+		if img.State == "update" {
+			images[img.Image] = true
 		}
-		out, err := u.Apply(img.Image)
-		log = append(log, "== "+img.Image, out)
-		if err != nil {
-			res.Failed++
-			log = append(log, "failed: "+err.Error())
-			continue
-		}
-		res.Updated++
 	}
-	if res.Updated == 0 && res.Failed == 0 {
-		log = append(log, "All images are up to date.")
+	cs, err := u.c.Containers()
+	if err != nil {
+		return ApplyAllResult{}, err
 	}
-	res.Output = strings.TrimSpace(strings.Join(log, "\n"))
+	res := u.applyPlan(planUpdates(cs, images))
+	if res.Updated == 0 && res.Failed == 0 && res.Output == "" {
+		res.Output = "All images are up to date."
+	}
 	return res, nil
+}
+
+// UpdateStack updates the services of one stack whose images have updates (per the last
+// check), in one pass. With none known it pulls every service and runs `up -d`.
+func (u *Updater) UpdateStack(o Owner, name string) (string, error) {
+	if !u.applying.TryLock() {
+		return "", ErrUpdateRunning
+	}
+	defer u.applying.Unlock()
+	p, err := u.c.stackProject(o, name, true)
+	if err != nil {
+		return "", err
+	}
+	cs, err := u.c.Containers()
+	if err != nil {
+		return "", err
+	}
+	images := map[string]bool{}
+	for _, img := range u.Status().Images {
+		if img.State == "update" {
+			images[img.Image] = true
+		}
+	}
+	var services []string
+	for _, pu := range planUpdates(cs, images).Projects {
+		if pu.Project.Name == name {
+			services = pu.Services
+		}
+	}
+	return updateProject(p, services)
 }

@@ -341,8 +341,13 @@ func (l *Local) Handler() http.Handler {
 			result(w, r, what, out, err)
 			return
 		}
-		out, err := l.docker.StackAction(o, name, a)
-		if err == nil && a == "recreate" {
+		var out string
+		if a == "update" {
+			out, err = l.updater.UpdateStack(o, name)
+		} else {
+			out, err = l.docker.StackAction(o, name, a)
+		}
+		if err == nil && (a == "recreate" || a == "update") {
 			go l.updater.Check() // clear its "update available" badge
 		}
 		result(w, r, "stack "+a+" "+name, out, err)

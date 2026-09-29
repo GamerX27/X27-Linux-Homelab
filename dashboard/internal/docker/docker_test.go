@@ -1,6 +1,11 @@
 package docker
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+)
 
 func TestDemux(t *testing.T) {
 	b := append([]byte{1, 0, 0, 0, 0, 0, 0, 6}, "hello\n"...)
@@ -32,5 +37,36 @@ func TestValidID(t *testing.T) {
 		if ValidID(bad) {
 			t.Error(bad)
 		}
+	}
+}
+
+func TestPlanUpdates(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "compose.yml")
+	os.WriteFile(file, nil, 0o644)
+	ct := func(id, name, image, proj, svc, files string) Container {
+		l := map[string]string{}
+		if proj != "" {
+			l[labelProject], l[labelService], l[labelFiles] = proj, svc, files
+		}
+		return Container{ID: id, Names: []string{"/" + name}, Image: image, Labels: l}
+	}
+	cs := []Container{
+		ct("1", "gluetun", "qmcgaw/gluetun", "arr", "gluetun", file),
+		ct("2", "qbittorrent", "qbit:latest", "arr", "qbittorrent", file),
+		ct("3", "seerr", "seerr:latest", "arr", "seerr", file),
+		ct("4", "sonarr", "sonarr:latest", "arr", "sonarr", file),
+		ct("5", "web", "seerr:latest", "portainer", "web", "/nonexistent/compose.yml"),
+		ct("6", "solo", "qbit:latest", "", "", ""),
+	}
+	pl := planUpdates(cs, map[string]bool{"qbit:latest": true, "seerr:latest": true})
+	if len(pl.Projects) != 1 || pl.Projects[0].Project.Name != "arr" ||
+		!slices.Equal(pl.Projects[0].Services, []string{"qbittorrent", "seerr"}) {
+		t.Fatalf("projects: %+v", pl.Projects)
+	}
+	if len(pl.Elsewhere) != 1 || pl.Elsewhere[0].Project.Name != "portainer" {
+		t.Fatalf("elsewhere: %+v", pl.Elsewhere)
+	}
+	if len(pl.Standalone) != 1 || pl.Standalone[0].ID != "6" {
+		t.Fatalf("standalone: %+v", pl.Standalone)
 	}
 }

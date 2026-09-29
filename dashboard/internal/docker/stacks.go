@@ -266,30 +266,39 @@ func writeOwned(o Owner, path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
-// StackAction runs start/stop/restart/recreate/remove on a stack: one in ~/docker, or a
-// compose project Docker already runs.
-func (c *Client) StackAction(o Owner, name, action string) (string, error) {
+// stackProject resolves a stack (one in ~/docker, or a compose project Docker already
+// runs) to the compose project to run commands on. needsFiles refuses projects whose
+// compose files aren't on this host; otherwise those can only be addressed by name.
+func (c *Client) stackProject(o Owner, name string, needsFiles bool) (Project, error) {
 	cs, err := c.Containers()
 	if err != nil {
-		return "", err
+		return Project{}, err
 	}
 	stacks := ListStacks(o, cs)
 	i := slices.IndexFunc(stacks, func(s Stack) bool { return s.Name == name })
 	if i < 0 {
-		return "", errors.New("no such stack")
+		return Project{}, errors.New("no such stack")
 	}
 	s := stacks[i]
-	p := Project{Name: s.Name, Dir: s.Dir, FilesExist: s.FilesExist}
-	if s.File != "" && s.FilesExist {
+	if !s.FilesExist {
+		if needsFiles {
+			return Project{}, errors.New("the compose files for this stack aren't on this host (Portainer or another tool manages it)")
+		}
+		return Project{Name: s.Name}, nil
+	}
+	p := Project{Name: s.Name, Dir: s.Dir, FilesExist: true}
+	if s.File != "" {
 		p.Files = []string{s.File}
 	}
+	return p, nil
+}
+
+// StackAction runs start/stop/restart/recreate/remove on a stack.
+func (c *Client) StackAction(o Owner, name, action string) (string, error) {
 	// Projects from files that aren't on this host can only be stopped/restarted/removed.
-	needsFiles := action == "start" || action == "recreate"
-	if needsFiles && !s.FilesExist {
-		return "", errors.New("the compose files for this stack aren't on this host (Portainer or another tool manages it)")
-	}
-	if !s.FilesExist {
-		p.Files, p.Dir = nil, ""
+	p, err := c.stackProject(o, name, action == "start" || action == "recreate")
+	if err != nil {
+		return "", err
 	}
 	dc := func(args ...string) (string, error) {
 		return run.Cmd(15*time.Minute, "docker", composeArgs(p, args...)...)

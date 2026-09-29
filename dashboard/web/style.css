@@ -357,6 +357,8 @@ a.port::after { content: " ↗"; font-size: 10px; }
 .app-body { border-top: 1px solid var(--border); padding: 4px 0; }
 .ct-row { grid-template-columns: minmax(150px, 1.4fr) minmax(160px, 2fr) minmax(130px, 1.3fr) minmax(90px, 1fr) 130px; padding: 7px 12px 7px 48px; font-size: 13.5px; }
 .ct-row + .ct-row { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.ct-row.has-update { background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.update-strip .update-list { min-width: 0; max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 550; }
 .ct-name .link-btn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-image { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
