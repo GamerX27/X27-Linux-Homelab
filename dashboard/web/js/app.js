@@ -85,12 +85,10 @@ function showApp() {
     onchange: () => { try { localStorage.setItem('theme', themeSel.value); } catch {} applyTheme(themeSel.value); } },
     ['auto', 'light', 'dark'].map((t) => h('option', { value: t }, t[0].toUpperCase() + t.slice(1))));
   themeSel.value = savedTheme();
-  const updateLink = h('a.side-link', { href: '#/update', 'data-route': 'update' }, icon('download', 16), h('span.name', 'OS update'));
   const app = h('div.app',
     h('aside.sidebar',
       h('div.brand', icon('server', 22), 'Homelab'),
       h('a.side-link', { href: '#/', 'data-route': 'fleet' }, icon('grid', 16), h('span.name', 'All nodes')),
-      updateLink,
       h('div.side-label', 'Nodes'),
       nav,
       h('button.side-link', { onclick: () => addNodeDialog(refreshNodes) }, icon('plus', 16), h('span.name', 'Add node')),
@@ -103,7 +101,7 @@ function showApp() {
           h('button.btn.small.ghost', { onclick: logout, title: 'Log out' }, icon('logout', 14), 'Log out')))),
     main);
   app.addEventListener('click', (e) => { if (e.target.closest('.side-link')) app.classList.remove('nav-open'); });
-  shell = { app, nav, main, updateLink };
+  shell = { app, nav, main };
   clear(root, app);
   refreshNodes();
   clearInterval(state.nodesTimer);
@@ -186,13 +184,6 @@ function renderNav() {
       n.summary?.updateAvailable ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
   shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update);
-  shell.updateLink.classList.toggle('active', !!cur.update);
-  shell.updateLink.querySelector('.badge')?.remove();
-  const job = state.rollout;
-  if (job) {
-    const [cls, label] = job.state === 'running' ? ['running', 'running'] : job.state === 'done' ? ['good', 'done'] : ['warn', job.state];
-    shell.updateLink.append(h('span.badge', { class: cls, title: `OS update ${label}` }, label));
-  }
 }
 
 function findNode(id) {
