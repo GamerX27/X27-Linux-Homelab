@@ -113,8 +113,27 @@ next boot.
 ### Gotify messages
 
 Optional. With a [Gotify](https://gotify.net) server set up, you get a message just before the
-machine reboots into an update (with the old and new version), and one when an update fails.
-Nothing is sent when there's no update. Create an app in Gotify for its token, then:
+machine reboots into an update, and one when an update fails. Nothing is sent when there's no
+update. The update message shows what changed, like `rpm-ostree` does:
+
+```
+X27-Linux Homelab 44 (2026-09-24) → X27-Linux Homelab 44 (2026-09-30)
+Image: ghcr.io/gamerx27/x27-linux-homelab:44
+Digest: sha256:5f2e…
+Packages: 12 upgraded, 1 removed, 1 added
+
+Upgraded (12):
+  kernel 6.16.3-200.fc44.x86_64 -> 6.16.5-200.fc44.x86_64
+  ...
+Removed (1):
+  ...
+Added (1):
+  ...
+
+Rebooting now.
+```
+
+Create an app in Gotify (Apps → Create Application) for its token, then:
 
 ```
 autoupdate gotify https://gotify.example.com   # asks for the app token, sends a test message
@@ -124,7 +143,9 @@ autoupdate gotify off
 ```
 
 The URL and token are stored in `/etc/autoupdate.conf` (root only). Nothing is saved if the
-test message fails.
+test message fails. The dashboard's **Features** page does the same, shows the stored token
+(hidden until you click Show, with Copy), and lets you change the URL without entering the token
+again.
 
 ## NetBird
 

@@ -151,6 +151,11 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-2); text-transform: up
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; }
 .kv dt { color: var(--text-2); }
 .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.token-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.token-row .btn.small { padding: 2px 8px; }
+code.token { font-size: 12.5px; letter-spacing: .02em; }
+.input-row { display: flex; gap: 4px; align-items: center; }
+.input-row input { flex: 1; min-width: 0; }
 
 /* Tables */
 .table-wrap { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }

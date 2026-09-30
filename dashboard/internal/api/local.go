@@ -489,6 +489,15 @@ func (l *Local) Handler() http.Handler {
 		out, err := features.SetGotify(body.URL, body.Token)
 		result(w, r, "gotify set", out, err)
 	})
+	mux.HandleFunc("GET /features/gotify/token", func(w http.ResponseWriter, r *http.Request) {
+		token, err := features.GotifyToken()
+		if err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		log.Printf("%s: gotify token shown", userOf(r))
+		writeJSON(w, http.StatusOK, map[string]string{"token": token})
+	})
 	mux.HandleFunc("POST /features/gotify/test", func(w http.ResponseWriter, r *http.Request) {
 		out, err := features.GotifyTest()
 		result(w, r, "gotify test", out, err)

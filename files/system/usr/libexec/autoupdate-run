@@ -32,13 +32,60 @@ $(tail -n 15 "$log")"
     ;;
 esac
 
-# Deployments are listed staged first, then booted.
-versions="$(rpm-ostree status --json --jsonpath '$.deployments[*].version' 2>/dev/null |
-  grep -o '"[^"]*"' | tr -d '"' || true)"
-new="$(sed -n 1p <<<"$versions")"
-old="$(sed -n 2p <<<"$versions")"
+status="$(rpm-ostree status --json 2>/dev/null || echo '{}')"
 
-notify 5 "Updating ${host}" \
-  "Update installed (${old:-?} -> ${new:-?}). Rebooting now."
+# deployment <booted|staged> <jq expression>: a field of that deployment.
+deployment() {
+  jq -r --arg which "$1" "first(.deployments[]? | select(.[\$which] == true)) | $2 // empty" <<<"$status" 2>/dev/null || true
+}
+
+# The image's name and build (PRETTY_NAME, e.g. "X27-Linux Homelab 44 (2026-09-30)") from the
+# deployment's own os-release; the version or commit if that can't be read.
+describe() {
+  local path pretty
+  path="$(deployment "$1" '"/ostree/deploy/\(.osname)/deploy/\(.checksum).\(.serial)/usr/lib/os-release"')"
+  pretty="$(sed -n 's/^PRETTY_NAME=//p' "$path" 2>/dev/null | tail -n1 | tr -d '"')"
+  [[ -n "$pretty" ]] || pretty="$(deployment "$1" .version)"
+  [[ -n "$pretty" ]] || pretty="$(deployment "$1" .checksum | cut -c1-12)"
+  echo "${pretty:-unknown}"
+}
+
+old="$(describe booted)"
+new="$(describe staged)"
+image="$(deployment staged '."container-image-reference"')"
+image="${image#*docker://}"
+digest="$(deployment staged '."container-image-reference-digest"')"
+
+# Package changes between the running and the staged image, as rpm-ostree lists them
+# ("Upgraded:", "Downgraded:", "Removed:", "Added:"), with a count on each heading.
+# Long lists are cut so the message stays readable.
+changes="$(rpm-ostree db diff 2>/dev/null | awk '
+  /^ostree diff commit/ { next }
+  /^[A-Z][A-Za-z ]*:$/ { sec[++n] = substr($0, 1, length($0) - 1); next }
+  /^ +[^ ]/ && n { sub(/^ +/, ""); lines[n] = lines[n] "\n  " $0; count[n]++ }
+  END {
+    shown = 0
+    for (i = 1; i <= n; i++) {
+      if (!count[i]) continue
+      printf "%s%s (%d):", (i > 1 ? "\n\n" : ""), sec[i], count[i]
+      m = split(substr(lines[i], 2), l, "\n")
+      for (j = 1; j <= m; j++) {
+        if (shown++ < 150) printf "\n%s", l[j]
+        else { printf "\n  … and %d more", m - j + 1; break }
+      }
+    }
+  }' || true)"
+
+summary="$(awk '/^[A-Z][A-Za-z]* \([0-9]+\):$/ { gsub(/[():]/, ""); printf "%s%d %s", (s++ ? ", " : ""), $2, tolower($1) }' <<<"$changes")"
+
+message="${old} → ${new}"
+[[ -n "$image" ]] && message+=$'\n'"Image: ${image}"
+[[ -n "$digest" ]] && message+=$'\n'"Digest: ${digest}"
+[[ -n "$summary" ]] && message+=$'\n'"Packages: ${summary}"
+message+=$'\n\n'"${changes:-No package changes.}"
+message+=$'\n\n'"Rebooting now."
+
+echo "$message"
+notify 5 "Updating ${host}: ${new}" "$message"
 
 systemctl reboot

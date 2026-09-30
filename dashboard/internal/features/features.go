@@ -117,13 +117,9 @@ func GetAutoupdate() Autoupdate {
 	if a.LastRun > 0 {
 		a.LastResult = s["Result"]
 	}
-	if b, err := os.ReadFile(gotifyConf); err == nil {
+	if _, err := os.Stat(gotifyConf); err == nil {
 		a.Gotify = true
-		for _, line := range strings.Split(string(b), "\n") {
-			if v, ok := strings.CutPrefix(line, "GOTIFY_URL="); ok {
-				a.GotifyURL = v
-			}
-		}
+		a.GotifyURL = confValue("GOTIFY_URL")
 	}
 	return a
 }
@@ -188,10 +184,37 @@ func AutoupdateOff() (string, error) { return autoupdate("off") }
 var urlRe = regexp.MustCompile(`^https?://\S+$`)
 var tokenRe = regexp.MustCompile(`^[[:graph:]]+$`)
 
+// confValue reads KEY=value from the Gotify config; the file is root-only.
+func confValue(key string) string {
+	b, err := os.ReadFile(gotifyConf)
+	if err != nil {
+		return ""
+	}
+	v := ""
+	for _, line := range strings.Split(string(b), "\n") {
+		if s, ok := strings.CutPrefix(line, key+"="); ok {
+			v = s
+		}
+	}
+	return v
+}
+
+// GotifyToken returns the stored app token, fetched on its own so /features never carries it.
+func GotifyToken() (string, error) {
+	if t := confValue("GOTIFY_TOKEN"); t != "" {
+		return t, nil
+	}
+	return "", errors.New("Gotify isn't set up")
+}
+
 // SetGotify stores a server; autoupdate sends a test message and saves only if it arrives.
+// An empty token keeps the stored one, so the URL can change without typing it again.
 func SetGotify(url, token string) (string, error) {
 	if !urlRe.MatchString(url) {
 		return "", errors.New("URL must start with http:// or https://")
+	}
+	if token == "" {
+		token = confValue("GOTIFY_TOKEN")
 	}
 	if !tokenRe.MatchString(token) {
 		return "", errors.New("enter the Gotify app token")

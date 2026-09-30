@@ -77,21 +77,69 @@ export function renderFeatures(el, { api }) {
 
   function gotifyCard(a) {
     if (!a.available) return null;
-    const url = h('input', { type: 'url', placeholder: 'https://gotify.example.com', value: a.gotifyUrl || '' });
-    const token = h('input', { type: 'password', placeholder: a.gotify ? 'Stored, enter a new one to change it' : 'App token', autocomplete: 'off' });
-    const save = h('button.btn.primary', { onclick: async () => {
-      const r = await busy(save, () => api.post('/features/gotify', { url: url.value.trim(), token: token.value.trim() }), 'Gotify set up. A test message was sent.');
-      if (r) load();
-    } }, a.gotify ? 'Save' : 'Set up');
-    const test = a.gotify ? h('button.btn', { onclick: () => busy(test, () => api.post('/features/gotify/test'), 'Test message sent.') }, 'Send test') : null;
-    const off = a.gotify ? h('button.btn.danger', { onclick: async () => {
-      const r = await busy(off, () => api.post('/features/gotify/off'), 'Gotify off.');
-      if (r) load();
-    } }, 'Turn off') : null;
-    return h('div.card',
-      h('div.card-head', h('h2', 'Gotify messages'), a.gotify ? h('span.status.good', 'On') : h('span.status.idle', 'Off')),
-      h('p.muted', { style: { marginTop: 0 } }, 'A message before an update reboot, and when an update fails. The setup sends a test message and only saves if it arrives.'),
-      h('div.form-grid', h('label.field', 'Server URL', url), h('label.field', 'App token', token), h('div.row', save, test, off)));
+    const head = h('div.card-head', h('h2', 'Gotify messages'), a.gotify ? h('span.status.good', 'On') : h('span.status.idle', 'Off'));
+    const intro = h('p.muted', { style: { marginTop: 0 } },
+      'Sent from this node to your ', h('a', { href: 'https://gotify.net', target: '_blank', rel: 'noopener' }, 'Gotify'),
+      ' server: when an update is installed, just before the reboot (old and new image, image name, and the packages upgraded, added and removed), and when an update fails.');
+    const card = h('div.card');
+
+    // The form: setting up, or changing a stored server (an empty token keeps the stored one).
+    const form = (editing) => {
+      const url = h('input', { type: 'url', placeholder: 'https://gotify.example.com', value: a.gotifyUrl || '', required: true });
+      const token = h('input', { type: 'password', autocomplete: 'off', spellcheck: false,
+        placeholder: editing ? 'Leave empty to keep the current token' : 'e.g. AbC1dEf2GhI3jKl' });
+      const peek = h('button.btn.ghost.small', { type: 'button', onclick: () => {
+        const show = token.type === 'password';
+        token.type = show ? 'text' : 'password';
+        peek.textContent = show ? 'Hide' : 'Show';
+      } }, 'Show');
+      const save = h('button.btn.primary', { type: 'submit' }, editing ? 'Save' : 'Set up');
+      const cancel = editing ? h('button.btn', { type: 'button', onclick: () => draw(false) }, 'Cancel') : null;
+      return h('form.stack', { onsubmit: async (e) => {
+        e.preventDefault();
+        const r = await busy(save, () => api.post('/features/gotify', { url: url.value.trim(), token: token.value.trim() }),
+          'Saved. A test message was sent.');
+        if (r) load();
+      } },
+        h('div.form-grid',
+          h('label.field', 'Server URL', url),
+          h('label.field', 'App token', h('div.input-row', token, peek))),
+        h('p.faint', { style: { margin: 0 } }, 'In Gotify, open ', h('strong', 'Apps'), ', create an application (e.g. "',
+          location.hostname, '") and copy its token. A test message is sent first; nothing is saved unless it arrives.'),
+        h('div.row', save, cancel));
+    };
+
+    const summary = () => {
+      const masked = '•'.repeat(15);
+      const tokenEl = h('code.token', masked);
+      let token = null;
+      const fetchToken = async () => token ??= (await api.get('/features/gotify/token')).token;
+      const show = h('button.btn.ghost.small', { onclick: async () => {
+        if (tokenEl.textContent !== masked) { tokenEl.textContent = masked; show.textContent = 'Show'; return; }
+        try { tokenEl.textContent = await fetchToken(); show.textContent = 'Hide'; } catch (e) { toast(e.message, true); }
+      } }, 'Show');
+      const copy = h('button.btn.ghost.small', { onclick: async () => {
+        try { await navigator.clipboard.writeText(await fetchToken()); toast('Token copied.'); }
+        catch (e) { toast(e.message || 'Couldn\'t copy', true); }
+      } }, 'Copy');
+      const test = h('button.btn', { onclick: () => busy(test, () => api.post('/features/gotify/test'), 'Test message sent.') }, 'Send test message');
+      const off = h('button.btn.danger', { onclick: async () => {
+        if (!await confirmAction('Turn off Gotify messages', 'The server URL and app token are deleted from this node.', 'Turn off')) return;
+        const r = await busy(off, () => api.post('/features/gotify/off'), 'Gotify off.');
+        if (r) load();
+      } }, 'Turn off');
+      return [
+        h('dl.kv', { style: { marginBottom: '14px' } },
+          h('dt', 'Server'), h('dd', h('a', { href: a.gotifyUrl, target: '_blank', rel: 'noopener' }, a.gotifyUrl)),
+          h('dt', 'App token'), h('dd.token-row', tokenEl, show, copy),
+          h('dt', 'Messages'), h('dd', 'Update installed (before the reboot) · Update failed')),
+        h('div.row', test, h('button.btn', { onclick: () => draw(true) }, 'Change…'), off),
+      ];
+    };
+
+    const draw = (editing) => clear(card, head, intro, a.gotify && !editing ? summary() : form(editing));
+    draw(false);
+    return card;
   }
 
   function servicesCard(list) {
