@@ -55,6 +55,8 @@ var services = []Service{
 	{ID: "docker-group", Name: "Docker group for users", Unit: "docker-group.service", Description: "Adds regular users to the docker group at boot."},
 	{ID: "fish-default-shell", Name: "fish as default shell", Unit: "fish-default-shell.service", Description: "Makes fish the login shell for regular users at boot."},
 	{ID: "qemu-guest-agent", Name: "QEMU guest agent", Unit: "qemu-guest-agent.service", Description: "Lets the hypervisor see IPs and shut the VM down cleanly."},
+	{ID: "netbird", Name: "NetBird VPN", Unit: "netbird.service", Description: "NetBird mesh VPN client. After turning it on, connect with: sudo netbird up",
+		Warning: "If you reach this server over NetBird, turning it off cuts that connection."},
 	{ID: "docker", Name: "Docker", Unit: "docker.service", Description: "The Docker engine; every service on this host runs in it.",
 		Warning: "Turning Docker off stops every container."},
 }

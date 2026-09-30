@@ -23,6 +23,9 @@ modules:
   # No weak deps keeps docker-ce-rootless-extras out. audit (auditd): fedora-bootc lacks it, and
   # without it the kernel prints every audit record (logins, service starts) to the console.
   # The Docker repo is removed again afterwards; the weekly rebuild picks up new versions.
+  # NetBird comes from its own repo (pkgs.netbird.io) the same way. Its RPM scripts run
+  # `netbird service install` and `start`, which fail in a build, so they're skipped;
+  # netbird.service (files/system) replaces them and stays off until enabled.
   - type: containerfile
     snippets:
       - |
@@ -30,14 +33,20 @@ modules:
             && rpm -e --nodeps podman \
             && curl -fsSL -o /etc/yum.repos.d/docker-ce.repo \
                  https://download.docker.com/linux/fedora/docker-ce.repo \
+            && printf '%s\n' '[netbird]' 'name=netbird' 'baseurl=https://pkgs.netbird.io/yum/' \
+                 'enabled=1' 'gpgcheck=0' 'repo_gpgcheck=1' \
+                 'gpgkey=https://pkgs.netbird.io/yum/repodata/repomd.xml.key' \
+                 > /etc/yum.repos.d/netbird.repo \
             && dnf5 -y install --allowerasing --setopt=install_weak_deps=False \
                  docker-ce docker-ce-cli containerd.io \
                  docker-buildx-plugin docker-compose-plugin \
                  openssh-server htop audit fish wget git pciutils ncdu zip unzip \
-            && rm -f /etc/yum.repos.d/docker-ce.repo \
+            && dnf5 -y install --setopt=install_weak_deps=False --setopt=tsflags=noscripts netbird \
+            && rm -f /etc/yum.repos.d/docker-ce.repo /etc/yum.repos.d/netbird.repo \
             && dnf5 clean all \
+            && netbird completion fish > /usr/share/fish/vendor_completions.d/netbird.fish \
             && ! rpm -q podman \
-            && rpm -q bootc docker-ce openssh-server audit fish git pciutils ncdu zip unzip \
+            && rpm -q bootc docker-ce openssh-server audit fish git pciutils ncdu zip unzip netbird \
             && command -v wget
 
   - type: systemd

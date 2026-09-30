@@ -20,6 +20,7 @@ Both share [common.yml](recipes/common.yml).
   [Updating containers](#updating-containers))
 - `dashboard`: a web admin UI for this server and your other servers running the image (see
   [Dashboard](#dashboard)). Off by default
+- `netbird`: the [NetBird](https://netbird.io) VPN client. Off by default (see [NetBird](#netbird))
 - Podman removed
 - SSH (`sshd`) enabled
 - fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
@@ -125,6 +126,23 @@ autoupdate gotify off
 The URL and token are stored in `/etc/autoupdate.conf` (root only). Nothing is saved if the
 test message fails.
 
+## NetBird
+
+The [NetBird](https://netbird.io) client is installed but off. To join your NetBird network:
+
+```
+sudo systemctl enable --now netbird
+sudo netbird up                                  # prints a login link
+sudo netbird up --setup-key <KEY>                # or use a setup key (no browser needed)
+sudo netbird up --management-url https://netbird.example.com   # self-hosted server
+netbird status
+```
+
+It stays connected across reboots and updates. `sudo netbird down` disconnects;
+`sudo systemctl disable --now netbird` turns it off again. It can also be switched on or off in
+the dashboard's **Features** page. Settings for the service (e.g. `NB_MANAGEMENT_URL`) go in
+`/etc/sysconfig/netbird`; its state is in `/var/lib/netbird`. Logs: `journalctl -u netbird`.
+
 ## Updating containers
 
 `docker-compose-update` checks every image your containers use against its registry and shows
@@ -169,7 +187,7 @@ For each node it shows:
   the permissions you have over SSH
 - **Terminal:** a shell in the browser, as the user you logged in with
 - **Features:** automatic updates (schedule, on/off), Gotify messages, and turning services
-  (SSH, smartd, Docker, ...) on or off
+  (SSH, smartd, NetBird, Docker, ...) on or off
 - **Settings:** hostname, time zone, network time, reboot and shut down
 
 ### Stacks

@@ -1,0 +1,18 @@
+[Unit]
+Description=NetBird mesh network client
+Documentation=https://docs.netbird.io/
+Wants=network-online.target
+After=network-online.target
+
+# Off by default: `sudo systemctl enable --now netbird`, then `sudo netbird up`.
+# Replaces the unit the RPM's scripts would write with `netbird service install` (they're
+# skipped in the image build); same command, but logs go to the journal.
+[Service]
+ExecStart=/usr/bin/netbird service run --log-level info --daemon-addr unix:///var/run/netbird.sock --log-file console
+EnvironmentFile=-/etc/sysconfig/netbird
+Environment=SYSTEMD_UNIT=netbird
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
