@@ -20,7 +20,14 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/run"
 )
 
-const checkEvery = 6 * time.Hour
+const (
+	checkEvery = 6 * time.Hour
+	// A failed check is retried sooner: right after boot the network is up before DNS is
+	// (a DNS container on the LAN may still be starting), and the error would otherwise
+	// stay on the page for six hours.
+	retryEvery = 2 * time.Minute
+	retries    = 5
+)
 
 // StateDir is where autoupdate-run keeps state.json and last.log. Moved in tests.
 var StateDir = "/var/lib/autoupdate"
@@ -110,7 +117,8 @@ func Supported() bool {
 	return err == nil
 }
 
-// NewChecker checks shortly after start and then every six hours.
+// NewChecker checks shortly after start and then every six hours, retrying a failed check
+// every two minutes a few times first.
 func NewChecker() *Checker {
 	c := &Checker{}
 	if Supported() {
@@ -118,6 +126,10 @@ func NewChecker() *Checker {
 			time.Sleep(30 * time.Second)
 			for {
 				c.Run()
+				for i := 0; i < retries && c.failed(); i++ {
+					time.Sleep(retryEvery)
+					c.Run()
+				}
 				time.Sleep(checkEvery)
 			}
 		}()
@@ -274,6 +286,12 @@ func (c *Checker) Run() {
 	c.mu.Lock()
 	c.check = res
 	c.mu.Unlock()
+}
+
+func (c *Checker) failed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.check.Error != ""
 }
 
 // CheckAsync starts a check and returns at once; the UI polls Status.
