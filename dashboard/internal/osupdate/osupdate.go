@@ -220,7 +220,7 @@ func (c *Checker) Status() Status {
 	st.BootID = BootID()
 	active, _ := run.Cmd(5*time.Second, "systemctl", "show", "-p", "ActiveState", "--value",
 		"autoupdate.service", "autoupdate-stage.service", "autoupdate-apply.service", "autoupdate-verify.service")
-	unitActive := strings.Contains(active, "activ") // "active" or "activating"
+	unitActive := AnyActive(active)
 	st.Job = ReadJob(st.BootID, unitActive)
 	st.Updating = unitActive || st.Job.Running()
 	if st.Job.Running() {
@@ -234,6 +234,18 @@ func (c *Checker) Status() Status {
 		st.Check.Available = false
 	}
 	return st
+}
+
+// AnyActive reports whether any line of `systemctl show -p ActiveState --value` output is
+// "active" or "activating". A substring match won't do: "inactive" contains "activ".
+func AnyActive(out string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		switch strings.TrimSpace(l) {
+		case "active", "activating", "reloading":
+			return true
+		}
+	}
+	return false
 }
 
 // Run checks the registry for a newer image without staging it.

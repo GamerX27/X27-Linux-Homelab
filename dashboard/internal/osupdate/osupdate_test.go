@@ -92,3 +92,16 @@ func TestProgress(t *testing.T) {
 		t.Fatalf("got %q", p)
 	}
 }
+
+func TestAnyActive(t *testing.T) {
+	for out, want := range map[string]bool{
+		"inactive\ninactive\ninactive\ninactive\n":   false,
+		"inactive\nactivating\ninactive\ninactive\n": true,
+		"inactive\ninactive\nactive\ninactive\n":     true,
+		"":                                           false,
+	} {
+		if got := AnyActive(out); got != want {
+			t.Errorf("AnyActive(%q) = %v, want %v", out, got, want)
+		}
+	}
+}
