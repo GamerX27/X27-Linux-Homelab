@@ -237,9 +237,18 @@ func (s *Store) Unpair(n Node) {
 	}
 }
 
-// Get fetches a JSON endpoint from a node's API into out.
+// GetJSON fetches a JSON endpoint from a node's API into out.
 func (s *Store) GetJSON(n Node, path string, timeout time.Duration, out any) error {
-	req, _ := http.NewRequest("GET", "https://"+n.Address+"/api/v1"+path, nil)
+	return s.call(n, "GET", path, timeout, out)
+}
+
+// PostJSON calls an action on a node's API (as the main node itself); out may be nil.
+func (s *Store) PostJSON(n Node, path string, timeout time.Duration, out any) error {
+	return s.call(n, "POST", path, timeout, out)
+}
+
+func (s *Store) call(n Node, method, path string, timeout time.Duration, out any) error {
+	req, _ := http.NewRequest(method, "https://"+n.Address+"/api/v1"+path, nil)
 	req.Header.Set("Authorization", "Bearer "+n.Token)
 	c := newClient(n.Fingerprint, nil, timeout)
 	c.Transport = s.client(n).Transport
@@ -255,6 +264,9 @@ func (s *Store) GetJSON(n Node, path string, timeout time.Duration, out any) err
 			e.Error = resp.Status
 		}
 		return errors.New(e.Error)
+	}
+	if out == nil {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

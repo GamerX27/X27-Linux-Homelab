@@ -5,7 +5,9 @@ ConditionPathExists=/run/ostree-booted
 Wants=network-online.target
 After=network-online.target
 
-# Reboots only when an update was staged. Sends a Gotify message first if set up.
+# Stages an update and reboots only when one was staged. Sends a Gotify message first if set up.
+# Progress goes to /var/lib/autoupdate (see /usr/libexec/autoupdate-run).
 [Service]
 Type=oneshot
+StateDirectory=autoupdate
 ExecStart=/usr/libexec/autoupdate-run

@@ -319,7 +319,9 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatalf("certificate: %v", err)
 	}
-	osupdate.Fake = *dev && os.Getenv("DASHBOARD_FAKE_OS") == "1"
+	fakeOS := os.Getenv("DASHBOARD_FAKE_OS")
+	osupdate.Fake = *dev && (fakeOS == "1" || fakeOS == "fail")
+	osupdate.FakeFail = osupdate.Fake && fakeOS == "fail"
 	opts := api.Options{Version: version, Mode: cfg.Mode, Dev: *dev, Cert: c, Web: web.FS, Auth: auth.PAM, Presets: cfg.Presets}
 	if *dev {
 		opts.Auth = func(u, p string) error {

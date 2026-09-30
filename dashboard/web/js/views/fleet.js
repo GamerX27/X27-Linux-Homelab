@@ -1,5 +1,6 @@
 import { h, clear, icon, meter, modal, confirmAction, toast, duration, bytes, pct, menu, menuOpen } from '../ui.js';
 import * as api from '../api.js';
+import { startUpdate } from './rollout.js';
 
 // Pairing passwords: 20 characters from this alphabet, shown in groups of four.
 const PAIR_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -117,8 +118,9 @@ function nodeCard(n, refreshNodes) {
 
 // ---- Global updates ----------------------------------------------------------------------
 
-// Progress survives redraws (the node list refreshes every 15 s) and leaving the page.
-const progress = { os: new Map(), ct: new Map(), busy: { os: false, ct: false }, osWant: new Map() };
+// Check progress survives redraws (the node list refreshes every 15 s) and leaving the page.
+// OS updates themselves run on the main node and are followed on the update page.
+const progress = { os: new Map(), ct: new Map(), busy: { os: false, ct: false } };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -140,24 +142,38 @@ function progressList(map, nodesById) {
       [{ label: 'Close', value: true, class: 'primary' }]) }, 'Log') : null)));
 }
 
-function updatesPanel(nodes, refreshNodes, redraw) {
+// Asks which nodes to update, then starts the update and opens its page.
+async function updateDialog(candidates) {
+  const boxes = candidates.map((n) => {
+    const box = h('input', { type: 'checkbox', checked: true, value: n.id });
+    const to = n.summary.updateStaged && !n.summary.updateAvailable ? 'staged update' : n.summary.updateVersion || 'newer image';
+    return h('label.check-row', box, h('span', h('strong', n.name), n.local ? ' (main node, goes last)' : '',
+      h('span.muted', ` · ${n.summary.version || '?'} → ${to}`)));
+  });
+  const err = h('div.error-text');
+  return modal('Update OS', h('div.stack',
+    h('p.muted', { style: { margin: 0 } }, 'The nodes download the new image at the same time. Then they reboot one at a time, and each '
+      + 'one has to come back on the new image before the next one goes. If a node fails, the update stops there. Containers restart with their node.'),
+    h('div.stack', { style: { gap: '6px' } }, boxes),
+    err),
+  [{ label: 'Cancel', value: false }, { label: 'Update', class: 'primary', onclick: async () => {
+    const ids = boxes.map((b) => b.querySelector('input')).filter((i) => i.checked).map((i) => i.value);
+    if (!ids.length) { err.textContent = 'Choose at least one node.'; return false; }
+    try { await startUpdate(ids); } catch (e) { err.textContent = e.message; return false; }
+    return true;
+  } }]);
+}
+
+function updatesPanel(nodes, job, refreshNodes, redraw) {
   const online = nodes.filter((n) => n.online && n.summary);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const set = (kind, id, cls, msg, log) => { progress[kind].set(id, { cls, msg, log }); redraw(); };
-  // The main node can't be followed through its reboot; mark it done once it reports the new version.
-  for (const [id, want] of progress.osWant) {
-    const n = online.find((x) => x.id === id);
-    if (n && n.summary.version === want && !n.summary.updating) {
-      progress.os.set(id, { cls: 'good', msg: `Updated to ${want}` });
-      progress.osWant.delete(id);
-    }
-  }
 
   // OS
-  const osAvail = online.filter((n) => n.summary.updateAvailable && !n.summary.updateStaged && !n.summary.updating);
-  const osUpdating = online.filter((n) => n.summary.updating);
-  const osStaged = online.filter((n) => n.summary.updateStaged);
   const osImage = online.filter((n) => n.summary.version);
+  const osUpdating = online.filter((n) => n.summary.updating);
+  const osCandidates = osImage.filter((n) => (n.summary.updateAvailable || n.summary.updateStaged) && !n.summary.updating);
+  const running = job?.state === 'running';
 
   const osCheck = h('button.btn.small', { disabled: progress.busy.os, onclick: async () => {
     progress.busy.os = true; progress.os.clear();
@@ -177,58 +193,16 @@ function updatesPanel(nodes, refreshNodes, redraw) {
     refreshNodes();
   } }, icon('refresh', 14), 'Check all nodes');
 
-  const osUpdate = osAvail.length ? h('button.btn.small.primary', { disabled: progress.busy.os, onclick: async () => {
-    const main = osAvail.find((n) => n.local);
-    const incl = h('input', { type: 'checkbox', checked: true });
-    const ok = await modal('Update OS on all nodes', h('div.stack',
-      h('p.muted', { style: { margin: 0 } }, 'Each node downloads the new image, installs it and reboots. Containers restart with it.'),
-      h('ul.plain', osAvail.map((n) => h('li', h('strong', n.name), ` · ${n.summary.version || '?'} → ${n.summary.updateVersion || 'newer'}`))),
-      main ? h('label.check-row', incl, h('span', `Include this main node (${main.name}). It goes last; you'll need to log in again after it reboots.`)) : null),
-    [{ label: 'Cancel', value: false }, { label: `Update ${osAvail.length} node${osAvail.length > 1 ? 's' : ''}`, value: true, class: 'primary' }]);
-    if (!ok) return;
-    const targets = osAvail.filter((n) => !n.local || incl.checked);
-    progress.busy.os = true; progress.os.clear();
-    const one = async (n) => {
-      const want = n.summary.updateVersion;
-      set('os', n.id, 'idle', 'Starting update…');
-      try { await api.post(`/api/n/${n.id}/os/update`); } catch (e) { set('os', n.id, 'crit', e.message); return; }
-      set('os', n.id, 'warn', 'Installing; it reboots when done…');
-      let wentDown = false;
-      const done = await pollUntil(async () => {
-        const list = await api.get('/api/nodes');
-        const m = list.find((x) => x.id === n.id);
-        if (!m?.online) { if (!wentDown) set('os', n.id, 'warn', 'Rebooting…'); wentDown = true; return false; }
-        if (m.summary?.version && (!want || m.summary.version === want) && !m.summary.updateAvailable) return true;
-        return false;
-      }, 10000, 20 * 60000);
-      set('os', n.id, done ? 'good' : 'crit', done ? `Updated to ${want || 'the new image'}` : 'Not back on the new version after 20 minutes; check the node');
-    };
-    await Promise.all(targets.filter((n) => !n.local).map(one));
-    const mainT = targets.find((n) => n.local);
-    if (mainT) {
-      set('os', mainT.id, 'idle', 'Starting update (this page loses the connection when it reboots)…');
-      try {
-        await api.post('/api/n/local/os/update');
-        if (mainT.summary.updateVersion) progress.osWant.set(mainT.id, mainT.summary.updateVersion);
-        set('os', mainT.id, 'warn', 'Installing; this node reboots when done. Reload the page afterwards.');
-      }
-      catch (e) { set('os', mainT.id, 'crit', e.message); }
-    }
-    progress.busy.os = false;
-    refreshNodes();
-  } }, `Update all (${osAvail.length})`) : null;
+  const osUpdate = running || job ? h('a.btn.small', { href: '#/update', class: running ? 'primary' : '' }, running ? 'View progress' : 'Last update')
+    : null;
+  const osStart = !running && osCandidates.length ? h('button.btn.small.primary', { onclick: () => updateDialog(osCandidates) },
+    `Update… (${osCandidates.length})`) : null;
 
-  const osReboot = osStaged.length ? h('button.btn.small', { onclick: async () => {
-    if (!await confirmAction('Reboot staged nodes', `Reboot ${osStaged.map((n) => n.name).join(', ')} to finish their update?`, 'Reboot')) return;
-    for (const n of osStaged) {
-      try { await api.post(`/api/n/${n.id}/power/reboot`); set('os', n.id, 'warn', 'Rebooting…'); } catch (e) { set('os', n.id, 'crit', e.message); }
-    }
-  } }, `Reboot staged (${osStaged.length})`) : null;
-
-  const osSummary = !osImage.length ? h('span.status.idle', 'No image-based nodes online')
+  const done = (job?.nodes || []).filter((n) => ['done', 'uptodate', 'failed'].includes(n.step)).length;
+  const osSummary = running ? h('span.status.warn', `Updating: ${done} of ${job.nodes.length} node${job.nodes.length > 1 ? 's' : ''} finished`)
+    : !osImage.length ? h('span.status.idle', 'No image-based nodes online')
     : osUpdating.length ? h('span.status.warn', `Updating ${osUpdating.map((n) => n.name).join(', ')}…`)
-    : osAvail.length ? h('span.status.warn', `${osAvail.length} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} can update`)
-    : osStaged.length ? h('span.status.warn', `${osStaged.length} waiting for a reboot`)
+    : osCandidates.length ? h('span.status.warn', `${osCandidates.length} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} can update`)
     : h('span.status.good', 'All nodes up to date');
 
   // Containers
@@ -273,9 +247,9 @@ function updatesPanel(nodes, refreshNodes, redraw) {
 
   return h('div.grid.two',
     h('div.card.update-card',
-      h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osReboot, osUpdate)),
+      h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osUpdate, osStart)),
       osSummary,
-      h('p.faint', { style: { margin: '6px 0 0', fontSize: '12.5px' } }, 'Installs the newest image on each node, which then reboots. The main node goes last.'),
+      h('p.faint', { style: { margin: '6px 0 0', fontSize: '12.5px' } }, 'Downloads on all nodes at once, then reboots them one at a time. The main node goes last.'),
       progressList(progress.os, byId)),
     h('div.card.update-card',
       h('div.card-head', h('h2', 'Container updates'), h('div.row', ctCheck, ctUpdate)),
@@ -284,7 +258,7 @@ function updatesPanel(nodes, refreshNodes, redraw) {
       progressList(progress.ct, byId)));
 }
 
-export function renderFleet(el, { nodes, refreshNodes, menuButton }) {
+export function renderFleet(el, { nodes, rollout, refreshNodes, menuButton }) {
   const grid = h('div.grid.nodes');
   const panel = h('div');
   const sub = h('div.sub');
@@ -292,7 +266,7 @@ export function renderFleet(el, { nodes, refreshNodes, menuButton }) {
     const list = nodes();
     const offline = list.filter((n) => !n.online).length;
     sub.textContent = `${list.length} node${list.length === 1 ? '' : 's'}` + (offline ? ` · ${offline} offline` : '');
-    clear(panel, list.length ? updatesPanel(list, refreshNodes, draw) : null);
+    clear(panel, list.length ? updatesPanel(list, rollout(), refreshNodes, draw) : null);
     clear(grid, list.length ? list.map((n) => nodeCard(n, refreshNodes)) : h('div.card.empty', 'Loading…'));
   };
   clear(el,

@@ -386,6 +386,36 @@ a.badge:hover { filter: brightness(1.1); text-decoration: underline; }
 .progress-list li { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 ul.plain { margin: 0; padding-left: 18px; }
 
+/* OS update page */
+.stepper { list-style: none; margin: 4px 0 10px; padding: 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; font-size: 12.5px; }
+.stepper li { display: flex; flex-direction: column; gap: 6px; color: var(--text-3); min-width: 0; }
+.stepper li .dot-step { height: 4px; border-radius: 2px; background: var(--track); }
+.stepper li.done { color: var(--text-2); }
+.stepper li.done .dot-step { background: var(--good); }
+.stepper li.active { color: var(--text); font-weight: 550; }
+.stepper li.active .dot-step { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.stepper li.failed { color: var(--critical-ink); font-weight: 550; }
+.stepper li.failed .dot-step { background: var(--critical); }
+div.stepper { display: block; }
+.rollout-node .card-head { margin-bottom: 8px; }
+.rollout-node.failed { border-color: color-mix(in srgb, var(--critical) 45%, var(--border)); }
+.rollout-msg { font-size: 13px; gap: 6px; flex-wrap: wrap; }
+.rollout-msg .status { white-space: normal; }
+pre.rollout-log { margin-top: 10px; max-height: 320px; overflow: auto; }
+.reconnect { display: flex; gap: 14px; align-items: center; border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); }
+.spinner { width: 20px; height: 20px; flex: none; border-radius: 50%; border: 2px solid var(--text-2); border-right-color: transparent; animation: spin .8s linear infinite; }
+.badge.running { background: var(--accent-soft); color: var(--text); animation: pulse 1.4s ease-in-out infinite; }
+.last-update { margin-bottom: 12px; }
+.last-update .row { gap: 8px; flex-wrap: wrap; }
+@keyframes pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) {
+  .stepper li.active .dot-step, .badge.running { animation: none; }
+}
+@media (max-width: 560px) {
+  .stepper { grid-template-columns: repeat(5, minmax(0, 1fr)); font-size: 11px; }
+  .stepper li span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
 /* Files */
 .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; font-size: 14px; min-width: 0; }
 .crumb { border: 0; background: none; cursor: pointer; padding: 4px 6px; border-radius: 6px; color: var(--accent); font: inherit; }

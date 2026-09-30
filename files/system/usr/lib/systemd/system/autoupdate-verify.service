@@ -1,0 +1,17 @@
+[Unit]
+Description=X27-Linux Homelab update: check the image after a reboot
+Documentation=man:rpm-ostree(1)
+ConditionPathExists=/run/ostree-booted
+ConditionPathExists=/var/lib/autoupdate/state.json
+Wants=network-online.target
+After=network-online.target
+
+# After rebooting into an update: marks it done when the booted image is the one that was
+# staged, or failed when the node came back on the old one, and sends that to Gotify.
+[Service]
+Type=oneshot
+StateDirectory=autoupdate
+ExecStart=/usr/libexec/autoupdate-run --verify
+
+[Install]
+WantedBy=multi-user.target

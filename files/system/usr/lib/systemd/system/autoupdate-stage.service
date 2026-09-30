@@ -1,0 +1,13 @@
+[Unit]
+Description=X27-Linux Homelab update: download and stage
+Documentation=man:rpm-ostree(1)
+ConditionPathExists=/run/ostree-booted
+Wants=network-online.target
+After=network-online.target
+
+# Downloads and stages an update without rebooting; autoupdate-apply.service reboots into it.
+# The dashboard uses the two for rolling updates across nodes.
+[Service]
+Type=oneshot
+StateDirectory=autoupdate
+ExecStart=/usr/libexec/autoupdate-run --stage

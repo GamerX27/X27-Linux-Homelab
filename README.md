@@ -110,10 +110,16 @@ Times can be 24-hour (`04:00`, `23:30`) or 12-hour (`4am`, `3:30 PM`, `12am` = m
 schedule survives updates. If the machine was off at the scheduled time, the update runs at the
 next boot.
 
+After the reboot, `autoupdate-verify.service` checks that the machine runs the image it staged.
+Every step (checking, downloading, staged, rebooting, done or failed) is written to
+`/var/lib/autoupdate/state.json` and the output to `last.log` next to it. `autoupdate status`
+shows the last result, and the dashboard follows an update through its reboot with them.
+
 ### Gotify messages
 
 Optional. With a [Gotify](https://gotify.net) server set up, you get a message just before the
-machine reboots into an update, and one when an update fails. Nothing is sent when there's no
+machine reboots into an update, one when it's back on the new image ("Updated …"), and one when an
+update fails, including when the machine comes back on the old image. Nothing is sent when there's no
 update. The update message shows what changed, like `rpm-ostree` does:
 
 ```
@@ -196,7 +202,8 @@ For each node it shows:
 
 - **Overview:** CPU, memory, disks, network, temperatures, uptime, OS and image version
 - **Updates:** the OS image: the running version, whether a newer one is out (checked every
-  6 hours), and buttons to update (same as `autoupdate`: install and reboot), reboot or roll back
+  6 hours), the result of the last update (with its log), and buttons to update, reboot or roll
+  back. **Update now** opens the [OS update page](#os-update-page)
 - **Docker:** three sections. **Apps** lists each stack with its containers inside, image
   update badges, one button for what's needed (Update or Start) and a ⋯ menu for the rest
   (restart, stop, pull & recreate, edit, logs, stats, remove); containers started with
@@ -238,14 +245,39 @@ your email. Only a hash of it is stored, and your browser loads the picture from
 
 The main page has two update panels for all nodes at once:
 
-- **OS updates:** check every node for a newer image, then **Update all**: each node installs it
-  and reboots, paired nodes first and the main node last (you log in again after it reboots).
-  **Reboot staged** finishes updates that are downloaded but waiting for a reboot.
+- **OS updates:** check every node for a newer image, then **Update…**: pick the nodes and follow
+  them on the [OS update page](#os-update-page).
 - **Container updates:** check every node's images, then **Update all** pulls and recreates only
   what has a newer image; containers that are up to date aren't restarted.
 
 It also lists every node with its version and a badge when an OS or container update is
 available.
+
+### OS update page
+
+An OS update (from **Update…** on the main page, or **Update now** on a node) is run by the main
+node, and the UI opens the **OS update** page to follow it:
+
+1. Every node downloads and stages the new image at the same time. Nothing restarts yet.
+2. Then the nodes reboot one at a time, paired nodes first and the main node last. Each one has to
+   come back on the new image (the booted commit is the one it staged) before the next one goes.
+3. If a node fails (the download fails, it doesn't come back within 15 minutes, or it comes back on
+   the old image), the update stops there. The nodes that are left keep the update staged, and you
+   pick **Reboot the rest** or **Leave them staged**. A node that fails to download is skipped, and
+   the others carry on.
+
+Each node shows its steps (Download → Staged → Reboot → Back online → Verified), what it's doing
+now (e.g. "Downloading layer 12 of 65") and a live log. **Stop after current node** stops before
+the next reboot.
+
+The update keeps running with the page closed. It's saved in `/var/lib/dashboard/rollout.json`, so
+it also survives the main node's own reboot, and so do logins (`sessions.json`, which stores only a
+hash of each session cookie). While the main node reboots, the page shows that it's reconnecting
+and then carries on by itself.
+
+To try the page without a real update: `DASHBOARD_FAKE_OS=1 dashboard serve --dev` fakes a node
+with an update (download, a reboot with the API down for 15 seconds, done), and
+`DASHBOARD_FAKE_OS=fail` makes it come back on the old image.
 
 ### Main node
 

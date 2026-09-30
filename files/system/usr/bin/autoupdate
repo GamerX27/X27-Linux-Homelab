@@ -3,7 +3,7 @@
 # survives image updates); it runs the shipped autoupdate.service, which is
 # /usr/libexec/autoupdate-run: it reboots only when an update was staged. `off` removes it.
 # `gotify` stores a Gotify server and app token in /etc/autoupdate.conf; the service then
-# sends a message before rebooting into an update, and when an update fails.
+# sends a message before rebooting into an update, after it, and when an update fails.
 set -euo pipefail
 
 TIMER=autoupdate.timer
@@ -11,6 +11,7 @@ SERVICE=autoupdate.service
 TIMER_FILE=/etc/systemd/system/autoupdate.timer
 CONF=/etc/autoupdate.conf
 NOTIFY=/usr/libexec/autoupdate-notify
+STATE=/var/lib/autoupdate/state.json
 
 usage() {
   cat <<'EOF'
@@ -30,7 +31,8 @@ Time is 24-hour or 12-hour: 03:00, 23:30, 3am, 3:00 AM, 11:30pm, 12am (midnight)
 Weekday: mon tue wed thu fri sat sun (or the full name).
 
 When an update is found it's installed and the system reboots. No update, no reboot.
-With Gotify set up, you get a message before that reboot and when an update fails.
+After the reboot the system checks that it runs the new image.
+With Gotify set up, you get a message before that reboot, after it, and when an update fails.
 
 Examples:
   autoupdate on daily 04:00
@@ -134,6 +136,22 @@ status() {
   else
     echo "Last run:          never"
   fi
+  # The latest update step, as autoupdate-run records it (also for updates from the dashboard).
+  if [[ -r "$STATE" ]]; then
+    local phase to err at
+    phase="$(jq -r '.phase // empty' "$STATE" 2>/dev/null || true)"
+    to="$(jq -r '.toName // .to // empty' "$STATE" 2>/dev/null || true)"
+    err="$(jq -r '.error // empty' "$STATE" 2>/dev/null || true)"
+    at="$(jq -r '.finishedAt // .updatedAt // empty' "$STATE" 2>/dev/null || true)"
+    case "$phase" in
+      done) echo "Last update:       ${to:-installed}, checked after the reboot ($(fmt_unix "$at"))" ;;
+      failed) echo "Last update:       failed ($(fmt_unix "$at")): ${err}" ;;
+      staged) echo "Last update:       ${to} downloaded, waiting for a reboot" ;;
+      uptodate) echo "Last update:       already up to date ($(fmt_unix "$at"))" ;;
+      "") ;;
+      *) echo "Last update:       ${phase} ${to}" ;;
+    esac
+  fi
   if [[ ! -f "$CONF" ]]; then
     echo "Gotify:            off"
   elif [[ -r "$CONF" ]]; then
@@ -225,7 +243,7 @@ gotify_on() {
   mv "$tmp" "$CONF"
   trap - EXIT
   echo "Gotify on: ${url%/}. A test message was sent."
-  echo "You'll get a message before an update reboot, and when an update fails."
+  echo "You'll get a message before an update reboot, after it, and when an update fails."
 }
 
 gotify_test() {

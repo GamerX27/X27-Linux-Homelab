@@ -1,13 +1,18 @@
 // Package osupdate shows which image the node runs and whether a newer one is out.
-// It only reads through rpm-ostree; installing reuses autoupdate.service (autoupdate-run),
-// so an update from the dashboard behaves exactly like a scheduled one: staged, Gotify
-// message, reboot.
+// It only reads through rpm-ostree; installing goes through the autoupdate units
+// (autoupdate-run), so an update from the dashboard behaves exactly like a scheduled one:
+// staged, Gotify message, reboot, checked after the reboot. autoupdate-run records every
+// step in StateDir, which is how the dashboard follows an update across the reboot.
 package osupdate
 
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +21,51 @@ import (
 )
 
 const checkEvery = 6 * time.Hour
+
+// StateDir is where autoupdate-run keeps state.json and last.log. Moved in tests.
+var StateDir = "/var/lib/autoupdate"
+
+// The phases of an update, as autoupdate-run writes them. Verifying is the dashboard's own:
+// the node rebooted but autoupdate-verify.service hasn't checked the image yet.
+const (
+	PhaseChecking    = "checking"
+	PhaseDownloading = "downloading"
+	PhaseStaged      = "staged"
+	PhaseRebooting   = "rebooting"
+	PhaseVerifying   = "verifying"
+	PhaseDone        = "done"
+	PhaseFailed      = "failed"
+	PhaseUpToDate    = "uptodate"
+)
+
+// Job is the latest update run on this node (StateDir/state.json).
+type Job struct {
+	ID             string `json:"id"`
+	Phase          string `json:"phase"`
+	BootID         string `json:"bootId"` // the boot it was started (or rebooted) from
+	From           string `json:"from"`
+	FromName       string `json:"fromName"`
+	To             string `json:"to"`
+	ToName         string `json:"toName"`
+	TargetDigest   string `json:"targetDigest"`
+	TargetChecksum string `json:"targetChecksum"`
+	Error          string `json:"error,omitempty"`
+	StartedAt      int64  `json:"startedAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
+	FinishedAt     int64  `json:"finishedAt,omitempty"`
+}
+
+// Running reports whether the job is still going: downloading, or rebooting into the update.
+func (j *Job) Running() bool {
+	if j == nil {
+		return false
+	}
+	switch j.Phase {
+	case PhaseChecking, PhaseDownloading, PhaseRebooting, PhaseVerifying:
+		return true
+	}
+	return false
+}
 
 type Deployment struct {
 	Version   string `json:"version"`
@@ -43,7 +93,10 @@ type Status struct {
 	Staged      *Deployment  `json:"staged"`
 	CanRollback bool         `json:"canRollback"`
 	Check       Check        `json:"check"`
-	Updating    bool         `json:"updating"` // autoupdate.service is running
+	Updating    bool         `json:"updating"` // an update is downloading or rebooting
+	Job         *Job         `json:"job"`      // the latest update run, nil if there never was one
+	Progress    string       `json:"progress"` // what the running update is doing, from its log
+	BootID      string       `json:"bootId"`
 	Error       string       `json:"error,omitempty"`
 }
 
@@ -164,8 +217,15 @@ func (c *Checker) Status() Status {
 	if err != nil || perr != nil {
 		st = Status{Supported: true, Error: "rpm-ostree status failed: " + out}
 	}
-	active, _ := run.Cmd(5*time.Second, "systemctl", "show", "autoupdate.service", "-p", "ActiveState", "--value")
-	st.Updating = active == "activating" || active == "active"
+	st.BootID = BootID()
+	active, _ := run.Cmd(5*time.Second, "systemctl", "show", "-p", "ActiveState", "--value",
+		"autoupdate.service", "autoupdate-stage.service", "autoupdate-apply.service", "autoupdate-verify.service")
+	unitActive := strings.Contains(active, "activ") // "active" or "activating"
+	st.Job = ReadJob(st.BootID, unitActive)
+	st.Updating = unitActive || st.Job.Running()
+	if st.Job.Running() {
+		st.Progress = Progress(logTail())
+	}
 	c.mu.Lock()
 	st.Check = c.check
 	c.mu.Unlock()
@@ -217,16 +277,151 @@ func (c *Checker) CheckAsync() error {
 	return nil
 }
 
-func Update() error {
+func BootID() string {
+	b, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	return strings.TrimSpace(string(b))
+}
+
+// ReadJob reads state.json as seen from this boot. A job that says it's downloading while no
+// autoupdate unit runs was cut off; one that's rebooting from another boot is waiting for
+// autoupdate-verify.service. Nil when there's no state yet.
+func ReadJob(bootID string, unitActive bool) *Job {
 	if Fake {
-		fakeUpdate()
+		return fakeJob()
+	}
+	b, err := os.ReadFile(filepath.Join(StateDir, "state.json"))
+	if err != nil {
 		return nil
 	}
+	var j Job
+	if json.Unmarshal(b, &j) != nil {
+		return nil
+	}
+	return adjustJob(&j, bootID, unitActive)
+}
+
+func adjustJob(j *Job, bootID string, unitActive bool) *Job {
+	switch j.Phase {
+	case PhaseChecking, PhaseDownloading:
+		if !unitActive {
+			j.Phase = PhaseFailed
+			if j.BootID != bootID {
+				j.Error = "The update was cut off by a reboot before it was staged."
+			} else {
+				j.Error = "The update run stopped before it was staged; see the log."
+			}
+		}
+	case PhaseRebooting:
+		if j.BootID != bootID {
+			j.Phase = PhaseVerifying
+		}
+	}
+	return j
+}
+
+func logTail() string {
+	f, err := os.Open(filepath.Join(StateDir, "last.log"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() > 64<<10 {
+		f.Seek(-64<<10, io.SeekEnd)
+	}
+	b, _ := io.ReadAll(f)
+	return string(b)
+}
+
+var (
+	layersNeeded = regexp.MustCompile(`layers needed: (\d+)`)
+	fetching     = regexp.MustCompile(`^Fetching (?:ostree chunk|layer) `)
+)
+
+// Progress turns rpm-ostree's output into one line: "Downloading layer 12 of 65" while it
+// fetches image layers, otherwise its last line.
+func Progress(log string) string {
+	lines := strings.Split(strings.ReplaceAll(log, "\r", "\n"), "\n")
+	total, fetched := 0, 0
+	last := ""
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		last = l
+		if m := layersNeeded.FindStringSubmatch(l); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			total += n
+		}
+		if fetching.MatchString(l) {
+			fetched++
+		}
+	}
+	if total > 0 && fetched > 0 && fetched <= total {
+		return "Downloading layer " + strconv.Itoa(fetched) + " of " + strconv.Itoa(total)
+	}
+	if len(last) > 160 {
+		last = last[:160] + "…"
+	}
+	return last
+}
+
+// ReadLog returns the update log from offset on and the offset to ask for next. A log that
+// got shorter was started over by a new run, so it's read from the start.
+func ReadLog(offset int64) (string, int64) {
+	if Fake {
+		return fakeLog(offset)
+	}
+	f, err := os.Open(filepath.Join(StateDir, "last.log"))
+	if err != nil {
+		return "", 0
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", 0
+	}
+	if offset < 0 || offset > fi.Size() {
+		offset = 0
+	}
+	f.Seek(offset, io.SeekStart)
+	b, _ := io.ReadAll(io.LimitReader(f, 256<<10))
+	return string(b), offset + int64(len(b))
+}
+
+func startUnit(unit string) error {
 	if !Supported() {
 		return errors.New("not an rpm-ostree system")
 	}
-	_, err := run.Cmd(10*time.Second, "systemctl", "start", "--no-block", "autoupdate.service")
+	_, err := run.Cmd(10*time.Second, "systemctl", "start", "--no-block", unit)
 	return err
+}
+
+// Update stages an update and reboots into it, like the timer does.
+func Update() error {
+	if Fake {
+		return fakeStage(true)
+	}
+	return startUnit("autoupdate.service")
+}
+
+// Stage downloads and stages an update without rebooting.
+func Stage() error {
+	if Fake {
+		return fakeStage(false)
+	}
+	if j := ReadJob(BootID(), false); j.Running() && j.Phase != PhaseVerifying {
+		return errors.New("an update is already running")
+	}
+	return startUnit("autoupdate-stage.service")
+}
+
+// Apply reboots into the staged update.
+func Apply() error {
+	if Fake {
+		return fakeApply()
+	}
+	return startUnit("autoupdate-apply.service")
 }
 
 // Rollback makes the previous deployment the default and reboots into it.

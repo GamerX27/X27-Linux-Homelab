@@ -1,40 +1,65 @@
 #!/usr/bin/env bash
-# Run by autoupdate.service. Stages an update with rpm-ostree and reboots only when one
-# was staged (like `rpm-ostree upgrade --reboot`), sending a Gotify message first when
-# `autoupdate gotify` is set up. Failures are sent too; "already up to date" is not.
+# The OS update, in steps that the timer, the CLI and the dashboard share:
+#   autoupdate-run            stage an update and reboot into it (autoupdate.service, the timer)
+#   autoupdate-run --stage    download and stage only, no reboot (autoupdate-stage.service)
+#   autoupdate-run --apply    reboot into the staged update (autoupdate-apply.service)
+#   autoupdate-run --verify   at boot: check the node came up on the image it rebooted for
+#                             (autoupdate-verify.service)
+# Every step is written to /var/lib/autoupdate/state.json and the output to last.log; the
+# dashboard follows an update through both, reboot included. Gotify gets a message before
+# the reboot, after it (updated, or came back on the old image) and when an update fails.
+# "Already up to date" sends nothing.
 set -euo pipefail
 
 NOTIFY=/usr/libexec/autoupdate-notify
+DIR="${AUTOUPDATE_STATE_DIR:-/var/lib/autoupdate}"
+STATE="$DIR/state.json"
+LOG="$DIR/last.log"
 host="$(hostname)"
+
+mkdir -p "$DIR"
 
 notify() {
   "$NOTIFY" "$@" || echo "autoupdate: Gotify message failed" >&2
 }
 
-log="$(mktemp)"
-trap 'rm -f "$log"' EXIT
+boot_id() {
+  cat /proc/sys/kernel/random/boot_id
+}
 
-rc=0
-rpm-ostree upgrade --unchanged-exit-77 >"$log" 2>&1 || rc=$?
-cat "$log"
+# The current state as JSON; {} when there's none or it can't be read.
+state() {
+  jq -c . "$STATE" 2>/dev/null || echo '{}'
+}
 
-case "$rc" in
-  77)
-    echo "No update available."
-    exit 0
-    ;;
-  0) ;;
-  *)
-    notify 8 "Update failed on ${host}" \
-      "rpm-ostree upgrade exited with ${rc}. Last output:
-$(tail -n 15 "$log")"
-    exit "$rc"
-    ;;
-esac
+# set_state <phase> [key value]...: sets the phase and the given fields, keeps the rest.
+# Fields ending in "At" are unix seconds and stored as numbers.
+set_state() {
+  local args=(--arg phase "$1" --argjson now "$(date +%s)") expr='.phase = $phase | .updatedAt = $now'
+  shift
+  while (($# >= 2)); do
+    if [[ "$1" == *At ]]; then args+=(--argjson "$1" "$2"); else args+=(--arg "$1" "$2"); fi
+    expr+=" | .$1 = \$$1"
+    shift 2
+  done
+  state | jq "${args[@]}" "$expr" >"$STATE.tmp"
+  mv "$STATE.tmp" "$STATE"
+}
 
-status="$(rpm-ostree status --json 2>/dev/null || echo '{}')"
+# fail <message> <exit code> [log tail]: records the failure and sends it to Gotify.
+fail() {
+  set_state failed error "$1"
+  notify 8 "Update failed on ${host}" "$1${3:+
+Last output:
+$3}"
+  exit "$2"
+}
 
-# deployment <booted|staged> <jq expression>: a field of that deployment.
+status_json() {
+  rpm-ostree status --json 2>/dev/null || echo '{}'
+}
+
+# deployment <booted|staged> <jq expression>: a field of that deployment in $status.
 deployment() {
   jq -r --arg which "$1" "first(.deployments[]? | select(.[\$which] == true)) | $2 // empty" <<<"$status" 2>/dev/null || true
 }
@@ -50,42 +75,173 @@ describe() {
   echo "${pretty:-unknown}"
 }
 
-old="$(describe booted)"
-new="$(describe staged)"
-image="$(deployment staged '."container-image-reference"')"
-image="${image#*docker://}"
-digest="$(deployment staged '."container-image-reference-digest"')"
-
-# Package changes between the running and the staged image, as rpm-ostree lists them
-# ("Upgraded:", "Downgraded:", "Removed:", "Added:"), with a count on each heading.
-# Long lists are cut so the message stays readable.
-changes="$(rpm-ostree db diff 2>/dev/null | awk '
-  /^ostree diff commit/ { next }
-  /^[A-Z][A-Za-z ]*:$/ { sec[++n] = substr($0, 1, length($0) - 1); next }
-  /^ +[^ ]/ && n { sub(/^ +/, ""); lines[n] = lines[n] "\n  " $0; count[n]++ }
-  END {
-    shown = 0
-    for (i = 1; i <= n; i++) {
-      if (!count[i]) continue
-      printf "%s%s (%d):", (i > 1 ? "\n\n" : ""), sec[i], count[i]
-      m = split(substr(lines[i], 2), l, "\n")
-      for (j = 1; j <= m; j++) {
-        if (shown++ < 150) printf "\n%s", l[j]
-        else { printf "\n  … and %d more", m - j + 1; break }
+# The Gotify message for rebooting into the staged deployment: old → new, image, digest and
+# the package changes as rpm-ostree lists them ("Upgraded:", "Removed:", …), each heading
+# with a count. Long lists are cut so the message stays readable.
+reboot_message() {
+  local old new image digest changes summary message
+  old="$(describe booted)"
+  new="$(describe staged)"
+  image="$(deployment staged '."container-image-reference"')"
+  image="${image#*docker://}"
+  digest="$(deployment staged '."container-image-reference-digest"')"
+  changes="$(rpm-ostree db diff 2>/dev/null | awk '
+    /^ostree diff commit/ { next }
+    /^[A-Z][A-Za-z ]*:$/ { sec[++n] = substr($0, 1, length($0) - 1); next }
+    /^ +[^ ]/ && n { sub(/^ +/, ""); lines[n] = lines[n] "\n  " $0; count[n]++ }
+    END {
+      shown = 0
+      for (i = 1; i <= n; i++) {
+        if (!count[i]) continue
+        printf "%s%s (%d):", (i > 1 ? "\n\n" : ""), sec[i], count[i]
+        m = split(substr(lines[i], 2), l, "\n")
+        for (j = 1; j <= m; j++) {
+          if (shown++ < 150) printf "\n%s", l[j]
+          else { printf "\n  … and %d more", m - j + 1; break }
+        }
       }
-    }
-  }' || true)"
+    }' || true)"
+  summary="$(awk '/^[A-Z][A-Za-z]* \([0-9]+\):$/ { gsub(/[():]/, ""); printf "%s%d %s", (s++ ? ", " : ""), $2, tolower($1) }' <<<"$changes")"
 
-summary="$(awk '/^[A-Z][A-Za-z]* \([0-9]+\):$/ { gsub(/[():]/, ""); printf "%s%d %s", (s++ ? ", " : ""), $2, tolower($1) }' <<<"$changes")"
+  message="${old} → ${new}"
+  [[ -n "$image" ]] && message+=$'\n'"Image: ${image}"
+  [[ -n "$digest" ]] && message+=$'\n'"Digest: ${digest}"
+  [[ -n "$summary" ]] && message+=$'\n'"Packages: ${summary}"
+  message+=$'\n\n'"${changes:-No package changes.}"
+  message+=$'\n\n'"Rebooting now."
+  echo "$message"
+}
 
-message="${old} → ${new}"
-[[ -n "$image" ]] && message+=$'\n'"Image: ${image}"
-[[ -n "$digest" ]] && message+=$'\n'"Digest: ${digest}"
-[[ -n "$summary" ]] && message+=$'\n'"Packages: ${summary}"
-message+=$'\n\n'"${changes:-No package changes.}"
-message+=$'\n\n'"Rebooting now."
+# Records the staged deployment as the update's target.
+record_staged() {
+  set_state staged \
+    to "$(deployment staged .version)" \
+    toName "$(describe staged)" \
+    targetDigest "$(deployment staged '."container-image-reference-digest"')" \
+    targetChecksum "$(deployment staged .checksum)"
+}
 
-echo "$message"
-notify 5 "Updating ${host}: ${new}" "$message"
+# Checks for an update and stages it. Exits 0 when there's none (phase "uptodate").
+stage() {
+  local rc=0 out version digest
+  status="$(status_json)"
+  jq -n --arg id "$(date +%s)-$$" --arg boot "$(boot_id)" --argjson now "$(date +%s)" \
+    --arg from "$(deployment booted .version)" --arg fromName "$(describe booted)" \
+    '{id: $id, phase: "checking", bootId: $boot, startedAt: $now, updatedAt: $now, from: $from, fromName: $fromName}' >"$STATE.tmp"
+  mv "$STATE.tmp" "$STATE"
+  : >"$LOG"
 
-systemctl reboot
+  out="$(rpm-ostree upgrade --check --unchanged-exit-77 2>&1)" || rc=$?
+  echo "$out" | tee -a "$LOG"
+  case "$rc" in
+    0) ;;
+    77)
+      # Nothing newer than what's booted or already staged.
+      if [[ -n "$(deployment staged .checksum)" ]]; then
+        echo "The update is already staged." | tee -a "$LOG"
+        record_staged
+      else
+        echo "No update available." | tee -a "$LOG"
+        set_state uptodate
+      fi
+      return 0
+      ;;
+    *) fail "Checking for an update failed (rpm-ostree exited with ${rc})." "$rc" "$(tail -n 15 "$LOG")" ;;
+  esac
+
+  version="$(awk '/AvailableUpdate/ { in_ = 1; next } in_ && $1 == "Version:" { print $2; exit }' <<<"$out")"
+  digest="$(awk '/AvailableUpdate/ { in_ = 1; next } in_ && $1 == "Digest:" { print $2; exit }' <<<"$out")"
+  set_state downloading to "$version" targetDigest "$digest"
+
+  rc=0
+  rpm-ostree upgrade --unchanged-exit-77 2>&1 | tee -a "$LOG" || rc=${PIPESTATUS[0]}
+  case "$rc" in
+    0 | 77) ;;
+    *) fail "Installing the update failed (rpm-ostree exited with ${rc})." "$rc" "$(tail -n 15 "$LOG")" ;;
+  esac
+
+  status="$(status_json)"
+  if [[ -z "$(deployment staged .checksum)" ]]; then
+    echo "No update available." | tee -a "$LOG"
+    set_state uptodate
+    return 0
+  fi
+  record_staged
+  echo "Staged $(describe staged)." | tee -a "$LOG"
+}
+
+# Reboots into the staged deployment, after a Gotify message saying what changes.
+apply() {
+  local message
+  status="$(status_json)"
+  if [[ -z "$(deployment staged .checksum)" ]]; then
+    [[ "$(state | jq -r '.phase // empty')" == uptodate ]] && exit 0
+    fail "There's no staged update to reboot into." 1
+  fi
+  # A staged deployment not made by --stage (e.g. `rpm-ostree upgrade` by hand) gets a job too.
+  if [[ "$(state | jq -r '.targetChecksum // empty')" != "$(deployment staged .checksum)" ]]; then
+    jq -n --arg id "$(date +%s)-$$" --argjson now "$(date +%s)" \
+      --arg from "$(deployment booted .version)" --arg fromName "$(describe booted)" \
+      '{id: $id, startedAt: $now, from: $from, fromName: $fromName}' >"$STATE.tmp"
+    mv "$STATE.tmp" "$STATE"
+    record_staged
+  fi
+  message="$(reboot_message)"
+  echo "$message" | tee -a "$LOG"
+  set_state rebooting bootId "$(boot_id)"
+  notify 5 "Updating ${host}: $(describe staged)" "$message"
+  sync
+  systemctl reboot
+}
+
+# At boot: an update that was rebooting (or staged, and someone rebooted) is done when the
+# booted commit is the one it staged. Anything still in progress was cut off by the reboot.
+verify() {
+  local st phase booted msg
+  st="$(state)"
+  phase="$(jq -r '.phase // empty' <<<"$st")"
+  [[ "$(jq -r '.bootId // empty' <<<"$st")" != "$(boot_id)" ]] || exit 0
+  case "$phase" in
+    rebooting | staged)
+      status="$(status_json)"
+      booted="$(deployment booted .checksum)"
+      if [[ -n "$booted" && "$booted" == "$(jq -r '.targetChecksum // empty' <<<"$st")" ]]; then
+        set_state done bootId "$(boot_id)" finishedAt "$(date +%s)"
+        echo "Running $(describe booted)." | tee -a "$LOG"
+        notify 5 "Updated ${host}" "Now running $(describe booted)."
+      elif [[ "$phase" == rebooting ]]; then
+        msg="${host} came back on $(describe booted), not the update to $(jq -r '.toName // .to // "the new image"' <<<"$st")."
+        set_state failed bootId "$(boot_id)" finishedAt "$(date +%s)" error "$msg"
+        echo "$msg" | tee -a "$LOG"
+        notify 8 "Update failed on ${host}" "$msg"
+        exit 1
+      fi
+      ;;
+    checking | downloading)
+      set_state failed bootId "$(boot_id)" error "The update was cut off by a reboot before it was staged."
+      ;;
+  esac
+}
+
+# One run at a time; a second one gives up at once instead of queueing behind the first.
+exec 9>"$DIR/lock"
+if ! flock -n 9; then
+  echo "autoupdate: another update run is going" >&2
+  exit 1
+fi
+
+case "${1:-}" in
+  "")
+    stage
+    if [[ "$(state | jq -r .phase)" == staged ]]; then
+      apply
+    fi
+    ;;
+  --stage) stage ;;
+  --apply) apply ;;
+  --verify) verify ;;
+  *)
+    echo "usage: autoupdate-run [--stage | --apply | --verify]" >&2
+    exit 2
+    ;;
+esac

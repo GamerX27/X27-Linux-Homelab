@@ -1,0 +1,11 @@
+[Unit]
+Description=X27-Linux Homelab update: reboot into the staged image
+Documentation=man:rpm-ostree(1)
+ConditionPathExists=/run/ostree-booted
+
+# Sends the Gotify message (if set up) and reboots into the update staged by
+# autoupdate-stage.service.
+[Service]
+Type=oneshot
+StateDirectory=autoupdate
+ExecStart=/usr/libexec/autoupdate-run --apply

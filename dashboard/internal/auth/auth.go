@@ -1,16 +1,21 @@
 // Package auth logs people into the main node's UI with their Linux password (PAM
-// service "dashboard") and keeps their sessions in memory; a restart logs everyone out.
+// service "dashboard"). Sessions are saved to disk (Persist) so they survive a restart,
+// such as the main node rebooting into an OS update while the update page follows it.
 // Only members of the wheel group get in, since the UI hands out a terminal and root-level
 // controls.
 package auth
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/user"
 	"slices"
 	"sync"
@@ -36,6 +41,13 @@ type Session struct {
 	expires time.Time
 }
 
+// savedSession is a session on disk.
+type savedSession struct {
+	User    string    `json:"user"`
+	CSRF    string    `json:"csrf"`
+	Expires time.Time `json:"expires"`
+}
+
 // Authenticator checks a username + password. PAM in production, a stub in --dev.
 type Authenticator func(username, password string) error
 
@@ -43,8 +55,10 @@ type Manager struct {
 	auth     Authenticator
 	anyGroup bool // --dev: no wheel check
 	mu       sync.Mutex
-	sessions map[string]*Session
+	sessions map[string]*Session // by key(cookie value)
 	failures map[string]*failure
+	path     string // where sessions are saved; "" keeps them in memory only
+	dirty    bool   // an expiry slid since the last save
 }
 
 type failure struct {
@@ -55,6 +69,63 @@ type failure struct {
 // NewManager with requireWheel false is only for --dev.
 func NewManager(a Authenticator, requireWheel bool) *Manager {
 	return &Manager{auth: a, anyGroup: !requireWheel, sessions: map[string]*Session{}, failures: map[string]*failure{}}
+}
+
+// key is what sessions are stored under: a hash of the cookie, so the file on disk
+// holds nothing that logs anyone in.
+func key(cookie string) string {
+	h := sha256.Sum256([]byte(cookie))
+	return hex.EncodeToString(h[:])
+}
+
+// Persist loads the sessions saved at path and saves them there from now on: at once on
+// login and logout, and within a minute when a session's expiry slides.
+func (m *Manager) Persist(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.path = path
+	if b, err := os.ReadFile(path); err == nil {
+		var saved map[string]savedSession
+		if err := json.Unmarshal(b, &saved); err != nil {
+			log.Printf("sessions: can't read %s: %v", path, err)
+		}
+		for k, s := range saved {
+			if time.Now().Before(s.Expires) {
+				m.sessions[k] = &Session{User: s.User, CSRF: s.CSRF, expires: s.Expires}
+			}
+		}
+	}
+	go func() {
+		for range time.Tick(time.Minute) {
+			m.mu.Lock()
+			if m.dirty {
+				m.saveLocked()
+			}
+			m.mu.Unlock()
+		}
+	}()
+}
+
+func (m *Manager) saveLocked() {
+	m.dirty = false
+	if m.path == "" {
+		return
+	}
+	saved := map[string]savedSession{}
+	for k, s := range m.sessions {
+		if time.Now().Before(s.expires) {
+			saved[k] = savedSession{s.User, s.CSRF, s.expires}
+		}
+	}
+	b, _ := json.Marshal(saved)
+	tmp := m.path + ".tmp"
+	err := os.WriteFile(tmp, b, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, m.path)
+	}
+	if err != nil {
+		log.Printf("sessions: saving: %v", err)
+	}
 }
 
 func random() string {
@@ -108,7 +179,8 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username, passwo
 	id := random()
 	m.mu.Lock()
 	delete(m.failures, ip)
-	m.sessions[id] = s
+	m.sessions[key(id)] = s
+	m.saveLocked()
 	m.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
 		Name: CookieName, Value: id, Path: "/",
@@ -120,7 +192,8 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request, username, passwo
 func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(CookieName); err == nil {
 		m.mu.Lock()
-		delete(m.sessions, c.Value)
+		delete(m.sessions, key(c.Value))
+		m.saveLocked()
 		m.mu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1})
@@ -134,15 +207,18 @@ func (m *Manager) Session(r *http.Request) *Session {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := m.sessions[c.Value]
+	k := key(c.Value)
+	s := m.sessions[k]
 	if s == nil {
 		return nil
 	}
 	if time.Now().After(s.expires) {
-		delete(m.sessions, c.Value)
+		delete(m.sessions, k)
+		m.dirty = true
 		return nil
 	}
 	s.expires = time.Now().Add(sessionIdle)
+	m.dirty = true
 	return s
 }
 

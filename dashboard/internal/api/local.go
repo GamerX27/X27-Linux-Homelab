@@ -109,6 +109,15 @@ func (l *Local) osStatus(fresh bool) osupdate.Status {
 	return l.osCached
 }
 
+// osAction starts an update step and drops the cached status, so the next summary shows it.
+func (l *Local) osAction(fn func() error) error {
+	err := fn()
+	l.osMu.Lock()
+	l.osAt = time.Time{}
+	l.osMu.Unlock()
+	return err
+}
+
 // Summary is what the main node shows for every node in its list.
 type Summary struct {
 	Info             system.Info `json:"info"`
@@ -121,6 +130,8 @@ type Summary struct {
 	UpdateVersion    string      `json:"updateVersion"`
 	UpdateStaged     bool        `json:"updateStaged"`
 	Updating         bool        `json:"updating"` // an OS update is being installed
+	UpdatePhase      string      `json:"updatePhase"`
+	BootID           string      `json:"bootId"`
 	ContainerUpdates int         `json:"containerUpdates"`
 	Running          int         `json:"running"`
 	Containers       int         `json:"containers"`
@@ -138,6 +149,10 @@ func (l *Local) summary() Summary {
 	s.UpdateAvailable, s.UpdateVersion = os.Check.Available, os.Check.Version
 	s.UpdateStaged = os.Staged != nil
 	s.Updating = os.Updating
+	s.BootID = os.BootID
+	if os.Job != nil {
+		s.UpdatePhase = os.Job.Phase
+	}
 	for _, i := range l.updater.Status().Images {
 		if i.State == "update" {
 			s.ContainerUpdates++
@@ -180,11 +195,18 @@ func (l *Local) Handler() http.Handler {
 		result(w, r, "check for OS update", "Checking…", l.checker.CheckAsync())
 	})
 	mux.HandleFunc("POST /os/update", func(w http.ResponseWriter, r *http.Request) {
-		err := osupdate.Update()
-		l.osMu.Lock()
-		l.osAt = time.Time{} // show "updating" in the next summary, not after the cache expires
-		l.osMu.Unlock()
-		result(w, r, "start OS update", "Update started. The node reboots if an update is installed.", err)
+		result(w, r, "start OS update", "Update started. The node reboots if an update is installed.", l.osAction(osupdate.Update))
+	})
+	mux.HandleFunc("POST /os/stage", func(w http.ResponseWriter, r *http.Request) {
+		result(w, r, "stage OS update", "Downloading the update.", l.osAction(osupdate.Stage))
+	})
+	mux.HandleFunc("POST /os/apply", func(w http.ResponseWriter, r *http.Request) {
+		result(w, r, "reboot into OS update", "Rebooting into the update…", l.osAction(osupdate.Apply))
+	})
+	mux.HandleFunc("GET /os/log", func(w http.ResponseWriter, r *http.Request) {
+		off, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+		text, next := osupdate.ReadLog(off)
+		writeJSON(w, http.StatusOK, map[string]any{"text": text, "offset": next})
 	})
 	mux.HandleFunc("POST /os/rollback", func(w http.ResponseWriter, r *http.Request) {
 		result(w, r, "roll back OS", "Rolled back. Rebooting…", osupdate.Rollback())

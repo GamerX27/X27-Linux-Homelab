@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,7 @@ func NewMain(o Options) (http.Handler, error) {
 	local := NewLocal(o.Version, o.Dev, &websocket.Upgrader{})
 	localAPI := local.Handler()
 	sessions := auth.NewManager(o.Auth, !o.Dev)
+	sessions.Persist(filepath.Join(config.StateDir, "sessions.json"))
 	profiles := auth.NewProfiles(config.StateDir)
 	if o.Presets == "" {
 		o.Presets = config.DefaultPresetsRepo
@@ -200,6 +202,7 @@ func NewMain(o Options) (http.Handler, error) {
 		}
 		writeJSON(w, http.StatusOK, f)
 	})
+	rolloutRoutes(api, local, store)
 	api.HandleFunc("/api/n/{id}/", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		prefix := "/api/n/" + id
@@ -227,7 +230,7 @@ func NewMain(o Options) (http.Handler, error) {
 		}
 		api.ServeHTTP(w, withUser(r, s.User))
 	}))
-	return securityHeaders(mux), nil
+	return securityHeaders(fakeReboot(mux)), nil
 }
 
 // NewNode serves only the API, to the one main node holding its token, plus /pair.
