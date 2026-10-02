@@ -1,6 +1,7 @@
 import { h, clear, icon, meter, modal, confirmAction, toast, duration, bytes, pct, menu, menuOpen } from '../ui.js';
 import * as api from '../api.js';
 import { startUpdate } from './rollout.js';
+import { jobRunning, jobLine, jobSummary } from './docker.js';
 
 // Pairing passwords: 20 characters from this alphabet, shown in groups of four.
 const PAIR_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -95,10 +96,11 @@ function nodeCard(n, refreshNodes) {
           `${s.running}/${s.containers}`), 'running'),
         fact('Uptime', duration(s.uptimeSec)),
         fact('Version', h('span.mono', s.version || '—'), s.version ? null : 'not an image')),
-      (s.updateAvailable || s.updateStaged || s.containerUpdates) ? h('div.row', { style: { gap: '6px' } },
+      (s.updateAvailable || s.updateStaged || s.containerUpdates || s.containersUpdating) ? h('div.row', { style: { gap: '6px' } },
         s.updateAvailable ? h('a.badge.update', { href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates') }, `OS ${s.updateVersion || 'update'}`) : null,
         s.updateStaged ? h('a.badge.warn', { href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates') }, 'reboot to apply') : null,
-        s.containerUpdates ? h('a.badge.update', { href: `#/n/${n.id}/docker`, onclick: go(n.id, 'docker') },
+        s.containersUpdating ? h('a.badge.updating', { href: `#/n/${n.id}/docker`, onclick: go(n.id, 'docker') }, 'updating containers')
+        : s.containerUpdates ? h('a.badge.update', { href: `#/n/${n.id}/docker`, onclick: go(n.id, 'docker') },
           `${s.containerUpdates} image update${s.containerUpdates > 1 ? 's' : ''}`) : null) : null,
     ];
   } else {
@@ -234,8 +236,23 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
     await Promise.all(ctNodes.map(async (n) => {
       set('ct', n.id, 'idle', 'Updating…');
       try {
-        const r = await api.post(`/api/n/${n.id}/docker/updates/apply-all`);
-        set('ct', n.id, r.failed ? 'crit' : 'good', r.failed ? `${r.updated} updated, ${r.failed} failed` : r.updated ? `${r.updated} updated` : 'Already up to date', r.output);
+        const base = `/api/n/${n.id}/docker/updates`;
+        const r = await api.post(`${base}/apply-all`);
+        if (!r.job) { // an older node answers when it's done
+          set('ct', n.id, r.failed ? 'crit' : 'good', r.failed ? `${r.updated} updated, ${r.failed} failed` : r.updated ? `${r.updated} updated` : 'Already up to date', r.output);
+          return;
+        }
+        let j = r.job;
+        const finished = await pollUntil(async () => {
+          const st = await api.get(base);
+          if (st.job?.id !== r.job.id) return false;
+          j = st.job;
+          if (jobRunning(j)) set('ct', n.id, 'idle', jobLine(j));
+          return !jobRunning(j);
+        }, 2000, 60 * 60000);
+        const log = (await api.get(`${base}/log`).catch(() => ({}))).text;
+        if (!finished) set('ct', n.id, 'warn', 'Still updating, see its Docker tab', log);
+        else set('ct', n.id, j.phase === 'failed' ? 'crit' : 'good', jobSummary(j), log);
       } catch (e) { set('ct', n.id, 'crit', e.message); }
     }));
     progress.busy.ct = false;

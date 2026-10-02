@@ -235,6 +235,10 @@ compose projects running on the node, with Start/Stop, Restart, **Pull & recreat
   mounts is kept. For a container started with plain `docker run` it makes a new container with
   the same ports, environment, volumes (anonymous ones too), networks and restart policy, and puts
   the old one back if anything fails. Image updates do the same.
+- **Update** and **Update all** run in the background, one update at a time per node. The bar
+  above the stacks shows what is being pulled or recreated, the stack shows an "Updating" badge
+  (others wait as "Queued"), and **Log** shows the output live. When it's done the bar keeps the
+  result and its log until you dismiss it, even if you left the page meanwhile.
 - **Remove** runs `docker compose down`; named volumes stay. Its folder stays too, unless you
   tick "Also delete the folder" in the dialog, which deletes the folder and everything in it.
 

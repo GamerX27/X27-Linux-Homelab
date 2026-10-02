@@ -363,6 +363,16 @@ a.port::after { content: " ↗"; font-size: 10px; }
 .ct-row { grid-template-columns: minmax(150px, 1.4fr) minmax(160px, 2fr) minmax(130px, 1.3fr) minmax(90px, 1fr) 130px; padding: 7px 12px 7px 48px; font-size: 13.5px; }
 .ct-row + .ct-row { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .ct-row.has-update { background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.update-strip.running { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); box-shadow: inset 3px 0 0 var(--accent); }
+.update-strip .job-status { display: inline-flex; align-items: center; gap: 8px; }
+.update-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 8px 8px 14px; }
+.update-result.failed { background: color-mix(in srgb, var(--critical) 10%, transparent); }
+.update-result.done { background: color-mix(in srgb, var(--good) 10%, transparent); }
+.spinner.small { width: 12px; height: 12px; border-width: 2px; }
+.badge.updating { background: var(--accent-soft); color: var(--text); }
+.badge.updating .spinner { border-color: var(--accent); border-right-color: transparent; }
+.app-group.updating { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.ct-row.updating { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .update-strip .update-list { min-width: 0; max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ct-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 550; }
 .ct-name .link-btn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

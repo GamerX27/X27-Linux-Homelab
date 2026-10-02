@@ -3,6 +3,7 @@ package docker
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"slices"
 	"sort"
@@ -94,7 +95,26 @@ type UpdateCheck struct {
 	Checking  bool          `json:"checking"`
 	Images    []ImageUpdate `json:"images"`
 	Error     string        `json:"error,omitempty"`
+	Job       *UpdateJob    `json:"job,omitempty"` // the running update, or the last one
 }
+
+// UpdateJob is one update run in the background. The UI polls it to show what is being
+// updated right now, what is queued, and how the run ended; its output is in Log.
+type UpdateJob struct {
+	ID         int64    `json:"id"`
+	Kind       string   `json:"kind"`             // all, stack, image
+	Target     string   `json:"target,omitempty"` // the stack or image
+	Phase      string   `json:"phase"`            // starting, checking, pulling, recreating, done, failed
+	Current    string   `json:"current,omitempty"`
+	Pending    []string `json:"pending,omitempty"` // stacks and standalone containers still to do
+	Updated    int      `json:"updated"`
+	Failed     int      `json:"failed"`
+	Error      string   `json:"error,omitempty"`
+	StartedAt  int64    `json:"startedAt"`
+	FinishedAt int64    `json:"finishedAt,omitempty"`
+}
+
+func (j *UpdateJob) Running() bool { return j.FinishedAt == 0 }
 
 // Updater compares each image's local digest with the registry's, the same way
 // docker-compose-update does (docker buildx imagetools inspect), without pulling.
@@ -102,6 +122,8 @@ type Updater struct {
 	c        *Client
 	mu       sync.Mutex
 	check    UpdateCheck
+	job      *UpdateJob
+	log      []string
 	applying sync.Mutex // one update run at a time
 }
 
@@ -110,7 +132,79 @@ func NewUpdater(c *Client) *Updater { return &Updater{c: c} }
 func (u *Updater) Status() UpdateCheck {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.check
+	st := u.check
+	st.Images = slices.Clone(st.Images)
+	if u.job != nil {
+		j := *u.job
+		j.Pending = slices.Clone(j.Pending)
+		st.Job = &j
+	}
+	return st
+}
+
+// Log is the output of the running or last update.
+func (u *Updater) Log() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return strings.Join(u.log, "\n")
+}
+
+func (u *Updater) logf(format string, a ...any) {
+	s := strings.TrimSpace(fmt.Sprintf(format, a...))
+	if s == "" {
+		return
+	}
+	u.mu.Lock()
+	u.log = append(u.log, s)
+	u.mu.Unlock()
+}
+
+func (u *Updater) setJob(f func(j *UpdateJob)) {
+	u.mu.Lock()
+	f(u.job)
+	u.mu.Unlock()
+}
+
+func (u *Updater) phase(p string) { u.setJob(func(j *UpdateJob) { j.Phase = p }) }
+
+// begin marks what is updated next: it leaves the queue and becomes the current one.
+func (u *Updater) begin(name, phase string) {
+	u.setJob(func(j *UpdateJob) {
+		j.Current, j.Phase = name, phase
+		j.Pending = slices.DeleteFunc(j.Pending, func(p string) bool { return p == name })
+	})
+}
+
+// start runs fn as the update job in the background and returns the job as it starts.
+// fn counts what it updated and failed on the job; an error from it fails the whole run.
+func (u *Updater) start(kind, target string, fn func() error) (UpdateJob, error) {
+	if !u.applying.TryLock() {
+		return UpdateJob{}, ErrUpdateRunning
+	}
+	u.mu.Lock()
+	u.job = &UpdateJob{ID: time.Now().UnixMilli(), Kind: kind, Target: target, Phase: "starting", StartedAt: time.Now().Unix()}
+	u.log = nil
+	j := *u.job
+	u.mu.Unlock()
+	go func() {
+		defer u.applying.Unlock()
+		err := fn()
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		j := u.job
+		j.FinishedAt, j.Current, j.Pending = time.Now().Unix(), "", nil
+		switch {
+		case err != nil:
+			j.Phase, j.Error = "failed", err.Error()
+			u.log = append(u.log, "failed: "+err.Error())
+		case j.Failed > 0:
+			j.Phase, j.Error = "failed", fmt.Sprintf("%d of %d failed", j.Failed, j.Failed+j.Updated)
+		default:
+			j.Phase = "done"
+		}
+		log.Printf("container update (%s %s): %s, %d updated, %d failed", kind, target, j.Phase, j.Updated, j.Failed)
+	}()
+	return j, nil
 }
 
 func remoteDigest(image string) (string, error) {
@@ -246,55 +340,75 @@ func planUpdates(cs []Container, images map[string]bool) updatePlan {
 // updateProject pulls the given services (all of them when none are given) and runs one
 // `up -d`, so compose recreates exactly the containers whose image changed plus the ones
 // that depend on them (depends_on, network_mode: service:x), and leaves the rest alone.
-func updateProject(p Project, services []string) (string, error) {
+func (u *Updater) updateProject(p Project, services []string) error {
+	u.phase("pulling")
 	out, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, append([]string{"pull"}, services...)...)...)
+	u.logOutput(out, err)
 	if err != nil {
-		return out, err
+		return err
 	}
-	out2, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, "up", "-d")...)
-	return strings.TrimSpace(out + "\n" + out2), err
+	u.phase("recreating")
+	out, err = run.Cmd(15*time.Minute, "docker", composeArgs(p, "up", "-d")...)
+	u.logOutput(out, err)
+	return err
 }
 
-type ApplyAllResult struct {
-	Updated int    `json:"updated"`
-	Failed  int    `json:"failed"`
-	Output  string `json:"output"`
+// logOutput logs a command's output, and its error when that says more than the output
+// (run.Cmd's error usually is the output).
+func (u *Updater) logOutput(out string, err error) {
+	u.logf("%s", out)
+	if err != nil && err.Error() != out {
+		u.logf("failed: %v", err)
+	} else if err != nil {
+		u.logf("failed")
+	}
 }
 
-// applyPlan updates each project and standalone container in the plan, and marks the
-// images whose users all updated as up to date.
-func (u *Updater) applyPlan(pl updatePlan) ApplyAllResult {
-	var res ApplyAllResult
-	var log []string
-	stale := map[string]bool{} // images some user of which wasn't updated
+// applyPlan updates each project and standalone container in the plan, counting them on
+// the job, and marks the images whose users all updated as up to date.
+func (u *Updater) applyPlan(pl updatePlan) {
+	var queue []string
 	for _, pu := range pl.Projects {
-		log = append(log, "== "+pu.Project.Name+": "+strings.Join(pu.Services, ", "))
-		out, err := updateProject(pu.Project, pu.Services)
-		log = append(log, out)
+		queue = append(queue, pu.Project.Name)
+	}
+	for _, c := range pl.Standalone {
+		queue = append(queue, c.Name())
+	}
+	u.setJob(func(j *UpdateJob) { j.Pending = queue })
+
+	stale := map[string]bool{} // images some user of which wasn't updated
+	count := func(err error) {
+		u.setJob(func(j *UpdateJob) {
+			if err != nil {
+				j.Failed++
+			} else {
+				j.Updated++
+			}
+		})
+	}
+	for _, pu := range pl.Projects {
+		u.begin(pu.Project.Name, "pulling")
+		u.logf("== %s: %s", pu.Project.Name, strings.Join(pu.Services, ", "))
+		err := u.updateProject(pu.Project, pu.Services)
+		count(err)
 		if err != nil {
-			res.Failed++
-			log = append(log, "failed: "+err.Error())
 			for _, img := range pu.Images {
 				stale[img] = true
 			}
-			continue
 		}
-		res.Updated++
 	}
 	for _, c := range pl.Standalone {
-		log = append(log, "== "+c.Name())
+		u.begin(c.Name(), "recreating")
+		u.logf("== %s", c.Name())
 		out, err := u.c.Recreate(c.ID)
-		log = append(log, out)
+		u.logOutput(out, err)
+		count(err)
 		if err != nil {
-			res.Failed++
-			log = append(log, "failed: "+err.Error())
 			stale[c.Image] = true
-			continue
 		}
-		res.Updated++
 	}
 	for _, pu := range pl.Elsewhere {
-		log = append(log, "== "+pu.Project.Name+": compose files not on this host, redeploy it where it's managed.")
+		u.logf("== %s: compose files not on this host, redeploy it where it's managed.", pu.Project.Name)
 		for _, img := range pu.Images {
 			stale[img] = true
 		}
@@ -315,88 +429,90 @@ func (u *Updater) applyPlan(pl updatePlan) ApplyAllResult {
 		}
 	}
 	u.mu.Unlock()
-	res.Output = strings.TrimSpace(strings.Join(log, "\n"))
-	return res
 }
 
 var ErrUpdateRunning = errors.New("an update is already running on this node")
 
-// Apply updates what uses one image: each compose project through updateProject, and
-// containers started with plain `docker run` through Recreate (same settings and volumes).
-func (u *Updater) Apply(image string) (string, error) {
-	if !u.applying.TryLock() {
-		return "", ErrUpdateRunning
-	}
-	defer u.applying.Unlock()
-	cs, err := u.c.Containers()
-	if err != nil {
-		return "", err
-	}
-	res := u.applyPlan(planUpdates(cs, map[string]bool{image: true}))
-	if res.Failed > 0 {
-		return res.Output, fmt.Errorf("%d of %d failed", res.Failed, res.Failed+res.Updated)
-	}
-	return res.Output, nil
-}
-
-// ApplyAll checks every image against its registry again and updates the ones that
-// changed, one pass per stack. Containers whose images are up to date aren't touched.
-func (u *Updater) ApplyAll() (ApplyAllResult, error) {
-	if !u.applying.TryLock() {
-		return ApplyAllResult{}, ErrUpdateRunning
-	}
-	defer u.applying.Unlock()
-	for u.Status().Checking { // a check started elsewhere; wait for it, then check fresh
-		time.Sleep(time.Second)
-	}
-	u.Check()
-	st := u.Status()
-	if st.Error != "" {
-		return ApplyAllResult{}, errors.New(st.Error)
-	}
-	images := map[string]bool{}
-	for _, img := range st.Images {
-		if img.State == "update" {
-			images[img.Image] = true
-		}
-	}
-	cs, err := u.c.Containers()
-	if err != nil {
-		return ApplyAllResult{}, err
-	}
-	res := u.applyPlan(planUpdates(cs, images))
-	if res.Updated == 0 && res.Failed == 0 && res.Output == "" {
-		res.Output = "All images are up to date."
-	}
-	return res, nil
-}
-
-// UpdateStack updates the services of one stack whose images have updates (per the last
-// check), in one pass. With none known it pulls every service and runs `up -d`.
-func (u *Updater) UpdateStack(o Owner, name string) (string, error) {
-	if !u.applying.TryLock() {
-		return "", ErrUpdateRunning
-	}
-	defer u.applying.Unlock()
-	p, err := u.c.stackProject(o, name, true)
-	if err != nil {
-		return "", err
-	}
-	cs, err := u.c.Containers()
-	if err != nil {
-		return "", err
-	}
+// knownUpdates is the images the last check found updates for.
+func (u *Updater) knownUpdates() map[string]bool {
 	images := map[string]bool{}
 	for _, img := range u.Status().Images {
 		if img.State == "update" {
 			images[img.Image] = true
 		}
 	}
-	var services []string
-	for _, pu := range planUpdates(cs, images).Projects {
-		if pu.Project.Name == name {
-			services = pu.Services
+	return images
+}
+
+// StartApply updates what uses one image in the background: each compose project through
+// updateProject, and containers started with plain `docker run` through Recreate (same
+// settings and volumes).
+func (u *Updater) StartApply(image string) (UpdateJob, error) {
+	return u.start("image", image, func() error {
+		cs, err := u.c.Containers()
+		if err != nil {
+			return err
 		}
+		u.applyPlan(planUpdates(cs, map[string]bool{image: true}))
+		return nil
+	})
+}
+
+// StartApplyAll checks every image against its registry again and updates the ones that
+// changed, one pass per stack. Containers whose images are up to date aren't touched.
+func (u *Updater) StartApplyAll() (UpdateJob, error) {
+	return u.start("all", "", func() error {
+		u.phase("checking")
+		for u.Status().Checking { // a check started elsewhere; wait for it, then check fresh
+			time.Sleep(time.Second)
+		}
+		u.Check()
+		if st := u.Status(); st.Error != "" {
+			return errors.New(st.Error)
+		}
+		images := u.knownUpdates()
+		if len(images) == 0 {
+			u.logf("All images are up to date.")
+			return nil
+		}
+		cs, err := u.c.Containers()
+		if err != nil {
+			return err
+		}
+		u.applyPlan(planUpdates(cs, images))
+		return nil
+	})
+}
+
+// StartUpdateStack updates the services of one stack whose images have updates (per the
+// last check), in one pass. With none known it pulls every service and runs `up -d`.
+func (u *Updater) StartUpdateStack(o Owner, name string) (UpdateJob, error) {
+	p, err := u.c.stackProject(o, name, true)
+	if err != nil {
+		return UpdateJob{}, err
 	}
-	return updateProject(p, services)
+	return u.start("stack", name, func() error {
+		cs, err := u.c.Containers()
+		if err != nil {
+			return err
+		}
+		for _, pu := range planUpdates(cs, u.knownUpdates()).Projects {
+			if pu.Project.Name == name {
+				pu.Project = p
+				u.applyPlan(updatePlan{Projects: []projectUpdate{pu}})
+				return nil
+			}
+		}
+		u.begin(name, "pulling")
+		u.logf("== %s: all services", name)
+		err = u.updateProject(p, nil)
+		u.setJob(func(j *UpdateJob) {
+			if err != nil {
+				j.Failed++
+			} else {
+				j.Updated++
+			}
+		})
+		return nil
+	})
 }

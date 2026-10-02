@@ -68,6 +68,18 @@ func result(w http.ResponseWriter, r *http.Request, what, out string, err error)
 	writeJSON(w, http.StatusOK, map[string]string{"output": out})
 }
 
+// startedJob answers a request that started a container update in the background: the
+// job, which the UI then follows through GET /docker/updates.
+func startedJob(w http.ResponseWriter, r *http.Request, what string, job docker.UpdateJob, err error) {
+	if err != nil {
+		log.Printf("%s: %s failed: %v", userOf(r), what, err)
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	log.Printf("%s: %s started", userOf(r), what)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+}
+
 type Local struct {
 	Version  string
 	Dev      bool
@@ -120,22 +132,23 @@ func (l *Local) osAction(fn func() error) error {
 
 // Summary is what the main node shows for every node in its list.
 type Summary struct {
-	Info             system.Info `json:"info"`
-	CPUPercent       float64     `json:"cpuPercent"`
-	MemTotal         uint64      `json:"memTotal"`
-	MemUsed          uint64      `json:"memUsed"`
-	UptimeSec        float64     `json:"uptimeSec"`
-	Version          string      `json:"version"`
-	UpdateAvailable  bool        `json:"updateAvailable"`
-	UpdateVersion    string      `json:"updateVersion"`
-	UpdateStaged     bool        `json:"updateStaged"`
-	Updating         bool        `json:"updating"` // an OS update is being installed
-	UpdatePhase      string      `json:"updatePhase"`
-	BootID           string      `json:"bootId"`
-	ContainerUpdates int         `json:"containerUpdates"`
-	Running          int         `json:"running"`
-	Containers       int         `json:"containers"`
-	DashboardVersion string      `json:"dashboardVersion"`
+	Info               system.Info `json:"info"`
+	CPUPercent         float64     `json:"cpuPercent"`
+	MemTotal           uint64      `json:"memTotal"`
+	MemUsed            uint64      `json:"memUsed"`
+	UptimeSec          float64     `json:"uptimeSec"`
+	Version            string      `json:"version"`
+	UpdateAvailable    bool        `json:"updateAvailable"`
+	UpdateVersion      string      `json:"updateVersion"`
+	UpdateStaged       bool        `json:"updateStaged"`
+	Updating           bool        `json:"updating"` // an OS update is being installed
+	UpdatePhase        string      `json:"updatePhase"`
+	BootID             string      `json:"bootId"`
+	ContainerUpdates   int         `json:"containerUpdates"`
+	ContainersUpdating bool        `json:"containersUpdating"` // a container update is running
+	Running            int         `json:"running"`
+	Containers         int         `json:"containers"`
+	DashboardVersion   string      `json:"dashboardVersion"`
 }
 
 func (l *Local) summary() Summary {
@@ -153,11 +166,13 @@ func (l *Local) summary() Summary {
 	if os.Job != nil {
 		s.UpdatePhase = os.Job.Phase
 	}
-	for _, i := range l.updater.Status().Images {
+	ct := l.updater.Status()
+	for _, i := range ct.Images {
 		if i.State == "update" {
 			s.ContainerUpdates++
 		}
 	}
+	s.ContainersUpdating = ct.Job != nil && ct.Job.Running()
 	if info, err := l.docker.Info(); err == nil {
 		s.Running, s.Containers = info.ContainersRunning, info.Containers
 	}
@@ -363,26 +378,20 @@ func (l *Local) Handler() http.Handler {
 			result(w, r, what, out, err)
 			return
 		}
-		var out string
 		if a == "update" {
-			out, err = l.updater.UpdateStack(o, name)
-		} else {
-			out, err = l.docker.StackAction(o, name, a)
+			job, err := l.updater.StartUpdateStack(o, name)
+			startedJob(w, r, "update stack "+name, job, err)
+			return
 		}
-		if err == nil && (a == "recreate" || a == "update") {
+		out, err := l.docker.StackAction(o, name, a)
+		if err == nil && a == "recreate" {
 			go l.updater.Check() // clear its "update available" badge
 		}
 		result(w, r, "stack "+a+" "+name, out, err)
 	})
 	mux.HandleFunc("POST /docker/updates/apply-all", func(w http.ResponseWriter, r *http.Request) {
-		res, err := l.updater.ApplyAll()
-		if err != nil {
-			log.Printf("%s: update all images failed: %v", userOf(r), err)
-			writeErr(w, http.StatusConflict, err)
-			return
-		}
-		log.Printf("%s: update all images: %d updated, %d failed", userOf(r), res.Updated, res.Failed)
-		writeJSON(w, http.StatusOK, res)
+		job, err := l.updater.StartApplyAll()
+		startedJob(w, r, "update all images", job, err)
 	})
 	mux.HandleFunc("GET /docker/updates", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, l.updater.Status())
@@ -397,8 +406,11 @@ func (l *Local) Handler() http.Handler {
 			writeErr(w, http.StatusBadRequest, errors.New("bad image"))
 			return
 		}
-		out, err := l.updater.Apply(body.Image)
-		result(w, r, "update image "+body.Image, out, err)
+		job, err := l.updater.StartApply(body.Image)
+		startedJob(w, r, "update image "+body.Image, job, err)
+	})
+	mux.HandleFunc("GET /docker/updates/log", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"text": l.updater.Log()})
 	})
 
 	// Files: the acting user's home folder, with that user's permissions (see internal/files).

@@ -2,11 +2,14 @@ package docker
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func testOwner(t *testing.T) Owner {
@@ -145,8 +148,62 @@ func TestDeleteStackFolder(t *testing.T) {
 func TestApplyAllOverlap(t *testing.T) {
 	u := NewUpdater(New())
 	u.applying.Lock()
-	if _, err := u.ApplyAll(); err != ErrUpdateRunning {
+	if _, err := u.StartApplyAll(); err != ErrUpdateRunning {
 		t.Fatalf("got %v", err)
 	}
 	u.applying.Unlock()
+}
+
+// waitJob polls the job like the UI does until it finishes.
+func waitJob(t *testing.T, u *Updater) UpdateJob {
+	t.Helper()
+	for range 200 {
+		if j := u.Status().Job; j != nil && !j.Running() {
+			return *j
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("job never finished")
+	return UpdateJob{}
+}
+
+func TestUpdateJob(t *testing.T) {
+	u := NewUpdater(New())
+	release := make(chan struct{})
+	j, err := u.start("stack", "web", func() error {
+		u.begin("web", "pulling")
+		<-release
+		u.logf("pulled")
+		u.setJob(func(j *UpdateJob) { j.Updated++ })
+		return nil
+	})
+	if err != nil || j.Phase != "starting" || j.Target != "web" {
+		t.Fatalf("start: %+v %v", j, err)
+	}
+	if _, err := u.start("all", "", func() error { return nil }); err != ErrUpdateRunning {
+		t.Fatalf("second start: %v", err)
+	}
+	for u.Status().Job.Current != "web" {
+		time.Sleep(time.Millisecond)
+	}
+	if st := u.Status().Job; !st.Running() || st.Phase != "pulling" {
+		t.Fatalf("running: %+v", st)
+	}
+	close(release)
+	if done := waitJob(t, u); done.Phase != "done" || done.Updated != 1 || done.Current != "" || done.FinishedAt == 0 {
+		t.Fatalf("done: %+v", done)
+	}
+	if u.Log() != "pulled" {
+		t.Fatalf("log %q", u.Log())
+	}
+
+	// A failed step fails the job; an error fails it with that error.
+	u.start("all", "", func() error { u.setJob(func(j *UpdateJob) { j.Updated, j.Failed = 2, 1 }); return nil })
+	if f := waitJob(t, u); f.Phase != "failed" || f.Error != "1 of 3 failed" {
+		t.Fatalf("failed: %+v", f)
+	}
+	u.start("all", "", func() error { return errors.New("registry down") })
+	if f := waitJob(t, u); f.Phase != "failed" || f.Error != "registry down" || !strings.Contains(u.Log(), "registry down") {
+		t.Fatalf("error: %+v %q", f, u.Log())
+	}
 }
