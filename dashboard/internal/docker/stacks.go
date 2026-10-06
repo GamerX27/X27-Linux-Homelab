@@ -293,10 +293,10 @@ func (c *Client) stackProject(o Owner, name string, needsFiles bool) (Project, e
 	return p, nil
 }
 
-// StackAction runs start/stop/restart/recreate/remove on a stack.
+// StackAction runs start/stop/resume/restart/recreate/remove on a stack.
 func (c *Client) StackAction(o Owner, name, action string) (string, error) {
 	// Projects from files that aren't on this host can only be stopped/restarted/removed.
-	p, err := c.stackProject(o, name, action == "start" || action == "recreate")
+	p, err := c.stackProject(o, name, action == "start" || action == "recreate" || action == "resume")
 	if err != nil {
 		return "", err
 	}
@@ -308,6 +308,8 @@ func (c *Client) StackAction(o Owner, name, action string) (string, error) {
 		return dc("up", "-d")
 	case "stop":
 		return dc("stop")
+	case "resume": // start the stopped containers as they are, without recreating them
+		return dc("start")
 	case "restart":
 		return dc("restart")
 	case "remove":

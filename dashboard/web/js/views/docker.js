@@ -1,7 +1,8 @@
 import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct, when, menu, menuOpen, modalOpen } from '../ui.js';
 import { openStackEditor } from './stackeditor.js';
+import { WEEKDAYS } from './features.js';
 
-const SECTIONS = ['Apps', 'Images', 'Storage'];
+const SECTIONS = ['Apps', 'Images', 'Storage', 'Backups'];
 const PROJECT = 'com.docker.compose.project';
 
 function stateClass(s) {
@@ -101,6 +102,8 @@ export async function showUpdateLog(api, title = 'Update log') {
 export function renderDocker(el, { api, node, getNode, refreshNodes }) {
   let section = 'Apps', timer, stopped = false;
   let watching = null, dismissed = null; // job IDs: the one to toast when it ends, the hidden result
+  let backupWatching = null; // backup job to toast when it ends
+  const bk = {}; // the Backups section's form, built once so polling doesn't wipe edits
   const data = {};
   const expanded = new Map(); // group key → open? (only once the user toggled it)
   const body = h('div.stack');
@@ -115,7 +118,7 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
 
   function drawNav() {
     clear(nav, SECTIONS.map((s) => h('button.seg-btn', { role: 'tab', 'aria-selected': String(s === section), class: s === section ? 'active' : '',
-      onclick: () => { section = s; filter.value = ''; drawNav(); clear(body, h('div.card.empty', 'Loading…')); load(); } }, s)));
+      onclick: () => { section = s; filter.value = ''; bk.built = null; drawNav(); clear(body, h('div.card.empty', 'Loading…')); load(); } }, s)));
     newStackBtn.classList.toggle('hidden', section !== 'Apps');
   }
 
@@ -134,6 +137,14 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
           toast(`Update ${j.phase === 'failed' ? 'failed' : 'finished'}: ${jobSummary(j)}.`, j.phase === 'failed');
           refreshNodes?.();
         }
+      } else if (sec === 'Backups') {
+        data.backups = await api.get('/docker/backups');
+        const j = data.backups.backups.job;
+        if (jobRunning(j)) backupWatching = j.id;
+        else if (j && j.id === backupWatching) {
+          backupWatching = null;
+          toast(j.phase === 'failed' ? `Backup failed: ${j.error}.` : `Backup finished: ${j.done} app${j.done === 1 ? '' : 's'} backed up.`, j.phase === 'failed');
+        }
       } else if (sec === 'Images') {
         const [images, containers] = await Promise.all([api.get('/docker/images'), api.get('/docker/containers')]);
         Object.assign(data, { images, containers });
@@ -150,11 +161,17 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     schedule();
   }
 
-  // Refresh Apps every 5 s (2 s while an update runs, 3 s while a check runs), but not under
-  // an open menu or dialog.
+  // Refresh Apps every 5 s (2 s while an update runs, 3 s while a check runs), and Backups
+  // every 2 s while one runs, but not under an open menu or dialog.
   function schedule() {
     clearTimeout(timer);
-    if (stopped || section !== 'Apps') return;
+    if (stopped) return;
+    if (section === 'Backups') {
+      if (!jobRunning(data.backups?.backups.job)) return;
+      timer = setTimeout(() => { if (menuOpen() || modalOpen()) schedule(); else load(); }, 2000);
+      return;
+    }
+    if (section !== 'Apps') return;
     timer = setTimeout(() => {
       if (menuOpen() || modalOpen()) schedule();
       else load();
@@ -173,6 +190,7 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     host = portHost(getNode?.() || node);
     if (section === 'Apps') drawApps();
     else if (section === 'Images') drawImages();
+    else if (section === 'Backups') drawBackups();
     else drawStorage();
   }
 
@@ -291,6 +309,7 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         { label: 'Restart', onclick: () => act('Restart', 'restart')(), hidden: running === 0 },
         { label: 'Pull & recreate all', hidden: !s.filesExist, onclick: () => act('Pull & recreate', 'recreate', { output: true,
           confirm: `Pull the newest images for every service in ${s.name} and recreate all its containers? Data in volumes and bind mounts is kept.` })() },
+        { label: 'Back up now', hidden: !s.inRoot, onclick: () => backupNow([s.name], running > 0) },
         { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: () => load() }) },
         { label: 'Remove…', danger: true, hidden: !total && !s.inRoot, onclick: () => removeStack(s) },
       ], `Actions for ${s.name}`)];
@@ -380,6 +399,154 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       } },
     ]);
     if (ok) load();
+  }
+
+  // ---- Backups: archives of stack folders, on a schedule or now -------------------------
+
+  // Starts a backup of apps (the saved selection when empty); stopsSome warns first.
+  async function backupNow(apps, stopsSome = true, btn) {
+    if (stopsSome && !await confirmAction('Back up now',
+      `${apps.length ? apps.join(', ') : 'The selected apps'} ${apps.length === 1 ? 'is' : 'are'} stopped while the folder is packed, then started again.`, 'Back up', false)) return;
+    const run = () => api.post('/docker/backups/run', { apps });
+    const r = btn ? await busy(btn, run, '') : await run().catch((e) => { toast(e.message, true); });
+    if (r?.job) {
+      backupWatching = r.job.id;
+      toast(section === 'Backups' ? 'Backup started.' : 'Backup started. Progress shows under Backups.');
+    }
+    if (section === 'Backups') load();
+  }
+
+  async function showBackupLog() {
+    const pre = h('pre.output', { style: { maxHeight: '60vh' } }, 'Loading…');
+    let t, open = true;
+    const tick = async () => {
+      let running = false;
+      try {
+        const [l, st] = await Promise.all([api.get('/docker/backups/log'), api.get('/docker/backups')]);
+        pre.textContent = l.text || 'No output.';
+        pre.scrollTop = pre.scrollHeight;
+        running = jobRunning(st.backups.job);
+      } catch (e) { pre.textContent = e.message; }
+      if (open && running) t = setTimeout(tick, 2000);
+    };
+    tick();
+    await modal('Backup log', h('div', { 'data-wide': '1' }, pre), [{ label: 'Close', value: true, class: 'primary' }]);
+    open = false; clearTimeout(t);
+  }
+
+  const BACKUP_PHASE = { starting: 'starting', stopping: 'stopping', archiving: 'packing the folder', 'starting-again': 'starting again' };
+
+  function backupStatus(b) {
+    const j = b.job;
+    const logBtn = j ? h('button.btn.small.ghost', { onclick: () => showBackupLog() }, 'Log') : null;
+    if (jobRunning(j)) {
+      const total = j.done + j.failed + (j.current ? 1 : 0) + (j.pending?.length || 0);
+      return h('div.update-strip.running', { role: 'status' },
+        h('span.status.warn.job-status', h('span.spinner.small', { 'aria-hidden': 'true' }),
+          `Backing up ${j.current || ''} · ${BACKUP_PHASE[j.phase] || 'working'}…${total > 1 ? ` (${j.done + j.failed + 1} of ${total})` : ''}`),
+        h('span.spacer'), logBtn);
+    }
+    if (!j) return null;
+    const failed = j.phase === 'failed';
+    return h('div.notice.update-result', { class: failed ? 'failed' : 'done' },
+      h('span', { class: `status ${failed ? 'crit' : 'good'}` },
+        failed ? `Last backup failed: ${j.error}` : `Last backup finished: ${j.done} app${j.done === 1 ? '' : 's'}`),
+      h('span.faint', `· ${when(j.finishedAt).replace(/^.*\((.*)\)$/, '$1')}${j.kind === 'scheduled' ? ' · scheduled' : ''}`),
+      h('span.spacer'), logBtn);
+  }
+
+  function backupArchives(b) {
+    const rows = (b.archives || []).filter((a) => match(a.app, a.file)).map((a) => h('tr',
+      h('td', h('strong', a.app)), h('td.mono', a.file),
+      h('td.num-cell', bytes(a.size)), h('td.num-cell.muted', ago(a.time)),
+      h('td.actions', menu([{ label: 'Delete', danger: true, onclick: async () => {
+        if (!await confirmAction('Delete backup', `Delete ${a.file}? This can't be undone.`, 'Delete')) return;
+        try { await api.post('/docker/backups/delete', { app: a.app, file: a.file }); toast('Backup deleted.'); } catch (e) { toast(e.message, true); }
+        load();
+      } }], 'Backup actions'))));
+    return h('div.card',
+      h('div.card-head', h('h2', `Backups (${(b.archives || []).length})`), h('span.faint.mono', b.dest)),
+      table(['App', 'File', 'Size', 'Taken', ''], rows, 'No backups yet.'));
+  }
+
+  function drawBackups() {
+    const { backups: b, apps } = data.backups;
+    // While polling, refresh only the status and the list; the form keeps what's typed.
+    if (bk.built && bk.status.isConnected) {
+      clear(bk.status, backupStatus(b));
+      clear(bk.list, backupArchives(b));
+      bk.runBtn.disabled = jobRunning(b.job);
+      return;
+    }
+    const c = b.config;
+    const selected = new Set(c.apps || []);
+    const known = new Set(apps);
+    const freq = h('select', [['off', 'Off'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly']].map(([v, l]) => h('option', { value: v }, l)));
+    const weekday = h('select', WEEKDAYS.map(([v, l]) => h('option', { value: v }, l)));
+    const day = h('select', Array.from({ length: 31 }, (_, i) => h('option', { value: String(i + 1) }, String(i + 1))));
+    const time = h('input', { type: 'time', required: true });
+    freq.value = c.freq || 'off'; weekday.value = c.weekday || 'sun'; day.value = c.day || '1'; time.value = c.time || '03:00';
+    const wdField = h('label.field', 'Weekday', weekday);
+    const dayField = h('label.field', 'Day of month', day);
+    const timeField = h('label.field', 'Time (24-hour)', time);
+    const sync = () => {
+      wdField.classList.toggle('hidden', freq.value !== 'weekly');
+      dayField.classList.toggle('hidden', freq.value !== 'monthly');
+      timeField.classList.toggle('hidden', freq.value === 'off');
+    };
+    freq.addEventListener('change', sync);
+    sync();
+    const dest = h('input', { type: 'text', value: c.dest || '', placeholder: b.dest, spellcheck: false });
+    const keep = h('input', { type: 'number', min: 1, max: 365, value: c.keep || 7 });
+
+    // Saved apps that no longer exist stay listed, so they can be unticked.
+    const names = [...new Set([...apps, ...selected])].sort();
+    const boxes = names.map((n) => {
+      const box = h('input', { type: 'checkbox', checked: selected.has(n), value: n });
+      return { n, box, el: h('label.check-row', box, h('span', n, known.has(n) ? null : h('span.faint', ' (not in ~/docker anymore)'))) };
+    });
+    const picked = () => boxes.filter((x) => x.box.checked).map((x) => x.n);
+    const all = h('button.btn.small.ghost', { type: 'button', onclick: () => {
+      const on = picked().length !== boxes.length;
+      boxes.forEach((x) => { x.box.checked = on; });
+    } }, 'Select all / none');
+
+    const save = h('button.btn.primary', { onclick: async () => {
+      const r = await busy(save, () => api.post('/docker/backups/config', { apps: picked(), dest: dest.value.trim(),
+        keep: Number(keep.value), freq: freq.value, weekday: weekday.value, day: day.value, time: time.value }), 'Backup settings saved.');
+      if (r) { bk.built = null; load(); }
+    } }, 'Save');
+    bk.runBtn = h('button.btn', { disabled: jobRunning(b.job), title: 'Back up the ticked apps now (saved or not)', onclick: (e) => {
+      const list = picked();
+      if (!list.length) { toast('Tick at least one app.', true); return; }
+      backupNow(list, true, e.currentTarget);
+    } }, 'Back up now');
+
+    bk.status = h('div', backupStatus(b));
+    bk.list = h('div', backupArchives(b));
+    bk.built = true;
+    const on = c.freq && c.freq !== 'off';
+    clear(body,
+      bk.status,
+      h('div.card',
+        h('div.card-head', h('h2', 'Backup settings'), on ? h('span.status.good', 'Scheduled') : h('span.status.idle', 'Manual only')),
+        h('p.muted', { style: { marginTop: 0 } },
+          'Each app is stopped with ', h('code', 'docker compose stop'), ', its whole folder (compose file, .env and bind-mounted data) is packed into a .tar.gz, and it is started again. Named volumes aren\'t included. A scheduled backup that fails sends a Gotify message when Gotify is set up under Features.'),
+        on ? h('dl.kv', { style: { marginBottom: '14px' } },
+          h('dt', 'Next run'), h('dd', when(b.nextRun)),
+          h('dt', 'Last scheduled run'), h('dd', when(c.lastRun))) : null,
+        h('h3', { style: { margin: '4px 0 8px' } }, 'Apps'),
+        names.length ? h('div.stack', { style: { gap: '6px', marginBottom: '8px' } }, boxes.map((x) => x.el), h('div', all))
+          : h('p.faint', 'No stacks in ~/docker yet.'),
+        h('h3', { style: { margin: '16px 0 8px' } }, 'Schedule and storage'),
+        h('div.form-grid',
+          h('label.field', 'How often', freq), wdField, dayField, timeField,
+          h('label.field', 'Keep last (per app)', keep)),
+        h('div.form-grid', { style: { marginTop: '12px' } },
+          h('label.field', { style: { gridColumn: '1 / -1' } }, 'Backup folder', dest)),
+        h('p.faint', { style: { fontSize: '12.5px' } }, 'Leave empty for ', h('span.mono', '~/backups/docker'), '. Any absolute path works, like a mounted NAS or USB disk, as long as it\'s outside ~/docker.'),
+        h('div.row', save, bk.runBtn)),
+      bk.list);
   }
 
   // ---- Images and Storage -------------------------------------------------------------

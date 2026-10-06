@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/backup"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/docker"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/features"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
@@ -89,6 +90,7 @@ type Local struct {
 	checker *osupdate.Checker
 	docker  *docker.Client
 	updater *docker.Updater
+	backups *backup.Manager
 	files   files.Runner
 
 	osMu     sync.Mutex
@@ -100,7 +102,7 @@ func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	d := docker.New()
 	l := &Local{Version: version, Dev: dev, Upgrader: up,
 		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d),
-		files: files.Runner{Dev: dev}}
+		backups: backup.New(d), files: files.Runner{Dev: dev}}
 	go func() {
 		time.Sleep(time.Minute)
 		for {
@@ -411,6 +413,70 @@ func (l *Local) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /docker/updates/log", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"text": l.updater.Log()})
+	})
+
+	// Backups: stacks in ~/docker archived on a schedule or on demand (see internal/backup).
+	mux.HandleFunc("GET /docker/backups", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		apps := []string{}
+		cs, err := l.docker.Containers()
+		for _, s := range docker.ListStacks(o, cs) {
+			if s.InRoot {
+				apps = append(apps, s.Name)
+			}
+		}
+		ok(w, map[string]any{"backups": l.backups.Status(o), "apps": apps}, err)
+	})
+	mux.HandleFunc("POST /docker/backups/config", func(w http.ResponseWriter, r *http.Request) {
+		var body backup.Config
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		o, err := l.owner(r)
+		if err == nil {
+			err = l.backups.Save(o, body)
+		}
+		result(w, r, "save backup settings", "", err)
+	})
+	mux.HandleFunc("POST /docker/backups/run", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Apps []string }
+		readJSON(r, &body) // an empty body backs up the configured apps
+		o, err := l.owner(r)
+		var job backup.Job
+		if err == nil {
+			job, err = l.backups.Start(o, "manual", body.Apps)
+		}
+		what := "back up " + strings.Join(body.Apps, ", ")
+		if len(body.Apps) == 0 {
+			what = "back up the selected apps"
+		}
+		if err != nil {
+			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		log.Printf("%s: %s started", userOf(r), what)
+		writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+	})
+	mux.HandleFunc("GET /docker/backups/log", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"text": l.backups.Log()})
+	})
+	mux.HandleFunc("POST /docker/backups/delete", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ App, File string }
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		o, err := l.owner(r)
+		if err == nil {
+			err = l.backups.Delete(o, body.App, body.File)
+		}
+		result(w, r, "delete backup "+body.File, "", err)
 	})
 
 	// Files: the acting user's home folder, with that user's permissions (see internal/files).

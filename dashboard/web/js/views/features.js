@@ -1,6 +1,6 @@
 import { h, clear, when, busy, switchEl, confirmAction, toast } from '../ui.js';
 
-const WEEKDAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
+export const WEEKDAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
 
 // "weekly on Sun at 03:30 (3:30 AM)" / OnCalendar → form values
 function parseSchedule(a) {
