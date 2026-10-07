@@ -19,6 +19,8 @@ concurrency:
 jobs:
   build-iso:
     name: Build ISO (${{ matrix.image }})
+    # GitHub only: skip on the Forgejo mirror (git.xlabsx27.com), whose Actions also read .github/workflows.
+    if: github.server_url == 'https://github.com'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
