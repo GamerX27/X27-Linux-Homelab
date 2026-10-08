@@ -84,9 +84,10 @@ that way.
 ### Branches
 
 - `main`: production, Fedora 44. Publishes the tags above and a [release](#releases) per build.
-- `testing`: the same images on Fedora 45, tagged `:br-testing-45` and rebuilt weekly with
+- `testing`: test images on Fedora 45, `x27-linux-homelab-testing` and
+  `x27-linux-homelab-vm-testing` (`:45`, `:latest`, `:<date>-45`), rebuilt weekly with
   main. No releases, and it may break. To try it:
-  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:br-testing-45`
+  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-testing:45`
 
 ## Installing software
 
