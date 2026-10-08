@@ -12,6 +12,7 @@ on:
       - ".github/workflows/build-image.yml"
     branches:
       - main
+      - testing
   pull_request:
     paths:
       - "recipes/**"
@@ -33,6 +34,8 @@ on:
           - recipe-vm.yml
 
 # Both images build straight from quay.io/fedora/fedora-bootc, so they run in parallel.
+# main is production (Fedora 44: :44, :latest, :<date>-44). testing builds Fedora 45 and
+# BlueBuild tags its images :br-testing-45, so they never replace the production tags.
 # Every job is gated on github.server_url so the Forgejo mirror (git.xlabsx27.com), whose
 # Actions also read .github/workflows, skips them; they only run on GitHub.
 jobs:
@@ -62,7 +65,20 @@ jobs:
       packages: write
       id-token: write
 
-  # A GitHub Release per build, with what changed (scripts/release-notes.sh). The weekly
+  # Scheduled runs only fire on the default branch, so the weekly rebuild starts the
+  # testing branch's build from here.
+  testing-weekly:
+    if: github.server_url == 'https://github.com' && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Start the testing build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
+
+  # A GitHub Release per build (main only), with what changed (scripts/release-notes.sh). The weekly
   # scheduled build is vYYYY.MM.DD; pushes and dispatches are minor releases vYYYY.MM.DD.N.
   # Runs when no image build failed; a single-recipe dispatch skips the other image, which
   # the notes then take from its last published :44.
@@ -70,6 +86,7 @@ jobs:
     needs: [bare-metal, vm]
     if: >-
       always() && github.server_url == 'https://github.com' && github.event_name != 'pull_request'
+      && github.ref == 'refs/heads/main'
       && contains(needs.*.result, 'success')
       && !contains(needs.*.result, 'failure')
       && !contains(needs.*.result, 'cancelled')

@@ -81,6 +81,13 @@ that way.
 - `:<date>-44` (e.g. `:20260924-44`): one fixed build, for rolling back.
 - `:latest`: the newest build, whatever Fedora version that is.
 
+### Branches
+
+- `main`: production, Fedora 44. Publishes the tags above and a [release](#releases) per build.
+- `testing`: the same images on Fedora 45, tagged `:br-testing-45` and rebuilt weekly with
+  main. No releases, and it may break. To try it:
+  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:br-testing-45`
+
 ## Installing software
 
 The OS image is read-only and replaced on every update:
