@@ -46,8 +46,8 @@ jobs:
         with:
           image_repo: ghcr.io/gamerx27
           image_name: ${{ matrix.image }}
-          image_tag: latest
-          version: "44"
+          image_tag: br-testing-45
+          version: "45"
           variant: Server
           iso_name: ${{ matrix.image }}.iso
           web_ui: "false"

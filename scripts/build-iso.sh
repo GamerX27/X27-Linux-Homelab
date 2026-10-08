@@ -12,8 +12,8 @@ usage() {
   echo "  bare-metal  x27-linux-homelab (default)"
   echo "  vm          x27-linux-homelab-vm"
   echo "  --usb       write the ISO to a USB drive after building"
-  echo "  --tag TAG   image tag to install and follow: 44, latest, or a dated tag like"
-  echo "              20260924-44. Asks if not given; 44 without a terminal."
+  echo "  --tag TAG   image tag to install and follow (default br-testing-45, the testing"
+  echo "              branch's Fedora 45 build)"
 }
 
 TARGET=""
@@ -136,25 +136,9 @@ case "$TARGET" in
     ;;
 esac
 
-# The installed system keeps following this tag on updates.
-if [ -z "$TAG" ]; then
-  if [ -t 0 ]; then
-    echo "Image tag for ${IMAGE}:"
-    echo "  1) 44      follows Fedora 44 (default)"
-    echo "  2) latest  newest build, whatever Fedora version that is"
-    read -rp "Choose [1-2]: " choice
-    case "${choice:-1}" in
-      1|44) TAG=44 ;;
-      2|latest) TAG=latest ;;
-      *)
-        echo "Invalid choice: $choice" >&2
-        exit 1
-        ;;
-    esac
-  else
-    TAG=44
-  fi
-fi
+# The installed system keeps following this tag on updates. This is the testing branch,
+# so it defaults to the Fedora 45 testing build, not production's :44.
+TAG="${TAG:-br-testing-45}"
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid tag: $TAG" >&2
   exit 1
@@ -213,7 +197,7 @@ sudo docker run --rm --privileged --network host \
   "IMAGE_NAME=${IMAGE}" \
   "IMAGE_REPO=${REGISTRY}" \
   "IMAGE_TAG=${TAG}" \
-  VERSION=44
+  VERSION=45
 cd "$OUT_DIR"
 sudo chown "$(id -un):$(id -gn)" "$ISO_NAME"
 sudo rm -f "${ISO_NAME}-CHECKSUM"
