@@ -9,11 +9,11 @@ INSTALLER_IMAGE="ghcr.io/jasonn3/build-container-installer:v1.5.0"
 
 usage() {
   echo "Usage: $0 [--usb] [--tag TAG] [bare-metal|vm]"
-  echo "  bare-metal  x27-linux-homelab (default)"
-  echo "  vm          x27-linux-homelab-vm"
+  echo "  bare-metal  x27-linux-homelab-testing (default)"
+  echo "  vm          x27-linux-homelab-vm-testing"
   echo "  --usb       write the ISO to a USB drive after building"
-  echo "  --tag TAG   image tag to install and follow (default br-testing-45, the testing"
-  echo "              branch's Fedora 45 build)"
+  echo "  --tag TAG   image tag to install and follow: 45, latest, or a dated tag like"
+  echo "              20261011-45 (default 45)"
 }
 
 TARGET=""
@@ -127,8 +127,8 @@ done
 TARGET="${TARGET:-bare-metal}"
 
 case "$TARGET" in
-  bare-metal) IMAGE="x27-linux-homelab" ;;
-  vm)         IMAGE="x27-linux-homelab-vm" ;;
+  bare-metal) IMAGE="x27-linux-homelab-testing" ;;
+  vm)         IMAGE="x27-linux-homelab-vm-testing" ;;
   *)
     echo "Unknown target: $TARGET" >&2
     usage >&2
@@ -136,9 +136,8 @@ case "$TARGET" in
     ;;
 esac
 
-# The installed system keeps following this tag on updates. This is the testing branch,
-# so it defaults to the Fedora 45 testing build, not production's :44.
-TAG="${TAG:-br-testing-45}"
+# The installed system keeps following this tag on updates.
+TAG="${TAG:-45}"
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid tag: $TAG" >&2
   exit 1

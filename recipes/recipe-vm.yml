@@ -1,8 +1,8 @@
 ---
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 
-name: x27-linux-homelab-vm
-description: X27-Linux Homelab (VM) - minimal headless Fedora bootc with Docker CE, SSH, and the QEMU guest agent
+name: x27-linux-homelab-vm-testing
+description: X27-Linux Homelab testing (VM, Fedora 45) - minimal headless Fedora bootc with Docker CE, SSH, and the QEMU guest agent
 base-image: quay.io/fedora/fedora-bootc
 image-version: 45
 

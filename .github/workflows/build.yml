@@ -34,8 +34,8 @@ on:
           - recipe-vm.yml
 
 # Both images build straight from quay.io/fedora/fedora-bootc, so they run in parallel.
-# main is production (Fedora 44: :44, :latest, :<date>-44). testing builds Fedora 45 and
-# BlueBuild tags its images :br-testing-45, so they never replace the production tags.
+# main is production (Fedora 44). The testing branch builds separate *-testing images on
+# Fedora 45, so it never touches the production images.
 # Every job is gated on github.server_url so the Forgejo mirror (git.xlabsx27.com), whose
 # Actions also read .github/workflows, skips them; they only run on GitHub.
 jobs:

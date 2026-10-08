@@ -9,8 +9,8 @@ on:
         type: choice
         options:
           - all
-          - x27-linux-homelab
-          - x27-linux-homelab-vm
+          - x27-linux-homelab-testing
+          - x27-linux-homelab-vm-testing
 
 concurrency:
   group: ${{ github.workflow }}
@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ inputs.image == 'all' && fromJSON('["x27-linux-homelab","x27-linux-homelab-vm"]') || fromJSON(format('["{0}"]', inputs.image)) }}
+        image: ${{ inputs.image == 'all' && fromJSON('["x27-linux-homelab-testing","x27-linux-homelab-vm-testing"]') || fromJSON(format('["{0}"]', inputs.image)) }}
     permissions:
       contents: read
       packages: read
@@ -46,7 +46,7 @@ jobs:
         with:
           image_repo: ghcr.io/gamerx27
           image_name: ${{ matrix.image }}
-          image_tag: br-testing-45
+          image_tag: "45"
           version: "45"
           variant: Server
           iso_name: ${{ matrix.image }}.iso

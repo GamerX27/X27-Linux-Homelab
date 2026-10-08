@@ -1,7 +1,8 @@
 # X27-Linux Homelab
 
-> **Testing branch:** these images are built on Fedora 45 and tagged `:br-testing-45`. The
-> tags and install steps below describe production (`main`, Fedora 44). See [Branches](#branches).
+> **Testing branch:** builds `x27-linux-homelab-testing` and `x27-linux-homelab-vm-testing` on
+> Fedora 45 (`:45`, `:latest`, `:<date>-45`). The install steps below describe production
+> (`main`, Fedora 44). See [Branches](#branches).
 
 Docker-first, minimal headless Fedora 45 server images, built with
 [BlueBuild](https://blue-build.org/) on the official
@@ -87,9 +88,10 @@ that way.
 ### Branches
 
 - `main`: production, Fedora 44. Publishes the tags above and a [release](#releases) per build.
-- `testing`: the same images on Fedora 45, tagged `:br-testing-45` and rebuilt weekly with
+- `testing`: test images on Fedora 45, `x27-linux-homelab-testing` and
+  `x27-linux-homelab-vm-testing` (`:45`, `:latest`, `:<date>-45`), rebuilt weekly with
   main. No releases, and it may break. To try it:
-  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:br-testing-45`
+  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-testing:45`
 
 ## Installing software
 

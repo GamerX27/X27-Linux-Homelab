@@ -25,3 +25,23 @@ jobs:
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
+
+      # BlueBuild only gives non-default-branch builds br-<branch>-<version> tags, so the
+      # testing images get the usual :<version>, :latest and :<date>-<version> here. Same
+      # registry and digest, so the cosign signature still matches.
+      - name: Add version tags
+        if: github.event_name != 'pull_request'
+        env:
+          RECIPE: recipes/${{ inputs.recipe }}
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          name="$(yq '.name' "$RECIPE")"
+          version="$(yq '.image-version' "$RECIPE")"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          src="ghcr.io/${owner}/${name}:br-${GITHUB_REF_NAME//\//_}-${version}"
+          echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for tag in "$version" latest "$(date -u +%Y%m%d)-${version}"; do
+            echo "${src} -> :${tag}"
+            skopeo copy --all --preserve-digests "docker://${src}" "docker://ghcr.io/${owner}/${name}:${tag}"
+          done
