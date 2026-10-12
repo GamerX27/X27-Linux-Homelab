@@ -28,9 +28,10 @@ jobs:
 
       # BlueBuild only gives non-default-branch builds br-<branch>-<version> tags, so the
       # testing images get the usual :<version>, :latest and :<date>-<version> here. Same
-      # registry and digest, so the cosign signature still matches.
+      # registry and digest, so the cosign signature still matches. main already gets
+      # those tags from BlueBuild and has no br- tag to copy from.
       - name: Add version tags
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref != 'refs/heads/main'
         env:
           RECIPE: recipes/${{ inputs.recipe }}
           TOKEN: ${{ github.token }}
