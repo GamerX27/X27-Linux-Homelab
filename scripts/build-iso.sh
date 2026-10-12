@@ -9,11 +9,11 @@ INSTALLER_IMAGE="ghcr.io/jasonn3/build-container-installer:v1.5.0"
 
 usage() {
   echo "Usage: $0 [--usb] [--tag TAG] [bare-metal|vm]"
-  echo "  bare-metal  x27-linux-homelab-testing (default)"
-  echo "  vm          x27-linux-homelab-vm-testing"
+  echo "  bare-metal  x27-linux-homelab (default)"
+  echo "  vm          x27-linux-homelab-vm"
   echo "  --usb       write the ISO to a USB drive after building"
-  echo "  --tag TAG   image tag to install and follow: 45, latest, or a dated tag like"
-  echo "              20261011-45 (default 45)"
+  echo "  --tag TAG   image tag to install and follow: 44, latest, or a dated tag like"
+  echo "              20260924-44. Asks if not given; 44 without a terminal."
 }
 
 TARGET=""
@@ -127,8 +127,8 @@ done
 TARGET="${TARGET:-bare-metal}"
 
 case "$TARGET" in
-  bare-metal) IMAGE="x27-linux-homelab-testing" ;;
-  vm)         IMAGE="x27-linux-homelab-vm-testing" ;;
+  bare-metal) IMAGE="x27-linux-homelab" ;;
+  vm)         IMAGE="x27-linux-homelab-vm" ;;
   *)
     echo "Unknown target: $TARGET" >&2
     usage >&2
@@ -137,7 +137,24 @@ case "$TARGET" in
 esac
 
 # The installed system keeps following this tag on updates.
-TAG="${TAG:-45}"
+if [ -z "$TAG" ]; then
+  if [ -t 0 ]; then
+    echo "Image tag for ${IMAGE}:"
+    echo "  1) 44      follows Fedora 44 (default)"
+    echo "  2) latest  newest build, whatever Fedora version that is"
+    read -rp "Choose [1-2]: " choice
+    case "${choice:-1}" in
+      1|44) TAG=44 ;;
+      2|latest) TAG=latest ;;
+      *)
+        echo "Invalid choice: $choice" >&2
+        exit 1
+        ;;
+    esac
+  else
+    TAG=44
+  fi
+fi
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid tag: $TAG" >&2
   exit 1
@@ -196,7 +213,7 @@ sudo docker run --rm --privileged --network host \
   "IMAGE_NAME=${IMAGE}" \
   "IMAGE_REPO=${REGISTRY}" \
   "IMAGE_TAG=${TAG}" \
-  VERSION=45
+  VERSION=44
 cd "$OUT_DIR"
 sudo chown "$(id -un):$(id -gn)" "$ISO_NAME"
 sudo rm -f "${ISO_NAME}-CHECKSUM"
