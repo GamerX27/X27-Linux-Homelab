@@ -1,4 +1,4 @@
-import { h, clear, icon, meter, modal, confirmAction, toast, duration, bytes, pct, menu, menuOpen } from '../ui.js';
+import { h, clear, icon, meter, modal, confirmAction, toast, duration, bytes, pct, menu, menuOpen, autoPending, nextRun } from '../ui.js';
 import * as api from '../api.js';
 import { startUpdate } from './rollout.js';
 import { jobRunning, jobLine, jobSummary } from './docker.js';
@@ -77,6 +77,7 @@ function nodeCard(n, refreshNodes) {
   const status = !n.online ? h('span.status.crit', 'Offline')
     : s?.updating ? h('span.status.warn', 'Updating OS…')
     : s?.updateStaged ? h('span.status.warn', 'Reboot to finish update')
+    : autoPending(s) ? h('span.status.good', { title: `${s.updateVersion || 'A newer image'} installs automatically` }, `Auto-update ${nextRun(s.autoUpdateNext)}`)
     : s?.updateAvailable ? h('span.status.warn', 'OS update available')
     : h('span.status.good', 'Online');
 
@@ -97,7 +98,8 @@ function nodeCard(n, refreshNodes) {
         fact('Uptime', duration(s.uptimeSec)),
         fact('Version', h('span.mono', s.version || '—'), s.version ? null : 'not an image')),
       (s.updateAvailable || s.updateStaged || s.containerUpdates || s.containersUpdating) ? h('div.row', { style: { gap: '6px' } },
-        s.updateAvailable ? h('a.badge.update', { href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates') }, `OS ${s.updateVersion || 'update'}`) : null,
+        s.updateAvailable ? h('a.badge', { class: autoPending(s) ? '' : 'update', href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates'),
+          title: autoPending(s) ? `Installs automatically ${nextRun(s.autoUpdateNext)}` : null }, `OS ${s.updateVersion || 'update'}`) : null,
         s.updateStaged ? h('a.badge.warn', { href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates') }, 'reboot to apply') : null,
         s.containersUpdating ? h('a.badge.updating', { href: `#/n/${n.id}/docker`, onclick: go(n.id, 'docker') }, 'updating containers')
         : s.containerUpdates ? h('a.badge.update', { href: `#/n/${n.id}/docker`, onclick: go(n.id, 'docker') },
@@ -150,6 +152,7 @@ async function updateDialog(candidates) {
     const box = h('input', { type: 'checkbox', checked: true, value: n.id });
     const to = n.summary.updateStaged && !n.summary.updateAvailable ? 'staged update' : n.summary.updateVersion || 'newer image';
     return h('label.check-row', box, h('span', h('strong', n.name), n.local ? ' (main node, goes last)' : '',
+      autoPending(n.summary) ? ` (updates automatically ${nextRun(n.summary.autoUpdateNext)})` : '',
       h('span.muted', ` · ${n.summary.version || '?'} → ${to}`)));
   });
   const err = h('div.error-text');
@@ -175,6 +178,10 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const osImage = online.filter((n) => n.summary.version);
   const osUpdating = online.filter((n) => n.summary.updating);
   const osCandidates = osImage.filter((n) => (n.summary.updateAvailable || n.summary.updateStaged) && !n.summary.updating);
+  // Nodes whose autoupdate schedule installs the update anyway aren't something to act on.
+  const osAuto = osCandidates.filter((n) => autoPending(n.summary));
+  const osManual = osCandidates.length - osAuto.length;
+  const firstAuto = Math.min(...osAuto.map((n) => n.summary.autoUpdateNext || Infinity));
   const running = job?.state === 'running';
 
   const osCheck = h('button.btn.small', { disabled: progress.busy.os, onclick: async () => {
@@ -197,14 +204,17 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
 
   const osUpdate = running || job ? h('a.btn.small', { href: '#/update', class: running ? 'primary' : '' }, running ? 'View progress' : 'Last update')
     : null;
-  const osStart = !running && osCandidates.length ? h('button.btn.small.primary', { onclick: () => updateDialog(osCandidates) },
-    `Update… (${osCandidates.length})`) : null;
+  const osStart = !running && osCandidates.length ? h('button.btn.small', { class: osManual ? 'primary' : '', onclick: () => updateDialog(osCandidates) },
+    osManual ? `Update… (${osCandidates.length})` : 'Update now…') : null;
 
   const done = (job?.nodes || []).filter((n) => ['done', 'uptodate', 'failed'].includes(n.step)).length;
   const osSummary = running ? h('span.status.warn', `Updating: ${done} of ${job.nodes.length} node${job.nodes.length > 1 ? 's' : ''} finished`)
     : !osImage.length ? h('span.status.idle', 'No image-based nodes online')
     : osUpdating.length ? h('span.status.warn', `Updating ${osUpdating.map((n) => n.name).join(', ')}…`)
-    : osCandidates.length ? h('span.status.warn', `${osCandidates.length} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} can update`)
+    : osManual ? h('span.status.warn', `${osManual} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} can update`,
+      osAuto.length ? h('span.muted', ` · ${osAuto.length} update${osAuto.length > 1 ? '' : 's'} automatically`) : null)
+    : osAuto.length ? h('span.status.good', `${osAuto.length === osImage.length ? 'All' : `${osAuto.length} of ${osImage.length}`} node${osAuto.length > 1 ? 's' : ''} `
+      + `update${osAuto.length > 1 ? '' : 's'} automatically · next ${nextRun(Number.isFinite(firstAuto) ? firstAuto : 0)}`)
     : h('span.status.good', 'All nodes up to date');
 
   // Containers

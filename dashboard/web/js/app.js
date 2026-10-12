@@ -1,4 +1,4 @@
-import { h, clear, icon, toast, modal } from './ui.js';
+import { h, clear, icon, toast, modal, autoPending, nextRun } from './ui.js';
 import * as api from './api.js';
 import { renderFleet, addNodeDialog } from './views/fleet.js';
 import { renderOverview } from './views/overview.js';
@@ -155,6 +155,7 @@ async function logout() {
 
 function nodeStatus(n) {
   if (!n.online) return ['crit', 'Offline'];
+  if (autoPending(n.summary)) return ['good', `Online · updates automatically ${nextRun(n.summary.autoUpdateNext)}`];
   if (n.summary?.updateAvailable) return ['warn', 'Update available'];
   return ['good', 'Online'];
 }
@@ -181,7 +182,7 @@ function renderNav() {
     const [cls, label] = nodeStatus(n);
     return h('a.side-link', { href: `#/n/${n.id}/overview`, class: cur.id === n.id ? 'active' : '', title: `${n.name}: ${label}` },
       h('span.dot', { class: cls, 'aria-label': label }), h('span.name', n.name),
-      n.summary?.updateAvailable ? h('span.badge.update', { title: 'OS update available' }, '') : null);
+      n.summary?.updateAvailable && !autoPending(n.summary) ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
   shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update);
 }
