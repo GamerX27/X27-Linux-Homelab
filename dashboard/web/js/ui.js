@@ -167,6 +167,20 @@ export function when(unix) {
   return `${d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} (${label})`;
 }
 
+// An OS update the node's autoupdate schedule installs on its own, so nothing to act on.
+export const autoPending = (s) => !!(s?.autoUpdate && s.updateAvailable && !s.updateStaged && !s.updating);
+
+// A schedule's next run, short: "in 3 h" within a day, otherwise "Sun 03:30".
+export function nextRun(unix) {
+  if (!unix) return 'on schedule';
+  const d = new Date(unix * 1000);
+  const diff = unix - Date.now() / 1000;
+  if (diff < 60) return 'soon';
+  if (diff < 3600) return `in ${Math.round(diff / 60)} min`;
+  if (diff < 86400) return `in ${Math.round(diff / 3600)} h`;
+  return d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
 export function pct(n) { return (n ?? 0).toFixed(0) + '%'; }
 
 // "⋯" button with a popover of actions: [{label, onclick, danger?, hidden?}, …].

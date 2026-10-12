@@ -1,6 +1,10 @@
 # X27-Linux Homelab
 
-Docker-first, minimal headless Fedora 44 server images, built with
+> **Testing branch:** builds `x27-linux-homelab-testing` and `x27-linux-homelab-vm-testing` on
+> Fedora 45 (`:45`, `:latest`, `:<date>-45`). The install steps below describe production
+> (`main`, Fedora 44). See [Branches](#branches).
+
+Docker-first, minimal headless Fedora 45 server images, built with
 [BlueBuild](https://blue-build.org/) on the official
 [`quay.io/fedora/fedora-bootc`](https://quay.io/repository/fedora/fedora-bootc) image.
 

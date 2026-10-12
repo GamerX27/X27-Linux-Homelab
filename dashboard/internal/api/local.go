@@ -96,6 +96,10 @@ type Local struct {
 	osMu     sync.Mutex
 	osCached osupdate.Status
 	osAt     time.Time
+
+	auMu     sync.Mutex
+	auCached features.Autoupdate
+	auAt     time.Time
 }
 
 func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
@@ -132,6 +136,22 @@ func (l *Local) osAction(fn func() error) error {
 	return err
 }
 
+// autoupdate caches the schedule like osStatus; changing it from Features drops the cache.
+func (l *Local) autoupdate() features.Autoupdate {
+	l.auMu.Lock()
+	defer l.auMu.Unlock()
+	if time.Since(l.auAt) > time.Minute {
+		l.auCached, l.auAt = features.GetAutoupdate(), time.Now()
+	}
+	return l.auCached
+}
+
+func (l *Local) dropAutoupdate() {
+	l.auMu.Lock()
+	l.auAt = time.Time{}
+	l.auMu.Unlock()
+}
+
 // Summary is what the main node shows for every node in its list.
 type Summary struct {
 	Info               system.Info `json:"info"`
@@ -145,6 +165,8 @@ type Summary struct {
 	UpdateStaged       bool        `json:"updateStaged"`
 	Updating           bool        `json:"updating"` // an OS update is being installed
 	UpdatePhase        string      `json:"updatePhase"`
+	AutoUpdate         bool        `json:"autoUpdate"`     // the autoupdate timer installs updates on its own
+	AutoUpdateNext     int64       `json:"autoUpdateNext"` // its next run, unix seconds
 	BootID             string      `json:"bootId"`
 	ContainerUpdates   int         `json:"containerUpdates"`
 	ContainersUpdating bool        `json:"containersUpdating"` // a container update is running
@@ -168,6 +190,8 @@ func (l *Local) summary() Summary {
 	if os.Job != nil {
 		s.UpdatePhase = os.Job.Phase
 	}
+	au := l.autoupdate()
+	s.AutoUpdate, s.AutoUpdateNext = au.Enabled, au.NextRun
 	ct := l.updater.Status()
 	for _, i := range ct.Images {
 		if i.State == "update" {
@@ -572,6 +596,7 @@ func (l *Local) Handler() http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
+		defer l.dropAutoupdate()
 		if body.Off {
 			out, err := features.AutoupdateOff()
 			result(w, r, "autoupdate off", out, err)
