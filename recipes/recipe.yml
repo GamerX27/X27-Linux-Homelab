@@ -2,25 +2,28 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 
 name: x27-linux-homelab-testing
-description: X27-Linux Homelab testing (bare metal, Fedora 45) - minimal headless Fedora bootc with Docker CE and SSH
-base-image: quay.io/fedora/fedora-bootc
-image-version: 45
+description: X27-Linux Homelab testing (bare metal, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE and SSH
+base-image: quay.io/almalinuxorg/almalinux-bootc
+image-version: 10
 
-# Compiles the dashboard (dashboard/, Go) on the same Fedora release as the image, so the
-# cgo PAM binding links against the same glibc and libpam. Tests run first: a failing test
-# fails the image build. common.yml copies the binary in.
+# Compiles the dashboard (dashboard/, Go) on the base image itself, so the cgo PAM binding
+# links against the same glibc and libpam. Not the smaller almalinux:10 container: it lacks jq,
+# so BlueBuild's setup script tries to install coreutils, which conflicts with its
+# coreutils-single. On the bootc image /root points into /var, which is empty during a build,
+# so Go's caches go in /tmp. Tests run first: a failing test fails the image build.
+# common.yml copies the binary in.
 stages:
   - name: dashboard
-    from: quay.io/fedora/fedora:45
+    from: quay.io/almalinuxorg/almalinux-bootc:10
     modules:
       - type: containerfile
         snippets:
           - COPY dashboard /src
           - |
             RUN set -eu \
-                && dnf5 -y install --setopt=install_weak_deps=False golang pam-devel \
+                && dnf -y install --setopt=install_weak_deps=False golang pam-devel \
                 && cd /src \
-                && export GOFLAGS=-mod=readonly CGO_ENABLED=1 \
+                && export GOFLAGS=-mod=readonly CGO_ENABLED=1 GOPATH=/tmp/go GOCACHE=/tmp/go-cache \
                 && go vet ./... \
                 && go test ./... \
                 && go build -trimpath -ldflags "-s -w -X main.version=$(date -u +%Y.%m.%d)" -o /out/dashboard . \
@@ -28,13 +31,16 @@ stages:
 
 modules:
   # Disk health, GPU and temperature/fan monitoring on real hardware. linux-firmware comes with the base image.
-  - type: dnf
-    install:
-      packages:
-        - smartmontools
-        - nvme-cli
-        - nvtop
-        - lm_sensors
+  # A containerfile step, not BlueBuild's dnf module, which needs dnf5 (AlmaLinux 10 has dnf4).
+  # nvtop comes from EPEL.
+  - type: containerfile
+    snippets:
+      - |
+        RUN set -eu \
+            && dnf -y install epel-release \
+            && dnf -y install --setopt=install_weak_deps=False smartmontools nvme-cli nvtop lm_sensors \
+            && dnf clean all \
+            && rpm -q smartmontools nvme-cli nvtop lm_sensors
 
   - type: systemd
     system:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# /usr/bin/dnf5 points here on X27-Linux Homelab. Image builds (no /run/ostree-booted) get the real dnf5.
+# /usr/bin/dnf-3 (and so dnf, dnf4) points here on X27-Linux Homelab. Image builds (no /run/ostree-booted) get the real dnf.
 if [[ ! -e /run/ostree-booted ]]; then
-  exec /usr/libexec/dnf5-real "$@"
+  exec /usr/libexec/dnf-real "$@"
 fi
 
 cat >&2 <<'MSG'
