@@ -320,12 +320,22 @@ function setupSnippets(secret) {
   const url = `${location.origin}/mcp`;
   const tok = secret || '<token>';
   const tlsNote = location.protocol === 'https:';
+  const note = (...text) => h('p.faint', { style: { margin: 0 } }, ...text);
+  const env = { AUTH_HEADER: `Bearer ${tok}` };
+  if (tlsNote) env.NODE_EXTRA_CA_CERTS = '/home/<you>/homelab-dashboard.pem';
+  // The header goes through an env variable because some clients split args on spaces.
+  const stdio = { mcpServers: { homelab: { command: 'npx', args: ['-y', 'mcp-remote', url, '--header', 'Authorization:${AUTH_HEADER}'], env } } };
   return [
     snippet('Claude Code', `claude mcp add --transport http homelab ${url} --header "Authorization: Bearer ${tok}"`),
-    snippet('Claude Desktop, Cursor, VS Code and others (mcpServers JSON)', JSON.stringify({ mcpServers: { homelab: { type: 'http', url, headers: { Authorization: `Bearer ${tok}` } } } }, null, 2)),
+    tlsNote ? note('Then start it with ', h('code', 'NODE_EXTRA_CA_CERTS=~/homelab-dashboard.pem claude'), '.') : null,
+    snippet('LM Studio, Claude Desktop, Cursor and other desktop apps', JSON.stringify(stdio, null, 2)),
+    note('Runs the server through the ', h('code', 'mcp-remote'), ' bridge, so it needs Node.js (', h('code', 'npx'), ') on that computer.',
+      tlsNote ? [' The PEM path must be absolute: ', h('code', '~'), ' isn\'t expanded in ', h('code', 'env'), '.'] : null,
+      ' In LM Studio: Program → Install → Edit ', h('code', 'mcp.json'), ', and replace an existing ', h('code', 'url'), '/', h('code', 'headers'), ' entry with this one.'),
+    snippet('Clients with their own certificate setting', `URL:    ${url}\nHeader: Authorization: Bearer ${tok}`),
+    note('For clients that can trust a certificate themselves, or when the dashboard is behind a reverse proxy with a real certificate.'),
     tlsNote ? h('div.notice', 'The dashboard\'s certificate is self-signed, so clients need to trust it: ',
-      h('a', { href: '/ca.pem', download: 'homelab-dashboard.pem' }, 'download it'), ', then start Node-based clients (Claude Code, Claude Desktop) with ',
-      h('code', 'NODE_EXTRA_CA_CERTS=~/homelab-dashboard.pem'), '. Check its fingerprint against Settings → Dashboard.') : null,
+      h('a', { href: '/ca.pem', download: 'homelab-dashboard.pem' }, 'download it'), ' and check its fingerprint against Settings → Dashboard.') : null,
   ];
 }
 

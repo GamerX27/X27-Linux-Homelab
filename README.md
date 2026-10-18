@@ -336,17 +336,44 @@ what you're looking at.
 
 ### MCP for AI clients
 
-Under **AI → MCP access**, create a token (it's shown once) and add the server to your client:
+Under **AI → MCP access**, create a token (it's shown once) and add the server to your client.
+The certificate is self-signed, so download it from the same page (or `https://<main>:9090/ca.pem`)
+and check its fingerprint against Settings → Dashboard.
+
+**Claude Code** connects over HTTP. Start it with the certificate trusted:
 
 ```sh
 claude mcp add --transport http homelab https://192.168.1.10:9090/mcp \
   --header "Authorization: Bearer x27hl_…"
+NODE_EXTRA_CA_CERTS=~/homelab-dashboard.pem claude
 ```
 
-The certificate is self-signed: download it from the same page (or `https://<main>:9090/ca.pem`)
-and start Node-based clients with `NODE_EXTRA_CA_CERTS=~/homelab-dashboard.pem`. A token acts as
-the user who made it, who has to stay in `wheel`; revoke it on the same page. The server also
-offers prompts: `health_check`, `troubleshoot_app` and `plan_updates`.
+**LM Studio, Claude Desktop, Cursor** and other desktop apps are started from the menu, where
+`NODE_EXTRA_CA_CERTS` isn't set, and a remote `url` entry has nowhere to put it. Run the server
+through the [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) bridge instead, which needs
+Node.js on that computer. The PEM path must be absolute (`~` isn't expanded in `env`):
+
+```json
+{
+  "mcpServers": {
+    "homelab": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://192.168.1.10:9090/mcp", "--header", "Authorization:${AUTH_HEADER}"],
+      "env": {
+        "AUTH_HEADER": "Bearer x27hl_…",
+        "NODE_EXTRA_CA_CERTS": "/home/you/homelab-dashboard.pem"
+      }
+    }
+  }
+}
+```
+
+In LM Studio that's Program → Install → Edit `mcp.json`. The alternative is to put the dashboard
+behind your reverse proxy with a trusted certificate and use the plain URL + `Authorization`
+header config.
+
+A token acts as the user who made it, who has to stay in `wheel`; revoke it on the same page. The
+server also offers prompts: `health_check`, `troubleshoot_app` and `plan_updates`.
 
 > **Security:** an admin token is root on every node. Keep the dashboard on your LAN or VPN, give
 > clients the least access they need, and set an expiry.
