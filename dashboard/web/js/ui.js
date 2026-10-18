@@ -170,7 +170,8 @@ export function when(unix) {
 // An OS update the node's autoupdate schedule installs on its own, so nothing to act on.
 export const autoPending = (s) => !!(s?.autoUpdate && s.updateAvailable && !s.updateStaged && !s.updating);
 
-// A schedule's next run, short: "in 3 h" within a day, otherwise "Sun 03:30".
+// A schedule's next run, short: "in 3 h" within a day, "Sun 3:30 AM" within a week,
+// otherwise "Nov 1, 3:30 AM".
 export function nextRun(unix) {
   if (!unix) return 'on schedule';
   const d = new Date(unix * 1000);
@@ -178,7 +179,16 @@ export function nextRun(unix) {
   if (diff < 60) return 'soon';
   if (diff < 3600) return `in ${Math.round(diff / 60)} min`;
   if (diff < 86400) return `in ${Math.round(diff / 3600)} h`;
-  return d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const time = { hour: 'numeric', minute: '2-digit' };
+  return diff < 7 * 86400
+    ? d.toLocaleString([], { weekday: 'short', ...time })
+    : d.toLocaleString([], { month: 'short', day: 'numeric', ...time });
+}
+
+// An image version as the OS names it: "44.20261012" → "44 (2026-10-12)", like PRETTY_NAME.
+export function release(v) {
+  const m = /^(\d+)\.(\d{4})(\d{2})(\d{2})$/.exec(v || '');
+  return m ? `${m[1]} (${m[2]}-${m[3]}-${m[4]})` : v;
 }
 
 export function pct(n) { return (n ?? 0).toFixed(0) + '%'; }

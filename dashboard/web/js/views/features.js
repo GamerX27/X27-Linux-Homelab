@@ -32,6 +32,9 @@ export function renderFeatures(el, { api }) {
     clear(content, autoupdateCard(f.autoupdate), gotifyCard(f.autoupdate), servicesCard(f.services || []));
   }
 
+  // systemd's Result for the last check: "success" means it ran, not that it updated.
+  const result = (r) => r === 'success' ? 'ok' : r;
+
   function autoupdateCard(a) {
     if (!a.available) return h('div.card', h('h2', 'Automatic updates'), h('div.notice', 'autoupdate isn\'t installed on this node.'));
     const cur = parseSchedule(a);
@@ -63,13 +66,13 @@ export function renderFeatures(el, { api }) {
       h('div.card-head', h('h2', 'Automatic updates'),
         a.enabled ? h('span.status.good', 'On') : h('span.status.idle', 'Off')),
       h('p.muted', { style: { marginTop: 0 } },
-        'On schedule, the node checks for a new image. If there is one it installs it and reboots; no update, no reboot. Same as ',
-        h('code', 'autoupdate on …'), ' on the node.'),
+        'At the scheduled time, the node checks for a newer image. If there is one, it installs it and reboots; if not, nothing happens. '
+        + 'On the node itself, ', h('code', 'autoupdate on …'), ' does the same.'),
       a.enabled ? h('dl.kv', { style: { marginBottom: '14px' } },
         h('dt', 'Schedule'), h('dd', a.schedule || a.calendar),
-        h('dt', 'Next run'), h('dd', when(a.nextRun)),
-        h('dt', 'Last run'), h('dd', when(a.lastRun), a.lastResult ? h('span.status', { class: a.lastResult === 'success' ? 'good' : 'crit', style: { marginLeft: '8px' } }, a.lastResult) : null))
-        : a.lastRun ? h('dl.kv', { style: { marginBottom: '14px' } }, h('dt', 'Last run'), h('dd', when(a.lastRun), ` · ${a.lastResult}`)) : null,
+        h('dt', 'Next check'), h('dd', when(a.nextRun)),
+        h('dt', 'Last check'), h('dd', when(a.lastRun), a.lastResult ? h('span.status', { class: a.lastResult === 'success' ? 'good' : 'crit', style: { marginLeft: '8px' } }, result(a.lastResult)) : null))
+        : a.lastRun ? h('dl.kv', { style: { marginBottom: '14px' } }, h('dt', 'Last check'), h('dd', when(a.lastRun), ` · ${result(a.lastResult)}`)) : null,
       h('div.form-grid',
         h('label.field', 'How often', freq), wdField, dayField, h('label.field', 'Time (24-hour)', time),
         h('div.row', save, off)));

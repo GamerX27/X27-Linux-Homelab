@@ -1,4 +1,4 @@
-import { h, clear, when, busy, confirmAction, icon, modal, toast } from '../ui.js';
+import { h, clear, when, busy, confirmAction, icon, modal, toast, release } from '../ui.js';
 import * as mainApi from '../api.js';
 import { startUpdate } from './rollout.js';
 
@@ -52,7 +52,7 @@ export function renderUpdates(el, { api, node }) {
     else if (c.checking) status = h('span.status.idle', 'Checking…');
     else if (c.error) status = h('span.status.crit', 'Check failed');
     else if (s.staged) status = h('span.status.warn', 'Update downloaded, reboot to apply');
-    else if (c.available) status = h('span.status.warn', `Update available${c.version ? ': ' + c.version : ''}`);
+    else if (c.available) status = h('span.status.warn', `Update available${c.version ? ': ' + release(c.version) : ''}`);
     else if (c.checkedAt) status = h('span.status.good', 'Up to date');
     else status = h('span.status.idle', 'Not checked yet');
 
@@ -60,8 +60,8 @@ export function renderUpdates(el, { api, node }) {
       busy(checkBtn, () => api.post('/os/check')).then(() => setTimeout(load, 1500)) }, icon('refresh', 15), 'Check now');
     const updateBtn = inRollout ? h('a.btn.primary', { href: '#/update' }, 'View progress')
       : h('button.btn.primary', { disabled: s.updating || !(c.available || s.staged), onclick: async () => {
-        if (!await confirmAction('Install update', `${node.name} downloads the new image and reboots into it. Containers restart with it. `
-          + 'You follow it on the update page.', s.staged ? 'Reboot to apply' : 'Update and reboot', false)) return;
+        if (!await confirmAction('Install update', `${node.name} downloads the new image and reboots into it. Its containers restart with it. `
+          + 'You can follow it on the update page.', s.staged ? 'Reboot to apply' : 'Update and reboot', false)) return;
         busy(updateBtn, () => startUpdate([node.id]));
       } }, s.staged && !c.available ? 'Reboot to apply' : 'Update now');
     const rebootBtn = h('button.btn', { onclick: async () => {
@@ -80,14 +80,13 @@ export function renderUpdates(el, { api, node }) {
       c.error ? h('pre.output', { style: { marginBottom: '12px' } }, c.error) : null,
       lastJob(job),
       h('div.table-wrap', h('table',
-        h('thead', h('tr', h('th', 'Deployment'), h('th', 'Version'), h('th', 'Image'), h('th', 'Built'))),
+        h('thead', h('tr', h('th', 'State'), h('th', 'Version'), h('th', 'Image'), h('th', 'Built'))),
         h('tbody', (s.deployments || []).map((d) => h('tr',
-          h('td', d.booted ? h('span.badge.good', 'running') : d.staged ? h('span.badge.warn', 'staged') : h('span.badge', 'rollback'),
+          h('td', d.booted ? h('span.badge.good', 'running') : d.staged ? h('span.badge.warn', 'staged') : h('span.badge', 'previous'),
             d.pinned ? h('span.badge', { style: { marginLeft: '4px' } }, 'pinned') : null),
           h('td.mono', d.version || '—'),
           h('td', h('div.mono', d.image || '—'), d.digest ? h('div.sub.mono', d.digest.slice(0, 19) + '…') : null),
-          h('td.num-cell.muted', d.timestamp ? new Date(d.timestamp * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—')))))),
-      c.available && c.version ? h('p.muted', { style: { marginBottom: 0 } }, `Newer image: `, h('span.mono', c.version)) : null);
+          h('td.num-cell.muted', d.timestamp ? new Date(d.timestamp * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—')))))));
   }
 
   // The latest update run (from the dashboard, the schedule or `autoupdate-run`) once it's over.
