@@ -1,4 +1,4 @@
-import { h, clear, meter, sparkline, bytes, rate, duration, pct, autoPending, nextRun } from '../ui.js';
+import { h, clear, meter, sparkline, bytes, rate, duration, pct, autoPending, nextRun, release } from '../ui.js';
 
 // Refreshes every 3 s while open; keeps a minute of CPU and memory history client-side.
 export function renderOverview(el, { api }) {
@@ -60,9 +60,8 @@ export function renderOverview(el, { api }) {
       h('dt', 'OS'), h('dd', info.prettyName || '—'),
       h('dt', 'Image version'), h('dd', h('span.mono', summary.version || '—'),
         summary.updateAvailable ? h('span.badge', { class: autoPending(summary) ? '' : 'update', style: { marginLeft: '8px' } },
-          `${summary.updateVersion || 'newer'} available${autoPending(summary) ? ` · installs ${nextRun(summary.autoUpdateNext)}` : ''}`) : null,
-        summary.updateStaged ? h('span.badge.warn', { style: { marginLeft: '8px' } }, 'update staged, reboot to apply') : null),
-      h('dt', 'Build'), h('dd', h('span.mono', info.buildId || '—')),
+          `${release(summary.updateVersion) || 'Update'} available${autoPending(summary) ? ` · installs ${nextRun(summary.autoUpdateNext)}` : ''}`) : null,
+        summary.updateStaged ? h('span.badge.warn', { style: { marginLeft: '8px' } }, 'update downloaded, reboot to apply') : null),
       h('dt', 'Kernel'), h('dd', h('span.mono', info.kernel)),
       h('dt', 'CPU'), h('dd', info.cpuModel || '—'),
       h('dt', 'Dashboard'), h('dd', h('span.mono', summary.dashboardVersion))));

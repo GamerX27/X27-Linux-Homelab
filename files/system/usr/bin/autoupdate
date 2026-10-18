@@ -17,7 +17,7 @@ usage() {
   cat <<'EOF'
 Usage:
   autoupdate                                  interactive menu
-  autoupdate status                           show whether it's on, the schedule, and the next run
+  autoupdate status                           show whether it's on, the schedule, and the next check
   autoupdate on daily <time>
   autoupdate on weekly <weekday> <time>
   autoupdate on monthly <day 1-31> <time>
@@ -30,7 +30,7 @@ Usage:
 Time is 24-hour or 12-hour: 03:00, 23:30, 3am, 3:00 AM, 11:30pm, 12am (midnight), 12pm (noon).
 Weekday: mon tue wed thu fri sat sun (or the full name).
 
-When an update is found it's installed and the system reboots. No update, no reboot.
+If there's a newer image, it's installed and the system reboots; if not, nothing happens.
 After the reboot the system checks that it runs the new image.
 With Gotify set up, you get a message before that reboot, after it, and when an update fails.
 
@@ -101,6 +101,17 @@ parse_day() {
   echo "$d"
 }
 
+# 1 -> "1st", 22 -> "22nd", 13 -> "13th"
+ordinal() {
+  case "$1" in
+    11 | 12 | 13) echo "${1}th" ;;
+    *1) echo "${1}st" ;;
+    *2) echo "${1}nd" ;;
+    *3) echo "${1}rd" ;;
+    *) echo "${1}th" ;;
+  esac
+}
+
 # "15:00" -> "15:00 (3:00 PM)"
 both_formats() {
   echo "$1 ($(date -d "$1" +'%-I:%M %p'))"
@@ -126,15 +137,16 @@ status() {
     echo "Schedule:          ${desc:-$(grep '^OnCalendar=' "$TIMER_FILE" | cut -d= -f2-)}"
     next="$(show_value "$TIMER" NextElapseUSecRealtime)"
     if [[ "$next" == @* ]]; then
-      echo "Next run:          $(fmt_unix "${next#@}")"
+      echo "Next check:        $(fmt_unix "${next#@}")"
     fi
   fi
   last="$(show_value "$SERVICE" ExecMainExitTimestamp)"
   if [[ "$last" == @* ]]; then
     result="$(show_value "$SERVICE" Result)"
-    echo "Last run:          $(fmt_unix "${last#@}") - ${result}"
+    [[ "$result" == success ]] && result=ok
+    echo "Last check:        $(fmt_unix "${last#@}") - ${result}"
   else
-    echo "Last run:          never"
+    echo "Last check:        never"
   fi
   # The latest update step, as autoupdate-run records it (also for updates from the dashboard).
   if [[ -r "$STATE" ]]; then
@@ -147,7 +159,7 @@ status() {
       done) echo "Last update:       ${to:-installed}, checked after the reboot ($(fmt_unix "$at"))" ;;
       failed) echo "Last update:       failed ($(fmt_unix "$at")): ${err}" ;;
       staged) echo "Last update:       ${to} downloaded, waiting for a reboot" ;;
-      uptodate) echo "Last update:       already up to date ($(fmt_unix "$at"))" ;;
+      uptodate) echo "Last update:       none needed, already up to date ($(fmt_unix "$at"))" ;;
       "") ;;
       *) echo "Last update:       ${phase} ${to}" ;;
     esac
@@ -185,7 +197,7 @@ turn_on() {
       shift
       time="$(parse_time "$@")"
       spec="*-*-$(printf '%02d' "$day") ${time}:00"
-      desc="monthly on day ${day} at $(both_formats "$time")"
+      desc="monthly on the $(ordinal "$day") at $(both_formats "$time")"
       ;;
     *)
       die "choose daily, weekly or monthly (see: autoupdate help)"
@@ -212,7 +224,7 @@ EOF
   systemctl enable --quiet "$TIMER"
   systemctl restart "$TIMER"
   echo "Automatic updates on: ${desc}."
-  echo "When an update is found, it's installed and the system reboots."
+  echo "If there's a newer image, it's installed and the system reboots; if not, nothing happens."
   status
 }
 

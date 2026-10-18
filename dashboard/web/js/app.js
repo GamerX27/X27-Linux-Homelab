@@ -155,8 +155,8 @@ async function logout() {
 
 function nodeStatus(n) {
   if (!n.online) return ['crit', 'Offline'];
-  if (autoPending(n.summary)) return ['good', `Online · updates automatically ${nextRun(n.summary.autoUpdateNext)}`];
-  if (n.summary?.updateAvailable) return ['warn', 'Update available'];
+  if (autoPending(n.summary)) return ['good', `Online · update installs ${nextRun(n.summary.autoUpdateNext)}`];
+  if (n.summary?.updateAvailable) return ['warn', 'OS update available'];
   return ['good', 'Online'];
 }
 

@@ -1,4 +1,4 @@
-import { h, clear, icon, busy, confirmAction, toast, duration } from '../ui.js';
+import { h, clear, icon, busy, confirmAction, toast, duration, release } from '../ui.js';
 import * as api from '../api.js';
 
 // The OS update page (#/update). The main node runs the update (internal/rollout) and this
@@ -11,7 +11,7 @@ export async function startUpdate(ids) {
   location.hash = '#/update';
 }
 
-const STEPS = ['Download', 'Staged', 'Reboot', 'Back online', 'Verified'];
+const STEPS = ['Download', 'Downloaded', 'Reboot', 'Back online', 'Verified'];
 
 // Where a node is on STEPS: [index of the step it's on, whether that step is finished].
 function position(n) {
@@ -118,7 +118,7 @@ export function renderRollout(el, { menuButton, refreshNodes }) {
         await busy(doneBtn, () => api.del('/api/rollout'));
         refreshNodes();
         location.hash = '#/';
-      } }, job.state === 'stopped' && count('staged') ? 'Leave them staged' : 'Done');
+      } }, job.state === 'stopped' && count('staged') ? 'Leave them for later' : 'Done');
       actions.push(doneBtn);
     }
 
@@ -128,7 +128,7 @@ export function renderRollout(el, { menuButton, refreshNodes }) {
         ? 'Every node downloads the new image at the same time. Then they reboot one at a time, and the main node goes last.'
         : 'Rebooting one node at a time. Each one has to come back on the new image before the next one goes.')
       : [updated && `${updated} of ${ns.length} updated and verified`, current && `${current} already up to date`,
-        failed && `${failed} failed`, count('staged') && `${count('staged')} staged, not rebooted`].filter(Boolean).join(' · ');
+        failed && `${failed} failed`, count('staged') && `${count('staged')} downloaded, not rebooted`].filter(Boolean).join(' · ');
 
     clear(body,
       h('div.card',
@@ -156,7 +156,7 @@ export function renderRollout(el, { menuButton, refreshNodes }) {
       h('div.card-head',
         h('div',
           h('div.row', { style: { gap: '8px' } }, h('strong', n.name), n.local ? h('span.badge', 'main') : null),
-          h('div.sub.mono', n.from || '?', ' → ', n.toName || n.to || 'newest image')),
+          h('div.sub.mono', release(n.from) || '?', ' → ', n.toName || release(n.to) || 'newest image')),
         logBtn),
       stepper(n),
       h('div.row.rollout-msg',

@@ -4,7 +4,7 @@ set -l weekdays mon tue wed thu fri sat sun
 complete -c autoupdate -f
 complete -c autoupdate -n "not __fish_seen_subcommand_from $subcommands" -a on -d "Turn on / change the schedule"
 complete -c autoupdate -n "not __fish_seen_subcommand_from $subcommands" -a off -d "Turn off automatic updates"
-complete -c autoupdate -n "not __fish_seen_subcommand_from $subcommands" -a status -d "Show schedule and next run"
+complete -c autoupdate -n "not __fish_seen_subcommand_from $subcommands" -a status -d "Show schedule and next check"
 complete -c autoupdate -n "not __fish_seen_subcommand_from $subcommands" -a gotify -d "Set up Gotify messages"
 complete -c autoupdate -n "not __fish_seen_subcommand_from $subcommands" -a help -d "Show usage"
 
