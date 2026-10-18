@@ -1,168 +1,153 @@
 # X27-Linux Homelab
 
-> **testing-alma branch:** builds `x27-linux-homelab-alma-testing` and `x27-linux-homelab-vm-alma-testing` on
-> AlmaLinux 10 (`:10`, `:latest`, `:<date>-10`). The install steps below describe production
-> (`main`, Fedora 44). Switch a node to it with `channel testing-alma`; see [Channels](#channels).
+> **`testing-alma` branch: AlmaLinux 10.** Builds `x27-linux-homelab-alma-testing` and
+> `x27-linux-homelab-vm-alma-testing` (`:10`). Everything below applies; the install commands
+> set up `stable`, then `channel testing-alma` moves a machine here. May break.
+> AlmaLinux 10 is supported until 2035, against about 13 months for a Fedora release.
 
-Docker-first, minimal headless AlmaLinux 10 server images, built with
-[BlueBuild](https://blue-build.org/) on the official
-[`quay.io/almalinuxorg/almalinux-bootc`](https://quay.io/repository/almalinuxorg/almalinux-bootc)
-image. AlmaLinux 10 is supported until 2035, against about 13 months for a Fedora release.
+A minimal, headless server OS for running Docker. The OS is a small read-only image that
+updates itself; everything you run on it goes in containers.
 
-**Docker first:** the OS is a small, read-only base that updates itself. Everything you run
-on it (services, apps, tools) goes in Docker containers, managed with `docker compose`.
+Built with [BlueBuild](https://blue-build.org/) on AlmaLinux's official
+[bootc image](https://quay.io/repository/almalinuxorg/almalinux-bootc), in two flavors:
 
-- Bare metal: `ghcr.io/gamerx27/x27-linux-homelab`: [recipe.yml](recipes/recipe.yml)
-- VM: `ghcr.io/gamerx27/x27-linux-homelab-vm`: [recipe-vm.yml](recipes/recipe-vm.yml)
+| Flavor | Image | Recipe |
+|---|---|---|
+| Bare metal | `ghcr.io/gamerx27/x27-linux-homelab` | [recipe.yml](recipes/recipe.yml) |
+| VM | `ghcr.io/gamerx27/x27-linux-homelab-vm` | [recipe-vm.yml](recipes/recipe-vm.yml) |
 
 Both share [common.yml](recipes/common.yml).
 
-## What's in it
+**Contents:** [Install](#install) · [Channels](#channels) · [OS updates](#os-updates) ·
+[Container updates](#container-updates) · [Dashboard](#dashboard) · [NetBird](#netbird) ·
+[What's included](#whats-included) · [Good to know](#good-to-know) ·
+[For maintainers](#for-maintainers)
 
-- No desktop, no extras: AlmaLinux bootc plus the items below
-- Docker CE from Docker's official repo (`docker-ce`, buildx, compose plugin), enabled at boot
-- `docker-compose-update`: check your containers for newer images and pick which to update (see
-  [Updating containers](#updating-containers))
-- `dashboard`: a web admin UI for this server and your other servers running the image (see
-  [Dashboard](#dashboard)). Off by default
-- `netbird`: the [NetBird](https://netbird.io) VPN client. Off by default (see [NetBird](#netbird))
-- Podman (and toolbox) removed
-- SSH (`sshd`) enabled
-- EPEL enabled for fish, `htop`, `ncdu` and `nvtop`
-- fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
-- `channel`: switch between the stable and testing images (see [Channels](#channels))
-- `autoupdate`: turn automatic updates on or off, on a schedule of your choice (see
-  [Automatic updates](#automatic-updates)), with optional [Gotify](https://gotify.net) messages
-- Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
-  listener is off and `/etc/resolv.conf` points at the upstream servers; UDP buffers raised
-  for DNS-over-QUIC
-- Quiet login screen: the console only shows kernel errors (the rest is in `journalctl -k`)
-- `dnf` disabled on the installed system (see [Installing software](#installing-software))
-- **Bare metal:** `smartmontools` (`smartd` enabled), `nvme-cli`, `nvtop`, and `lm_sensors`
-- **VM:** `qemu-guest-agent` enabled; hardware firmware and CPU microcode removed
-- `/etc/os-release` names the image and build, e.g. `X27-Linux Homelab 44 (2026-09-24)`
+---
 
 ## Install
 
-**Fresh machine:** run the `build-iso` workflow (Actions → build-iso → Run workflow) and
-download the ISO from the run's artifacts. Or build it locally (needs Docker and sudo,
-20 GB+ free):
+### On a new machine
 
-```
-./scripts/build-iso.sh        # bare metal → iso-out/x27-linux-homelab.iso
-./scripts/build-iso.sh vm     # VM         → iso-out/x27-linux-homelab-vm.iso
-```
+Get the installer ISO in one of two ways:
 
-The installer defaults to plain ext4 partitions (no LVM) for automatic partitioning instead of
-Fedora Server's XFS on LVM (`iso/ext4.tmpl`). You can still pick LVM, Btrfs or another filesystem
-in custom partitioning.
+- **From CI:** Actions → **build-iso** → Run workflow, then download the ISO from the run's
+  artifacts.
+- **Locally** (needs Docker, sudo and 20 GB free):
 
-**Already on Fedora bootc / an image-based Fedora:** rebase onto this image.
+  ```sh
+  ./scripts/build-iso.sh        # bare metal → iso-out/x27-linux-homelab.iso
+  ./scripts/build-iso.sh vm     # VM         → iso-out/x27-linux-homelab-vm.iso
+  ```
 
-```
+Automatic partitioning uses plain ext4 partitions (no LVM). Custom partitioning still lets you
+pick LVM, Btrfs or something else. Tick **Make this user administrator** for your user: you need it to log in to the
+dashboard.
+
+### On an existing Fedora bootc system
+
+Rebase onto the image, reboot, then rebase again to switch to signed (verified) pulls:
+
+```sh
 sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/gamerx27/x27-linux-homelab:44
 systemctl reboot
-```
 
-Then switch to verified pulls:
-
-```
 sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:44
 systemctl reboot
 ```
 
-Use `x27-linux-homelab-vm` in place of `x27-linux-homelab` for a VM.
+For a VM, use `x27-linux-homelab-vm` instead.
 
-Regular users (UID 1000+) are added to the `docker` group at boot by `docker-group.service`,
-so the user made in the installer runs Docker without sudo. A user added later gets it at the
-next boot (or run `sudo usermod -aG docker <user>` and log in again). Each user is added once,
-so `sudo gpasswd -d <user> docker` stays. Membership in `docker` is effectively root access.
-
-fish is the login shell (console and SSH) for every regular user. New users get it from
-`/etc/default/useradd`. Existing users who still have bash are switched once at boot by
-`fish-default-shell.service`. To go back to bash: `sudo chsh -s /bin/bash $USER`, and it stays
-that way.
+---
 
 ## Channels
 
-The image comes in three channels. Each node follows one, and its updates come from that
-channel only.
+Each machine follows one channel and only gets updates from it.
 
-| Channel | Base | Image (bare metal / VM) | Branch |
+| Channel | Base | Use it for |
+|---|---|---|
+| `stable` | Fedora 44 | Everyday use. The default. |
+| `testing` | Fedora 45 | Trying the next Fedora. May break. |
+| `testing-alma` | AlmaLinux 10 | Trying AlmaLinux. May break. Older kernel (6.12 with backports), so very new hardware may not work. |
+
+Switch with `channel`:
+
+```sh
+channel                    # show the current channel
+channel testing            # switch, then asks whether to reboot
+channel stable --reboot    # switch and reboot right away
+```
+
+The switch applies after the reboot. Your data, containers and settings stay; only the OS
+changes. To undo it, roll back (`sudo rpm-ostree rollback` or **Roll back** in the dashboard)
+before the next update.
+
+<details>
+<summary>Image names and tags</summary>
+
+All images are at `ghcr.io/gamerx27/`, signed, and rebuilt every Sunday at 02:00 UTC.
+
+| Channel | Bare metal | VM | Branch |
 |---|---|---|---|
-| `stable` | Fedora 44 | `x27-linux-homelab:44` / `x27-linux-homelab-vm:44` | `main` |
-| `testing` | Fedora 45 | `x27-linux-homelab-testing:45` / `x27-linux-homelab-vm-testing:45` | `testing` |
-| `testing-alma` | AlmaLinux 10 | `x27-linux-homelab-alma-testing:10` / `x27-linux-homelab-vm-alma-testing:10` | `testing-alma` |
+| `stable` | `x27-linux-homelab:44` | `x27-linux-homelab-vm:44` | `main` |
+| `testing` | `x27-linux-homelab-testing:45` | `x27-linux-homelab-vm-testing:45` | `testing` |
+| `testing-alma` | `x27-linux-homelab-alma-testing:10` | `x27-linux-homelab-vm-alma-testing:10` | `testing-alma` |
 
-All of them are at `ghcr.io/gamerx27/`, signed, and rebuilt weekly (Sundays, 02:00 UTC).
-`stable` is the one to use. The testing channels get no [releases](#releases) and may break.
-AlmaLinux runs an older kernel than Fedora (6.12 with backports), so very new hardware may not
-be supported there yet.
+Every image has three tags (shown for `stable`):
 
-### Switching channels
+- `:44` follows the channel. This is what `channel` uses.
+- `:<date>-44` (e.g. `:20260924-44`) is one fixed build, for pinning or rolling back.
+- `:latest` is the newest build, whatever its version.
 
-```
-channel                  # which channel this node is on, and the others
-channel testing          # switch to Fedora 45 testing (asks before rebooting)
-channel stable --reboot  # back to stable, and reboot right away
-```
+Only `stable` gets [releases](#releases).
 
-`channel` keeps the bare-metal or VM image the node runs now, and the switch takes effect
-after the reboot. Data, containers and settings stay; only the OS image changes. The image you
-left stays as the rollback entry, so `sudo rpm-ostree rollback` (or **Roll back** in the
-dashboard) undoes the switch until the next update. Going from `testing` back to `stable` is a
-downgrade to an older Fedora, which usually works on these images.
+</details>
 
-### Image tags
+---
 
-Each image has the same three tags; for `stable`:
+## OS updates
 
-- `:44`: follows Fedora 44 and is rebuilt weekly. This is what `channel` uses.
-- `:<date>-44` (e.g. `:20260924-44`): one fixed build, for rolling back.
-- `:latest`: the newest build, whatever Fedora version that is.
+**By hand:** `sudo rpm-ostree upgrade`, then reboot. (Not `bootc upgrade`; see
+[Good to know](#good-to-know).)
 
-The testing channels use `:45` and `:10` the same way.
+### Automatic updates
 
-## Installing software
+Off by default. Pick a schedule, and at that time the machine checks for a newer image. If
+there is one, it installs it and reboots; if not, nothing happens.
 
-The OS image is read-only and replaced on every update:
-
-- Services: run them in Docker (`docker compose`)
-- System packages: add them to a recipe here and let CI rebuild
-- Updates: `sudo rpm-ostree upgrade`, then reboot. Not `bootc upgrade` (see Notes). Or turn
-  on [automatic updates](#automatic-updates).
-
-## Automatic updates
-
-Off by default. `autoupdate` turns them on at the time you pick. When a new image is
-available, it's installed and the system reboots. When there's nothing new, nothing happens.
-
-```
-autoupdate                           # interactive menu
-autoupdate status                    # on/off, schedule, next and last check
+```sh
+autoupdate                       # interactive menu
+autoupdate status                # schedule, next check, last result
 autoupdate on daily 04:00
 autoupdate on weekly sun 3:30am
-autoupdate on monthly 15 11pm        # days 29-31 skip months that don't have them
+autoupdate on monthly 15 11pm    # days 29-31 skip months that don't have them
 autoupdate off
 ```
 
-Times can be 24-hour (`04:00`, `23:30`) or 12-hour (`4am`, `3:30 PM`, `12am` = midnight).
-`autoupdate on` writes `/etc/systemd/system/autoupdate.timer`, which runs `autoupdate.service`
-(`rpm-ostree upgrade`, then a reboot only if an update was staged). It lives in `/etc`, so the
-schedule survives updates. If the machine was off at the scheduled time, the update runs at the
-next boot.
-
-After the reboot, `autoupdate-verify.service` checks that the machine runs the image it staged.
-Every step (checking, downloading, staged, rebooting, done or failed) is written to
-`/var/lib/autoupdate/state.json` and the output to `last.log` next to it. `autoupdate status`
-shows the last result, and the dashboard follows an update through its reboot with them.
+Times can be 24-hour (`04:00`) or 12-hour (`4am`, `3:30 PM`). If the machine is off at the
+scheduled time, the check runs at the next boot. After the reboot, the machine checks that it
+came up on the new image.
 
 ### Gotify messages
 
-Optional. With a [Gotify](https://gotify.net) server set up, you get a message just before the
-machine reboots into an update, one when it's back on the new image ("Updated …"), and one when an
-update fails, including when the machine comes back on the old image. Nothing is sent when there's no
-update. The update message shows what changed, like `rpm-ostree` does:
+Optional. With a [Gotify](https://gotify.net) server, you get a message before the machine
+reboots into an update, when it's back, and when an update fails. Nothing is sent when there's
+no update.
+
+In Gotify, create an app (**Apps → Create Application**) and copy its token, then:
+
+```sh
+autoupdate gotify https://gotify.example.com   # asks for the token, sends a test message
+autoupdate gotify test                         # send another test message
+autoupdate gotify show                         # show the stored URL and token
+autoupdate gotify off
+```
+
+Nothing is saved if the test message doesn't arrive. The dashboard's **Features** page can do
+the same.
+
+<details>
+<summary>Example update message</summary>
 
 ```
 X27-Linux Homelab 44 (2026-09-24) → X27-Linux Homelab 44 (2026-09-30)
@@ -173,216 +158,220 @@ Packages: 12 upgraded, 1 removed, 1 added
 Upgraded (12):
   kernel 6.16.3-200.fc44.x86_64 -> 6.16.5-200.fc44.x86_64
   ...
-Removed (1):
-  ...
-Added (1):
-  ...
 
 Rebooting now.
 ```
 
-Create an app in Gotify (Apps → Create Application) for its token, then:
+</details>
 
-```
-autoupdate gotify https://gotify.example.com   # asks for the app token, sends a test message
-autoupdate gotify test                         # send another test message
-autoupdate gotify show                         # show the stored URL and app token
-autoupdate gotify off
+<details>
+<summary>Where things are stored</summary>
+
+- Schedule: `/etc/systemd/system/autoupdate.timer` (in `/etc`, so it survives updates). It runs
+  `autoupdate.service`.
+- Progress of the last update: `/var/lib/autoupdate/state.json`, output in `last.log` next to it.
+  `autoupdate status` and the dashboard read these.
+- Gotify URL and token: `/etc/autoupdate.conf` (root only).
+
+</details>
+
+---
+
+## Container updates
+
+`docker-compose-update` checks the images your containers use, lists the ones with a newer
+version, and updates only what you pick.
+
+```sh
+docker-compose-update                 # looks in ~/docker
+docker-compose-update /srv/stacks     # or another folder
 ```
 
-The URL and token are stored in `/etc/autoupdate.conf` (root only). Nothing is saved if the
-test message fails. The dashboard's **Features** page does the same, shows the stored token
-(hidden until you click Show, with Copy), and lets you change the URL without entering the token
-again.
+Keys: `↑`/`↓` (or `k`/`j`) move, `Space` selects, `a` selects all, `Enter` updates, `q` quits.
+Afterwards it offers to remove the old images. Set `COMPOSE_ROOT` to change the default folder.
+
+| Where the container comes from | What an update does |
+|---|---|
+| Compose file (in the folder, or anywhere for a running container) | Pulls, then `docker compose up -d` |
+| Portainer or other external stack | Pulls; redeploy in Portainer to apply |
+| `docker run` | Pulls; can recreate it with the same settings (via [runlike](https://github.com/lavie/runlike)) |
+
+The dashboard can do this too, for all your machines at once.
+
+---
+
+## Dashboard
+
+A web UI for this machine and your other machines running the image. Off by default.
+
+One machine is the **main node** and serves the UI. Others join it as **nodes**, and you
+manage all of them from the same page.
+
+### Set up
+
+**1. On the main node:**
+
+```sh
+dashboard enable        # prints the address, e.g. https://192.168.1.10:9090
+```
+
+Log in with your Linux username and password; only users in `wheel` can. The certificate is
+self-signed, so the browser warns once. `dashboard status` prints its fingerprint to compare.
+
+**2. On each other machine:**
+
+```sh
+dashboard enable node   # prints a one-time pairing password
+```
+
+Then in the UI: **Add node**, enter its address (add `:port` if it isn't 9090) and the
+password. To use the terminal on a node, your user needs an account in `wheel` there too.
+
+> **Security:** anyone who logs in has root-level control. The image has no firewall, so keep
+> the dashboard on your LAN or behind a VPN, never open to the internet.
+
+### What you can do
+
+**For all nodes (main page):** see every node with its version, update the OS on several
+nodes at once, and update containers on all nodes.
+
+**For each node:**
+
+| Page | What's on it |
+|---|---|
+| Overview | CPU, memory, disks, network, temperatures, uptime, OS version |
+| Updates | Current OS image, available update, last update and its log; update, reboot or roll back |
+| Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, logs, remove. Plus images, volumes and networks for cleanup |
+| Files | Your home folder: browse, edit, upload, download, rename, delete. Same permissions as over SSH |
+| Terminal | A shell in the browser, as your user |
+| Features | Automatic updates, Gotify messages, and turning services (SSH, smartd, NetBird, Docker…) on or off |
+| Settings | Hostname, time zone, network time, reboot and shut down |
+
+Your sidebar picture comes from [Gravatar](https://gravatar.com): click your name and enter
+your email. Only a hash of it is stored.
+
+### Apps (compose stacks)
+
+An app is a folder in `~/docker/<name>/` with a `compose.yml`, the same folders
+`docker-compose-update` uses. The Docker page also shows compose projects running from other
+places.
+
+- **New app:** name it and write the `compose.yml` (and an optional `.env`). Start blank or
+  from a **preset** in [X27/Docker-X27-Composes](https://codeberg.org/X27/Docker-X27-Composes).
+- **Saving** checks the file with `docker compose config` first and keeps the old version as
+  `compose.yml.bak`.
+- **Pull & recreate** and **Update** get newer images and recreate the containers. Data in
+  volumes and bind mounts is kept. Updates run in the background, one at a time per node, with
+  a live log.
+- **Remove** runs `docker compose down`. Named volumes are kept, and the folder too unless you
+  tick **Also delete the folder**.
+
+To use another preset repository, set `PRESETS_REPO=https://host/owner/repo` in
+`/etc/dashboard.conf`. It needs the same `Composes/<name>/compose.yml` layout.
+
+### How an OS update runs
+
+When you update from the dashboard, the main node runs the update and opens the **OS update**
+page:
+
+1. All selected nodes download the new image at the same time. Nothing restarts yet.
+2. They reboot one at a time, the main node last. Each has to come back on the new image before
+   the next one goes.
+3. If a node fails, the update stops there. You choose **Reboot the rest** or **Leave them for
+   later**.
+
+The update keeps going if you close the page, and survives the main node's own reboot.
+
+### Commands
+
+```sh
+dashboard status        # on/off, mode, address, pairing, certificate fingerprint
+dashboard nodes         # main node: list nodes
+dashboard pair          # node: print a new pairing password
+dashboard unpair        # node: forget the main node
+dashboard port 9443     # change the port (default 9090)
+dashboard disable
+```
+
+Settings are in `/etc/dashboard.conf`; certificate, nodes and sessions in `/var/lib/dashboard`.
+
+---
 
 ## NetBird
 
-The [NetBird](https://netbird.io) client is installed but off. To join your NetBird network:
+The [NetBird](https://netbird.io) VPN client is installed but off. To join your network:
 
-```
+```sh
 sudo systemctl enable --now netbird
-sudo netbird up                                  # prints a login link
-sudo netbird up --setup-key <KEY>                # or use a setup key (no browser needed)
+sudo netbird up                                   # prints a login link
+sudo netbird up --setup-key <KEY>                 # or log in with a setup key
 sudo netbird up --management-url https://netbird.example.com   # self-hosted server
 netbird status
 ```
 
-It stays connected across reboots and updates. `sudo netbird down` disconnects;
-`sudo systemctl disable --now netbird` turns it off again. It can also be switched on or off in
-the dashboard's **Features** page. Settings for the service (e.g. `NB_MANAGEMENT_URL`) go in
-`/etc/sysconfig/netbird`; its state is in `/var/lib/netbird`. Logs: `journalctl -u netbird`.
+It stays connected across reboots and updates. `sudo netbird down` disconnects, and
+`sudo systemctl disable --now netbird` turns it off. You can also switch it on the dashboard's
+**Features** page.
 
-## Updating containers
+Settings go in `/etc/sysconfig/netbird`, state is in `/var/lib/netbird`, logs with
+`journalctl -u netbird`.
 
-`docker-compose-update` checks every image your containers use against its registry and shows
-the ones with a newer version in a menu, so you pick exactly what gets updated.
+---
 
-```
-docker-compose-update                 # scans ~/docker for compose files
-docker-compose-update /srv/stacks     # or another directory
-```
+## What's included
 
-Keys: `↑/↓` (or `k/j`) move, `Space` toggles, `a` selects all, `Enter` updates, `q` quits.
+| | |
+|---|---|
+| **Base** | AlmaLinux bootc, no desktop. SSH on. Podman and toolbox removed. EPEL on, for fish, `htop`, `ncdu` and `nvtop`. |
+| **Docker** | Docker CE from Docker's repo, with buildx and the compose plugin. On at boot. |
+| **Commands** | `channel`, `autoupdate`, `docker-compose-update`, `dashboard` (off), `netbird` (off) |
+| **Tools** | fish, `htop`, `git`, `wget`, `lspci`, `ncdu`, `zip`, `unzip` |
+| **Bare metal only** | `smartmontools` (smartd on), `nvme-cli`, `nvtop`, `lm_sensors` |
+| **VM only** | `qemu-guest-agent` on; no hardware firmware or CPU microcode |
+| **DNS-ready** | Port 53 is free for AdGuard Home or Pi-hole, with larger UDP buffers for DNS-over-QUIC |
+| **Quiet console** | Only kernel errors on screen; the rest is in `journalctl -k` |
 
-It finds images in four places, and updates each accordingly:
+`/etc/os-release` names the build, e.g. `X27-Linux Homelab 44 (2026-09-24)`.
 
-- Compose files under the scanned directory: pulled, then `docker compose up -d`
-- Compose files elsewhere on the host (from running containers): same
-- Portainer / external stacks: pulled; redeploy them in Portainer to apply
-- `docker run` containers: pulled; optionally recreated with the same settings (via
-  [runlike](https://github.com/lavie/runlike))
+---
 
-Afterwards it offers to remove the old images. Only what you select is changed. Set
-`COMPOSE_ROOT` to scan somewhere other than `~/docker` by default.
+## Good to know
 
-## Dashboard
+**Installing software.** The OS is read-only and replaced on every update, so `dnf` is turned
+off. Run services in Docker. For a system package, add it to a recipe here and let CI rebuild.
 
-A web admin UI, off by default. One server is the **main node** and serves the UI. Other
-servers running this image can be added to it as **nodes** and managed from the same page.
+**Docker without sudo.** Regular users (UID 1000+) are added to the `docker` group at boot.
+To take someone out for good: `sudo gpasswd -d <user> docker`. Being in `docker` is effectively
+root access.
 
-For each node it shows:
+**fish is the login shell** for every regular user. To go back to bash:
+`sudo chsh -s /bin/bash $USER`. It stays that way.
 
-- **Overview:** CPU, memory, disks, network, temperatures, uptime, OS and image version
-- **Updates:** the OS image: the running version, whether a newer one is out (checked every
-  6 hours), the result of the last update (with its log), and buttons to update, reboot or roll
-  back. **Update now** opens the [OS update page](#os-update-page)
-- **Docker:** three sections. **Apps** lists each stack with its containers inside, image
-  update badges, one button for what's needed (Update or Start) and a ⋯ menu for the rest
-  (restart, stop, pull & recreate, edit, logs, stats, remove); containers started with
-  `docker run` are grouped as Standalone. A strip on top checks all images against their
-  registries and updates them. **Images** and **Storage** (volumes, networks) are for cleanup.
-  Published ports are links that open the service on the node it runs on
-- **Files:** your home folder: browse, edit text files, upload (drag and drop), download
-  (folders as `.tar.gz`), rename, move and delete. It runs as your user, so you have exactly
-  the permissions you have over SSH
-- **Terminal:** a shell in the browser, as the user you logged in with
-- **Features:** automatic updates (schedule, on/off), Gotify messages, and turning services
-  (SSH, smartd, NetBird, Docker, ...) on or off
-- **Settings:** hostname, time zone, network time, reboot and shut down
+**Port 53.** systemd-resolved's stub listener is off and `/etc/resolv.conf` points straight at
+the upstream DNS servers, so a DNS container can use port 53.
 
-### Stacks
+**Use `rpm-ostree`, not `bootc`, for updates.** `bootc` needs Podman, which is removed, so
+`bootc upgrade` and `bootc switch` fail. `bootc status` still works. bootc's own update timer
+is turned off.
 
-A stack is a compose project in your `~/docker/<name>/` folder (e.g. `/home/sindre/docker/jellyfin/compose.yml`),
-the same place `docker-compose-update` looks. The Stacks section lists those folders plus any other
-compose projects running on the node, with Start/Stop, Restart, **Pull & recreate**, Edit and Remove.
+---
 
-- **New stack:** name it, write the `compose.yml` (and an optional `.env`), then Save or Save & start.
-  Start from a blank template or a **preset** from
-  [X27/Docker-X27-Composes](https://codeberg.org/X27/Docker-X27-Composes) (fetched by the main
-  node; its notes are shown). Set `PRESETS_REPO=https://host/owner/repo` in `/etc/dashboard.conf`
-  to use another Forgejo/Gitea repository with the same `Composes/<name>/compose.yml` layout.
-- Files are checked with `docker compose config` before anything is written, and are owned by
-  you. Editing keeps the previous version as `compose.yml.bak`.
-- **Pull & recreate** pulls newer images and recreates the containers; data in volumes and bind
-  mounts is kept. For a container started with plain `docker run` it makes a new container with
-  the same ports, environment, volumes (anonymous ones too), networks and restart policy, and puts
-  the old one back if anything fails. Image updates do the same.
-- **Update** and **Update all** run in the background, one update at a time per node. The bar
-  above the stacks shows what is being pulled or recreated, the stack shows an "Updating" badge
-  (others wait as "Queued"), and **Log** shows the output live. When it's done the bar keeps the
-  result and its log until you dismiss it, even if you left the page meanwhile.
-- **Remove** runs `docker compose down`; named volumes stay. Its folder stays too, unless you
-  tick "Also delete the folder" in the dialog, which deletes the folder and everything in it.
+## For maintainers
 
-On a paired node, stacks live in the same user's `~/docker` on that node.
+### Releases
 
-Your picture in the sidebar comes from [Gravatar](https://gravatar.com): click your name and enter
-your email. Only a hash of it is stored, and your browser loads the picture from gravatar.com.
+Every `stable` build publishes a [GitHub Release](../../releases) listing what changed: key
+versions (kernel, systemd, Docker…), commits, and the packages upgraded, added or removed.
 
-The main page has two update panels for all nodes at once:
+- `vYYYY.MM.DD`: the weekly rebuild
+- `vYYYY.MM.DD.N`: builds from changes pushed in between
 
-- **OS updates:** check every node for a newer image, then **Update…**: pick the nodes and follow
-  them on the [OS update page](#os-update-page).
-- **Container updates:** check every node's images, then **Update all** pulls and recreates only
-  what has a newer image; containers that are up to date aren't restarted.
+### Signing
 
-It also lists every node with its version and a badge when an OS or container update is
-available.
+Images are signed with cosign ([cosign.pub](cosign.pub)). The repo needs the private key as
+the `SIGNING_SECRET` Actions secret.
 
-### OS update page
+### Trying the OS update page
 
-An OS update (from **Update…** on the main page, or **Update now** on a node) is run by the main
-node, and the UI opens the **OS update** page to follow it:
-
-1. Every node downloads and stages the new image at the same time. Nothing restarts yet.
-2. Then the nodes reboot one at a time, paired nodes first and the main node last. Each one has to
-   come back on the new image (the booted commit is the one it staged) before the next one goes.
-3. If a node fails (the download fails, it doesn't come back within 15 minutes, or it comes back on
-   the old image), the update stops there. The nodes that are left keep the update staged, and you
-   pick **Reboot the rest** or **Leave them staged**. A node that fails to download is skipped, and
-   the others carry on.
-
-Each node shows its steps (Download → Staged → Reboot → Back online → Verified), what it's doing
-now (e.g. "Downloading layer 12 of 65") and a live log. **Stop after current node** stops before
-the next reboot.
-
-The update keeps running with the page closed. It's saved in `/var/lib/dashboard/rollout.json`, so
-it also survives the main node's own reboot, and so do logins (`sessions.json`, which stores only a
-hash of each session cookie). While the main node reboots, the page shows that it's reconnecting
-and then carries on by itself.
-
-To try the page without a real update: `DASHBOARD_FAKE_OS=1 dashboard serve --dev` fakes a node
-with an update (download, a reboot with the API down for 15 seconds, done), and
-`DASHBOARD_FAKE_OS=fail` makes it come back on the old image.
-
-### Main node
-
-```
-dashboard enable        # prints the address, e.g. https://192.168.1.10:9090
-```
-
-Log in with your Linux username and password. Only users in the `wheel` group can log in (in
-the installer, tick "Make this user administrator"). The certificate is self-signed, so the
-browser warns the first time; `dashboard status` prints its fingerprint to compare.
-
-### Adding a node
-
-On the other server:
-
-```
-dashboard enable node   # prints a one-time pairing password, e.g. K7QM-2XRT-9HVA-PWE4-CN3S
-```
-
-In the main node's UI: **Add node**, then its address (IP or hostname, `:port` if not 9090)
-and the pairing password. The main node gets an access token for the node and pins the
-node's certificate, so it refuses to talk to anything else at that address later. The
-password works once; `dashboard pair` on the node prints a new one (pairing again replaces the
-old main node). Removing a node in the UI makes it forget the token.
-
-The browser only talks to the main node, which passes requests on to the nodes. A node's
-terminal opens as the same username on that node, so that user needs an account in `wheel`
-there too.
-
-### Commands
-
-```
-dashboard status        # on/off, mode, address, paired or not, certificate fingerprint
-dashboard pair          # node: new pairing password
-dashboard unpair        # node: forget the main node
-dashboard port 9443     # change the port (default 9090)
-dashboard nodes         # main: list paired nodes
-dashboard disable
-```
-
-Settings are in `/etc/dashboard.conf`; the certificate and node list are in
-`/var/lib/dashboard`. The image has no firewall, so the port is open to your network once the
-dashboard is on. Anyone who logs in gets root-level control (Docker, updates, services), so keep
-it on your LAN or behind a VPN, not exposed to the internet.
-
-## Releases
-
-Every image build publishes a [GitHub Release](../../releases) that lists what changed: key
-versions (kernel, systemd, Docker, ...), repo commits, and the packages updated, added or
-removed in each image. The package lists are attached to each release.
-
-- `vYYYY.MM.DD` (e.g. `v2026.09.27`): the weekly rebuild
-- `vYYYY.MM.DD.N` (e.g. `v2026.09.24.1`): minor releases for changes pushed in between
-
-## Notes
-
-- `bootc` hard-requires `podman`, so Podman is removed with `rpm -e --nodeps`, which leaves
-  bootc installed. `bootc upgrade`/`bootc switch` fail without Podman ("Creating imgstorage:
-  ... No such file or directory"), so updates and rebases use `rpm-ostree`, which doesn't
-  need Podman. `bootc status` still works. bootc's automatic update timer is masked.
-- Images are signed with cosign (`cosign.pub`). The repo needs the private key as the
-  `SIGNING_SECRET` Actions secret.
+`DASHBOARD_FAKE_OS=1 dashboard serve --dev` fakes a node with an update (download, a 15-second
+reboot, done). `DASHBOARD_FAKE_OS=fail` makes it come back on the old image.
