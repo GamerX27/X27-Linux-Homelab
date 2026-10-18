@@ -21,6 +21,7 @@ import (
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/backup"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/channel"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/docker"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/features"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
@@ -82,9 +83,10 @@ func startedJob(w http.ResponseWriter, r *http.Request, what string, job docker.
 }
 
 type Local struct {
-	Version  string
-	Dev      bool
-	Upgrader *websocket.Upgrader
+	Version     string
+	Dev         bool
+	Upgrader    *websocket.Upgrader
+	Fingerprint string // the dashboard's certificate, for Settings
 
 	sampler *system.Sampler
 	checker *osupdate.Checker
@@ -100,6 +102,10 @@ type Local struct {
 	auMu     sync.Mutex
 	auCached features.Autoupdate
 	auAt     time.Time
+
+	chMu     sync.Mutex
+	chCached channel.Status
+	chAt     time.Time
 }
 
 func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
@@ -173,6 +179,7 @@ type Summary struct {
 	Running            int         `json:"running"`
 	Containers         int         `json:"containers"`
 	DashboardVersion   string      `json:"dashboardVersion"`
+	Channel            string      `json:"channel"` // release channel, "" if unknown
 }
 
 func (l *Local) summary() Summary {
@@ -190,6 +197,7 @@ func (l *Local) summary() Summary {
 	if os.Job != nil {
 		s.UpdatePhase = os.Job.Phase
 	}
+	s.Channel = l.channelStatus(false).Current
 	au := l.autoupdate()
 	s.AutoUpdate, s.AutoUpdateNext = au.Enabled, au.NextRun
 	ct := l.updater.Status()
@@ -672,6 +680,7 @@ func (l *Local) Handler() http.Handler {
 		}
 		result(w, r, "ntp "+strconv.FormatBool(body.Enabled), "", system.SetNTP(body.Enabled))
 	})
+	l.adminRoutes(mux)
 	return mux
 }
 

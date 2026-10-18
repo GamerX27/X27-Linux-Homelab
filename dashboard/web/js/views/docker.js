@@ -616,9 +616,13 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     };
     follow.addEventListener('change', () => { if (follow.checked) fetchLogs(); else clearTimeout(t); });
     fetchLogs();
-    await modal(`Logs: ${name}`, h('div.stack', { 'data-wide': '1' }, h('label.row.muted', follow, 'Refresh every 3 seconds'), pre),
-      [{ label: 'Close', value: true, class: 'primary' }]);
+    const v = await modal(`Logs: ${name}`, h('div.stack', { 'data-wide': '1' }, h('label.row.muted', follow, 'Refresh every 3 seconds'), pre),
+      [{ label: 'Ask AI about these logs', value: 'ai' }, { label: 'Close', value: true, class: 'primary' }]);
     open = false; clearTimeout(t);
+    if (v === 'ai') {
+      location.hash = '#/ai?' + new URLSearchParams({ q: `Look at the logs of the container ${name} on node ${node.name} and explain any errors or warnings in them, and what would fix them.`,
+        ctx: `the Docker tab of node ${node.name} (id ${node.id}), container ${name}` });
+    }
   }
 
   async function showStats(name, id) {

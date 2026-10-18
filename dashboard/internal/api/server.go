@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,7 @@ func NewMain(o Options) (http.Handler, error) {
 	}
 	// Same-origin websockets only (gorilla's default origin check).
 	local := NewLocal(o.Version, o.Dev, &websocket.Upgrader{})
+	local.Fingerprint = tlsutil.Fingerprint(o.Cert)
 	localAPI := local.Handler()
 	sessions := auth.NewManager(o.Auth, !o.Dev)
 	sessions.Persist(filepath.Join(config.StateDir, "sessions.json"))
@@ -158,6 +161,27 @@ func NewMain(o Options) (http.Handler, error) {
 		}
 		result(w, r, "rename node "+r.PathValue("id"), "", store.Rename(r.PathValue("id"), body.Name))
 	})
+	// A node's port: the node restarts on it, then the main node uses the new address.
+	api.HandleFunc("POST /api/nodes/{id}/port", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Port int }
+		if err := readJSON(r, &body); err != nil || !config.ValidPort(body.Port) {
+			writeErr(w, http.StatusBadRequest, errors.New("enter a port from 1 to 65535"))
+			return
+		}
+		n, ok := store.Get(r.PathValue("id"))
+		if !ok {
+			writeErr(w, http.StatusNotFound, errors.New("no such node"))
+			return
+		}
+		host, _, err := net.SplitHostPort(n.Address)
+		if err != nil {
+			host = n.Address
+		}
+		if err = store.PostBody(n, userOf(r), "/dashboard/port", 15*time.Second, body, nil); err == nil {
+			err = store.SetAddress(n.ID, net.JoinHostPort(host, strconv.Itoa(body.Port)))
+		}
+		result(w, r, "port of node "+n.Name+" to "+strconv.Itoa(body.Port), "Restarting on port "+strconv.Itoa(body.Port)+".", err)
+	})
 	api.HandleFunc("DELETE /api/nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		n, err := store.Remove(r.PathValue("id"))
 		if err == nil {
@@ -203,6 +227,9 @@ func NewMain(o Options) (http.Handler, error) {
 		writeJSON(w, http.StatusOK, f)
 	})
 	rolloutRoutes(api, local, store)
+	if _, _, err := aiRoutes(mux, api, o); err != nil {
+		return nil, err
+	}
 	api.HandleFunc("/api/n/{id}/", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		prefix := "/api/n/" + id
@@ -237,8 +264,9 @@ func NewMain(o Options) (http.Handler, error) {
 func NewNode(o Options) http.Handler {
 	// The main node proxies browser websockets; the bearer token is the protection here.
 	local := NewLocal(o.Version, o.Dev, &websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }})
-	localAPI := local.Handler()
 	fingerprint := tlsutil.Fingerprint(o.Cert)
+	local.Fingerprint = fingerprint
+	localAPI := local.Handler()
 
 	var pairMu sync.Mutex
 	var pairFails int

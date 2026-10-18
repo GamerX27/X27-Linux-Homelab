@@ -39,6 +39,7 @@ type Service struct {
 	Enabled     bool   `json:"enabled"`
 	Active      string `json:"active"`
 	Warning     string `json:"warning,omitempty"`
+	ownCard     bool   // shown on its own card (NetBird), not in the services list
 }
 
 type All struct {
@@ -56,7 +57,7 @@ var services = []Service{
 	{ID: "fish-default-shell", Name: "fish as default shell", Unit: "fish-default-shell.service", Description: "Makes fish the login shell for regular users at boot."},
 	{ID: "qemu-guest-agent", Name: "QEMU guest agent", Unit: "qemu-guest-agent.service", Description: "Lets the hypervisor see IPs and shut the VM down cleanly."},
 	{ID: "netbird", Name: "NetBird VPN", Unit: "netbird.service", Description: "NetBird mesh VPN client. After turning it on, connect with: sudo netbird up",
-		Warning: "If you reach this server over NetBird, turning it off cuts that connection."},
+		Warning: "If you reach this server over NetBird, turning it off cuts that connection.", ownCard: true},
 	{ID: "docker", Name: "Docker", Unit: "docker.service", Description: "The Docker engine; every service on this host runs in it.",
 		Warning: "Turning Docker off stops every container."},
 }
@@ -127,6 +128,9 @@ func GetAutoupdate() Autoupdate {
 func Get() All {
 	all := All{Autoupdate: GetAutoupdate()}
 	for _, s := range services {
+		if s.ownCard {
+			continue
+		}
 		st := show(s.Unit, "LoadState", "UnitFileState", "ActiveState")
 		if st["LoadState"] != "loaded" {
 			continue

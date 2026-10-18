@@ -67,6 +67,7 @@ function nodeCard(n, refreshNodes) {
         } }]);
       if (v) refreshNodes();
     } },
+    { label: 'Change port…', onclick: () => nodePortDialog(n, refreshNodes) },
     { label: 'Remove', danger: true, onclick: async () => {
       if (!await confirmAction('Remove node', `Remove ${n.name}? It forgets this main node's token; pair again with a new password from `
         + '`dashboard pair` on the node.', 'Remove')) return;
@@ -114,10 +115,65 @@ function nodeCard(n, refreshNodes) {
     onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) location.hash = `#/n/${n.id}/overview`; } },
   h('div.top',
     h('div', { style: { flex: 1, minWidth: 0 } },
-      h('div.row', { style: { gap: '8px' } }, h('span.title', n.name), n.local ? h('span.badge', 'main') : null),
+      h('div.row', { style: { gap: '8px' } }, h('span.title', n.name), n.local ? h('span.badge', 'main') : null,
+        s?.channel && s.channel !== 'stable' ? h('span.badge.warn', { title: 'Release channel' }, s.channel) : null),
       h('div.addr', n.local ? 'this node' : n.address)),
     status, actions),
   content);
+}
+
+// A paired node's dashboard port: the node restarts on it and the main node follows.
+async function nodePortDialog(n, refreshNodes) {
+  const cur = Number(n.address.match(/:(\d+)$/)?.[1] || 9090);
+  const port = h('input', { type: 'number', min: 1, max: 65535, value: cur });
+  const err = h('div.error-text');
+  const v = await modal(`Port of ${n.name}`, h('div.stack',
+    h('p.muted', { style: { margin: 0 } }, 'The node\'s dashboard restarts on the new port, and this main node reaches it there from now on. '
+      + 'Like ', h('code', 'dashboard port'), ' on the node.'),
+    h('label.field', 'Port', port), err), [
+    { label: 'Cancel', value: null },
+    { label: 'Change port', class: 'primary', onclick: async () => {
+      try { await api.post(`/api/nodes/${n.id}/port`, { port: Number(port.value) }); }
+      catch (e) { err.textContent = e.message; return false; }
+      return true;
+    } }]);
+  if (v) { toast(`${n.name} restarts on port ${port.value}.`); setTimeout(refreshNodes, 4000); }
+}
+
+// Switches several nodes to another channel. Each one downloads its image now and applies
+// it at its next reboot; nothing reboots here.
+async function channelDialog(nodes, refreshNodes) {
+  // The list comes from the `channel` command on a node, so it's never out of date here.
+  let opts;
+  try { opts = (await api.get(`/api/n/${nodes[0].id}/os/channel`)).channels; } catch (e) { toast(e.message, true); return; }
+  if (!opts?.length) { toast('The channel command isn\'t available on these nodes.', true); return; }
+  const sel = h('select', opts.map((c) => h('option', { value: c.name }, `${c.name} · ${c.about}`)));
+  const boxes = nodes.map((n) => h('label.check-row', h('input', { type: 'checkbox', value: n.id }),
+    h('span', h('strong', n.name), h('span.muted', ` · now ${n.summary.channel || 'unknown'}`))));
+  const err = h('div.error-text');
+  const out = h('ul.progress-list');
+  return modal('Switch channel', h('div.stack',
+    h('p.muted', { style: { margin: 0 } }, 'The chosen nodes download the other channel\'s image now and run it after their next reboot. '
+      + 'Data, containers and settings stay. Reboot them from their Updates tab, or roll back there before the next update to undo it.'),
+    h('label.field', 'Channel', sel),
+    h('div.stack', { style: { gap: '6px' } }, boxes), out, err),
+  [{ label: 'Close', value: false }, { label: 'Switch', class: 'primary', onclick: async () => {
+    const ids = boxes.map((b) => b.querySelector('input')).filter((i) => i.checked).map((i) => i.value);
+    if (!ids.length) { err.textContent = 'Choose at least one node.'; return false; }
+    err.textContent = '';
+    clear(out);
+    await Promise.all(ids.map(async (id) => {
+      const n = nodes.find((x) => x.id === id);
+      const li = h('li', h('span.status.idle', n.name), h('span.muted', 'Starting…'));
+      out.append(li);
+      try {
+        await api.post(`/api/n/${id}/os/channel`, { channel: sel.value });
+        clear(li, h('span.status.good', n.name), h('span.muted', `Downloading ${sel.value}; reboot to apply`));
+      } catch (e) { clear(li, h('span.status.crit', n.name), h('span.muted', e.message)); }
+    }));
+    refreshNodes();
+    return false; // stay open to show the results
+  } }]);
 }
 
 // ---- Global updates ----------------------------------------------------------------------
@@ -272,11 +328,15 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const ctSummary = ctTotal ? h('span.status.warn', `${ctTotal} image update${ctTotal > 1 ? 's' : ''} on ${ctNodes.length} of ${online.length} node${online.length > 1 ? 's' : ''}`)
     : h('span.status.good', 'All containers up to date');
 
+  const osChannel = osImage.length ? h('button.btn.small', { disabled: running, onclick: () => channelDialog(osImage, refreshNodes) }, 'Switch channel…') : null;
+  const channels = [...new Set(osImage.map((n) => n.summary.channel).filter(Boolean))];
+
   return h('div.grid.two',
     h('div.card.update-card',
-      h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osUpdate, osStart)),
+      h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osUpdate, osStart, osChannel)),
       osSummary,
-      h('p.faint', { style: { margin: '6px 0 0', fontSize: '12.5px' } }, 'Downloads on all nodes at once, then reboots them one at a time. The main node goes last.'),
+      h('p.faint', { style: { margin: '6px 0 0', fontSize: '12.5px' } }, 'Downloads on all nodes at once, then reboots them one at a time. The main node goes last.',
+        channels.length ? ` Channel${channels.length > 1 ? 's' : ''}: ${channels.join(', ')}.` : ''),
       progressList(progress.os, byId)),
     h('div.card.update-card',
       h('div.card-head', h('h2', 'Container updates'), h('div.row', ctCheck, ctUpdate)),

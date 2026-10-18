@@ -18,7 +18,7 @@ Built with [BlueBuild](https://blue-build.org/) on Fedora's official
 Both share [common.yml](recipes/common.yml).
 
 **Contents:** [Install](#install) · [Channels](#channels) · [OS updates](#os-updates) ·
-[Container updates](#container-updates) · [Dashboard](#dashboard) · [NetBird](#netbird) ·
+[Container updates](#container-updates) · [Dashboard](#dashboard) · [AI](#ai) · [NetBird](#netbird) ·
 [What's included](#whats-included) · [Good to know](#good-to-know) ·
 [For maintainers](#for-maintainers)
 
@@ -77,8 +77,9 @@ channel testing            # switch, then asks whether to reboot
 channel stable --reboot    # switch and reboot right away
 ```
 
-The switch applies after the reboot. Your data, containers and settings stay; only the OS
-changes. To undo it, roll back (`sudo rpm-ostree rollback` or **Roll back** in the dashboard)
+The dashboard does the same on a node's **Updates** page, or for several nodes at once from
+**All nodes → Switch channel…**. The switch applies after the reboot. Your data, containers and
+settings stay; only the OS changes. To undo it, roll back (`sudo rpm-ostree rollback` or **Roll back** in the dashboard)
 before the next update.
 
 <details>
@@ -231,20 +232,22 @@ password. To use the terminal on a node, your user needs an account in `wheel` t
 
 ### What you can do
 
-**For all nodes (main page):** see every node with its version, update the OS on several
-nodes at once, and update containers on all nodes.
+**For all nodes (main page):** see every node with its version and channel, update the OS on
+several nodes at once, switch their channel, and update containers on all nodes.
 
 **For each node:**
 
 | Page | What's on it |
 |---|---|
 | Overview | CPU, memory, disks, network, temperatures, uptime, OS version |
-| Updates | Current OS image, available update, last update and its log; update, reboot or roll back |
+| Updates | Current OS image, available update, last update and its log; update, reboot or roll back. The release channel, and switching it |
 | Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, logs, remove. Plus images, volumes and networks for cleanup |
 | Files | Your home folder: browse, edit, upload, download, rename, delete. Same permissions as over SSH |
 | Terminal | A shell in the browser, as your user |
-| Features | Automatic updates, Gotify messages, and turning services (SSH, smartd, NetBird, Docker…) on or off |
-| Settings | Hostname, time zone, network time, reboot and shut down |
+| Logs | The system journal, the kernel, or one service; filter by priority, time and text, follow it live, download it |
+| Users | Regular users: wheel and docker membership, login shell, password, lock, add and delete |
+| Features | Automatic updates, Gotify messages, NetBird (connect, peers, disconnect), and turning services (SSH, smartd, Docker…) on or off |
+| Settings | Hostname, time zone, network time, reboot and shut down. The dashboard's port, addresses and certificate fingerprint |
 
 Your sidebar picture comes from [Gravatar](https://gravatar.com): click your name and enter
 your email. Only a hash of it is stored.
@@ -292,7 +295,61 @@ dashboard port 9443     # change the port (default 9090)
 dashboard disable
 ```
 
-Settings are in `/etc/dashboard.conf`; certificate, nodes and sessions in `/var/lib/dashboard`.
+`status` and `port` are also on each node's **Settings** page, and a paired node's port under
+**⋯ → Change port…** on the main page (the main node then follows it).
+
+Settings are in `/etc/dashboard.conf`; certificate, nodes, sessions, API tokens and assistant
+settings in `/var/lib/dashboard`.
+
+---
+
+## AI
+
+The dashboard's **AI** page has two parts that use the same set of tools: an assistant built
+into the dashboard, and an [MCP](https://modelcontextprotocol.io) server for AI clients like
+Claude Code. Both can look at every node: health, apps and containers, their logs, the journal,
+updates, channel, services, NetBird, users and backups. Depending on the access you give them,
+they can also start, stop and update apps, and install OS updates or reboot.
+
+There are no tools for files, the terminal or secrets: Gotify tokens, `.env` values and
+passwords never reach a model. Changes go through the same checks as the dashboard, and the
+journal (`journalctl -u dashboard`) logs each one with who made it.
+
+| Access | Can |
+|---|---|
+| read | Look only: status, logs, updates, compose files |
+| operate | Also start, stop, restart and update apps and containers, run backups |
+| admin | Also OS updates, reboots, channel, services, users' groups, editing and removing apps |
+
+### Assistant
+
+A chat on your own model server: [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai)
+or anything else with the OpenAI chat API. Under **AI → Model**, pick the server, its URL
+(e.g. `http://192.168.1.30:11434/v1` for Ollama, `:1234/v1` for LM Studio), the model and the
+most it may do. The main node calls that URL, so `127.0.0.1` means the main node itself.
+
+Ask things like *"Health check all nodes"* or *"Why does jellyfin keep restarting?"*. It looks
+things up on its own; anything that changes something shows an **Approve** card first. Pick a
+model that supports tool calling (Qwen3 8B or larger, Llama 3.1/3.3, Mistral Small, gpt-oss).
+The **Ask AI** buttons on container logs, the Logs page and failed services start a chat about
+what you're looking at.
+
+### MCP for AI clients
+
+Under **AI → MCP access**, create a token (it's shown once) and add the server to your client:
+
+```sh
+claude mcp add --transport http homelab https://192.168.1.10:9090/mcp \
+  --header "Authorization: Bearer x27hl_…"
+```
+
+The certificate is self-signed: download it from the same page (or `https://<main>:9090/ca.pem`)
+and start Node-based clients with `NODE_EXTRA_CA_CERTS=~/homelab-dashboard.pem`. A token acts as
+the user who made it, who has to stay in `wheel`; revoke it on the same page. The server also
+offers prompts: `health_check`, `troubleshoot_app` and `plan_updates`.
+
+> **Security:** an admin token is root on every node. Keep the dashboard on your LAN or VPN, give
+> clients the least access they need, and set an expiry.
 
 ---
 
@@ -309,8 +366,8 @@ netbird status
 ```
 
 It stays connected across reboots and updates. `sudo netbird down` disconnects, and
-`sudo systemctl disable --now netbird` turns it off. You can also switch it on the dashboard's
-**Features** page.
+`sudo systemctl disable --now netbird` turns it off. The dashboard's **Features** page does all
+of this too: turn it on, connect with a setup key or a browser login, see the peers, disconnect.
 
 Settings go in `/etc/sysconfig/netbird`, state is in `/var/lib/netbird`, logs with
 `journalctl -u netbird`.

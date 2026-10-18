@@ -9,6 +9,9 @@ import { renderFiles } from './views/files.js';
 import { renderFeatures } from './views/features.js';
 import { renderSettings } from './views/settings.js';
 import { renderRollout } from './views/rollout.js';
+import { renderUsers } from './views/users.js';
+import { renderLogs } from './views/logs.js';
+import { renderAI } from './views/ai.js';
 
 const TABS = [
   ['overview', 'Overview', renderOverview],
@@ -16,6 +19,8 @@ const TABS = [
   ['docker', 'Docker', renderDocker],
   ['terminal', 'Terminal', renderTerminal],
   ['files', 'Files', renderFiles],
+  ['logs', 'Logs', renderLogs],
+  ['users', 'Users', renderUsers],
   ['features', 'Features', renderFeatures],
   ['settings', 'Settings', renderSettings],
 ];
@@ -89,6 +94,7 @@ function showApp() {
     h('aside.sidebar',
       h('div.brand', icon('server', 22), 'Homelab'),
       h('a.side-link', { href: '#/', 'data-route': 'fleet' }, icon('grid', 16), h('span.name', 'All nodes')),
+      h('a.side-link', { href: '#/ai', 'data-route': 'ai' }, icon('spark', 16), h('span.name', 'AI')),
       h('div.side-label', 'Nodes'),
       nav,
       h('button.side-link', { onclick: () => addNodeDialog(refreshNodes) }, icon('plus', 16), h('span.name', 'Add node')),
@@ -184,7 +190,8 @@ function renderNav() {
       h('span.dot', { class: cls, 'aria-label': label }), h('span.name', n.name),
       n.summary?.updateAvailable && !autoPending(n.summary) ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
-  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update);
+  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update && !cur.ai);
+  shell.app.querySelector('[data-route=ai]').classList.toggle('active', !!cur.ai);
 }
 
 function findNode(id) {
@@ -201,13 +208,17 @@ function drawHead() {
     h('h1', n.name),
     h('div.sub.row', h('span.status', { class: cls }, label),
       n.summary?.info?.prettyName ? h('span', `· ${n.summary.info.prettyName}`) : null,
+      n.summary?.channel ? h('a.badge', { class: n.summary.channel === 'stable' ? '' : 'warn', href: `#/n/${encodeURIComponent(n.id)}/updates`,
+        title: 'Release channel' }, n.summary.channel) : null,
       n.local ? h('span.badge', 'main node') : h('span.faint', `· ${n.address || ''}`)));
 }
 
 function parseRoute() {
   if (/^#\/update\b/.test(location.hash)) return { id: null, update: true };
+  if (/^#\/ai\b/.test(location.hash)) return { id: null, ai: true, query: new URLSearchParams(location.hash.split('?')[1] || '') };
   const m = location.hash.match(/^#\/n\/([^/]+)\/?([a-z]*)/);
-  return m ? { id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { id: null };
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  return m ? { id: decodeURIComponent(m[1]), tab: m[2] || 'overview', query } : { id: null };
 }
 
 function stopView() {
@@ -229,6 +240,10 @@ function route() {
     state.cleanup = renderRollout(main, { menuButton, refreshNodes });
     return;
   }
+  if (r.ai) {
+    state.cleanup = renderAI(main, { menuButton, query: r.query });
+    return;
+  }
   if (!r.id) {
     state.cleanup = renderFleet(main, { nodes: () => state.nodes, rollout: () => state.rollout, refreshNodes, menuButton });
     return;
@@ -243,7 +258,7 @@ function route() {
         'aria-selected': String(id === tab[0]) }, name))),
     body);
   drawHead();
-  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes });
+  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes, query: r.query });
 }
 
 window.addEventListener('hashchange', route);

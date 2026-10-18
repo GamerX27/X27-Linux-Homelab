@@ -1,4 +1,4 @@
-import { h, clear, when, busy, switchEl, confirmAction, toast } from '../ui.js';
+import { h, clear, when, busy, switchEl, confirmAction, toast, modal, bytes, askAI } from '../ui.js';
 
 export const WEEKDAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
 
@@ -16,9 +16,12 @@ function parseSchedule(a) {
   return s;
 }
 
-export function renderFeatures(el, { api }) {
+export function renderFeatures(el, { api, node }) {
   const content = h('div.stack', h('div.card.empty', 'Loading…'));
+  const nbCard = h('div.card', h('h2', 'NetBird VPN'), h('div.faint', 'Loading…'));
+  let nbTimer, stopped = false;
   clear(el, content);
+  const logsLink = (unit) => h('a.btn.small.ghost', { href: `#/n/${encodeURIComponent(node.id)}/logs?unit=${encodeURIComponent(unit)}` }, 'Logs');
 
   async function load() {
     try {
@@ -29,7 +32,87 @@ export function renderFeatures(el, { api }) {
   }
 
   function draw(f) {
-    clear(content, autoupdateCard(f.autoupdate), gotifyCard(f.autoupdate), servicesCard(f.services || []));
+    clear(content, autoupdateCard(f.autoupdate), gotifyCard(f.autoupdate), nbCard, servicesCard(f.services || []));
+  }
+
+  // NetBird: the service switch, connecting and disconnecting, and the peers.
+  async function loadNetbird() {
+    clearTimeout(nbTimer);
+    let s;
+    try { s = await api.get('/netbird'); } catch (e) { s = { message: e.message }; }
+    if (stopped) return;
+    if (!document.querySelector('.modal-back')) drawNetbird(s);
+    nbTimer = setTimeout(loadNetbird, s.loginUrl || s.state === 'connecting' ? 3000 : 20000);
+  }
+
+  function connectDialog(s, withKey) {
+    const key = h('input', { type: 'password', autocomplete: 'off', spellcheck: false, placeholder: 'e.g. A1B2C3D4-…' });
+    const mgmt = h('input', { type: 'url', placeholder: 'Leave empty for netbird.io, or your own server', value: s.management?.replace(/:443$/, '') || '' });
+    const err = h('div.error-text');
+    const body = h('div.stack',
+      withKey ? h('p.muted', { style: { margin: 0 } }, 'In the NetBird dashboard: ', h('strong', 'Setup Keys'),
+        ' → create a key, then paste it here. It\'s passed to NetBird in a root-only file and not stored by the dashboard.')
+        : h('p.muted', { style: { margin: 0 } }, 'You get a link to open in your browser. Log in there, and this node joins your network.'),
+      withKey ? h('label.field', 'Setup key', key) : null,
+      h('label.field', 'Management server (optional)', mgmt), err);
+    return modal(withKey ? 'Connect with a setup key' : 'Log in with a browser', body, [
+      { label: 'Cancel', value: null },
+      { label: withKey ? 'Connect' : 'Get login link', class: 'primary', onclick: async () => {
+        try {
+          if (withKey) {
+            await api.post('/netbird/up', { setupKey: key.value, managementUrl: mgmt.value.trim() });
+            toast('NetBird connected.');
+          } else {
+            const r = await api.post('/netbird/login', { managementUrl: mgmt.value.trim() });
+            if (r.output) window.open(r.output, '_blank', 'noopener');
+            else toast('NetBird connected.');
+          }
+          return true;
+        } catch (e) { err.textContent = e.message; return false; }
+      } }]).then(() => loadNetbird());
+  }
+
+  function drawNetbird(s) {
+    const state = { connected: ['good', 'Connected'], 'needs-login': ['warn', 'Needs login'], connecting: ['warn', 'Connecting…'],
+      stopped: ['idle', 'Off'] }[s.state] || ['idle', s.state || 'Unknown'];
+    const head = h('div.card-head', h('h2', 'NetBird VPN'), h('div.row', h('span.status', { class: state[0] }, state[1]), logsLink('netbird.service')));
+    if (!s.installed) { clear(nbCard, head, h('div.notice', s.message || 'NetBird isn\'t installed on this node.')); return; }
+    const sw = switchEl(s.enabled || s.running, async (on, input) => {
+      if (!on && !await confirmAction('Turn off NetBird', 'If you reach this server over NetBird, turning it off cuts that connection.', 'Turn off')) { input.checked = true; return; }
+      input.disabled = true;
+      try { await api.post('/netbird/service', { enabled: on }); toast(`NetBird ${on ? 'on' : 'off'}.`); }
+      catch (e) { toast(e.message, true); input.checked = !on; }
+      input.disabled = false;
+      loadNetbird();
+    }, 'NetBird service');
+    const down = h('button.btn.danger', { onclick: async () => {
+      if (!await confirmAction('Disconnect NetBird', 'This node leaves the NetBird network until you connect again. If you reach it over NetBird, you lose that connection.', 'Disconnect')) return;
+      if (await busy(down, () => api.post('/netbird/down'), 'Disconnected.')) loadNetbird();
+    } }, 'Disconnect');
+    const actions = s.running ? h('div.row',
+      !s.connected ? h('button.btn.primary', { onclick: () => connectDialog(s, true) }, 'Connect with setup key…') : null,
+      !s.connected ? h('button.btn', { onclick: () => connectDialog(s, false) }, 'Log in with browser…') : null,
+      s.connected || s.state === 'connecting' ? down : null) : null;
+    const peers = (s.peers || []);
+    clear(nbCard, head,
+      h('div.feature-row', { style: { paddingTop: 0 } }, sw,
+        h('div.text', h('strong', 'NetBird service'), h('div.desc', 'Mesh VPN client. Stays connected across reboots and updates.'))),
+      s.loginUrl ? h('div.notice.warn', { style: { margin: '10px 0' } }, 'Waiting for the browser login: ',
+        h('a', { href: s.loginUrl, target: '_blank', rel: 'noopener' }, 'open the login link')) : null,
+      s.message ? h('pre.output', { style: { margin: '10px 0' } }, s.message) : null,
+      s.connected ? h('dl.kv', { style: { margin: '12px 0' } },
+        h('dt', 'NetBird IP'), h('dd.mono', s.ip),
+        h('dt', 'Name'), h('dd.mono', s.fqdn || '—'),
+        h('dt', 'Server'), h('dd', s.management, s.signalConnected ? null : h('span.status.warn', { style: { marginLeft: '8px' } }, 'signal down')),
+        h('dt', 'Peers'), h('dd', `${s.peersConnected} of ${s.peersTotal} connected`),
+        h('dt', 'Version'), h('dd', s.version || '—')) : null,
+      actions,
+      s.connected && peers.length ? h('div.table-wrap', { style: { marginTop: '12px' } }, h('table',
+        h('thead', h('tr', h('th', 'Peer'), h('th', 'IP'), h('th', 'Status'), h('th', 'Connection'), h('th', 'Latency'), h('th', 'Traffic in / out'))),
+        h('tbody', peers.map((p) => h('tr', h('td.mono', p.fqdn), h('td.mono', p.ip),
+          h('td', h('span.status', { class: p.status === 'Connected' ? 'good' : 'idle' }, p.status)),
+          h('td', p.connection || '—'), h('td.num-cell', p.latencyMs ? `${p.latencyMs} ms` : '—'),
+          h('td.num-cell.muted', `${bytes(p.received)} / ${bytes(p.sent)}`)))))) : null);
   }
 
   // systemd's Result for the last check: "success" means it ran, not that it updated.
@@ -159,10 +242,12 @@ export function renderFeatures(el, { api }) {
           load();
         }, s.name),
         h('div.text', h('div.row', h('strong', s.name), h('code.faint', s.unit)), h('div.desc', s.description)),
-        h('span.status', { class: s.active === 'active' ? 'good' : s.active === 'failed' ? 'crit' : 'idle' }, s.active)))
+        h('span.status', { class: s.active === 'active' ? 'good' : s.active === 'failed' ? 'crit' : 'idle' }, s.active), logsLink(s.unit),
+        s.active === 'failed' ? askAI(`${s.unit} has failed on node ${node.name}. Read its journal and tell me why and how to fix it.`, `the Features tab of node ${node.name} (id ${node.id})`, 'Why?') : null))
         : h('div.faint', 'No services found.'));
   }
 
   load();
-  return () => {};
+  loadNetbird();
+  return () => { stopped = true; clearTimeout(nbTimer); };
 }

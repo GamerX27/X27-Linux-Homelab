@@ -19,10 +19,12 @@ async function showLog(api, name) {
 }
 
 // The OS image only; container image updates live in the Docker tab.
-export function renderUpdates(el, { api, node }) {
-  let timer, stopped = false;
+export function renderUpdates(el, { api, node, refreshNodes }) {
+  let timer, chTimer, stopped = false;
   const osCard = h('div.card', h('div.empty', 'Loading…'));
-  clear(el, osCard);
+  const chCard = h('div.card', h('div.empty', 'Loading…'));
+  clear(el, h('div.stack', osCard, chCard));
+  let channelState = null;
 
   async function load() {
     let os, job = null;
@@ -51,6 +53,7 @@ export function renderUpdates(el, { api, node }) {
     if (s.updating) status = h('span.status.warn', PHASE[job?.phase] || 'Updating…', s.progress ? h('span.muted', ` · ${s.progress}`) : null);
     else if (c.checking) status = h('span.status.idle', 'Checking…');
     else if (c.error) status = h('span.status.crit', 'Check failed');
+    else if (s.staged && switchTarget(s)) status = h('span.status.warn', `Switch to ${switchTarget(s)} downloaded, reboot to apply`);
     else if (s.staged) status = h('span.status.warn', 'Update downloaded, reboot to apply');
     else if (c.available) status = h('span.status.warn', `Update available${c.version ? ': ' + release(c.version) : ''}`);
     else if (c.checkedAt) status = h('span.status.good', 'Up to date');
@@ -101,6 +104,71 @@ export function renderUpdates(el, { api, node }) {
       j.phase === 'failed' && j.error ? h('div.muted', { style: { marginTop: '4px' } }, j.error) : null);
   }
 
+  // The channel a staged deployment switches to, when it isn't the one running.
+  function switchTarget(s) {
+    const c = channelState;
+    return c?.stagedChannel && c.stagedChannel !== c.current && s.staged ? c.stagedChannel : '';
+  }
+
+  async function loadChannel() {
+    let c;
+    try { c = await api.get('/os/channel'); } catch (e) { c = { error: e.message }; }
+    if (stopped) return;
+    const was = channelState?.switching;
+    channelState = c;
+    drawChannel(c);
+    if (was && !c.switching) { load(); refreshNodes?.(); }
+    chTimer = setTimeout(loadChannel, c.switching ? 2000 : 60000);
+  }
+
+  function drawChannel(c) {
+    const head = h('div.card-head', h('h2', 'Release channel'));
+    if (!c.available) {
+      clear(chCard, head, h('div.notice', c.error || 'Not available on this node.'));
+      return;
+    }
+    head.append(c.current ? h('span.badge.good', c.current) : h('span.badge', 'unknown image'));
+    let pick = c.current;
+    const rows = (c.channels || []).map((ch) => {
+      const input = h('input', { type: 'radio', name: 'channel', value: ch.name, checked: ch.name === c.current,
+        disabled: c.switching, onchange: () => { pick = ch.name; sync(); } });
+      return h('label.channel-row', input,
+        h('div.text', h('div.row', h('strong', ch.name),
+          ch.name === c.current ? h('span.badge.good', 'running') : null,
+          ch.name === c.stagedChannel && ch.name !== c.current ? h('span.badge.warn', 'after reboot') : null,
+          /may break/.test(ch.about) ? h('span.badge.warn', 'may break') : null),
+        h('div.desc', ch.about), h('div.sub.mono', ch.image.replace(/^.*docker:\/\//, ''))));
+    });
+    const switchBtn = h('button.btn.primary', { onclick: async () => {
+      const ch = c.channels.find((x) => x.name === pick);
+      if (!await confirmAction(`Switch to ${pick}`, `${node.name} downloads the ${pick} image (${ch.about}). It applies after a reboot; `
+        + 'your data, containers and settings stay. Until the next update, Roll back on this page goes back to the image you run now.',
+        `Switch to ${pick}`, /may break/.test(ch.about))) return;
+      if (await busy(switchBtn, () => api.post('/os/channel', { channel: pick }))) loadChannel();
+    } }, 'Switch');
+    const sync = () => { switchBtn.disabled = c.switching || pick === (c.stagedChannel || c.current); };
+    sync();
+    const log = h('pre.output.rollout-log.hidden');
+    if (c.switching || c.stagedChannel) {
+      api.get('/os/channel/log').then((r) => {
+        if (!r.text) return;
+        log.textContent = r.text;
+        log.classList.remove('hidden');
+        log.scrollTop = log.scrollHeight;
+      }).catch(() => {});
+    }
+    clear(chCard, head,
+      h('p.muted', { style: { marginTop: 0 } }, 'Which image this node follows. Updates only come from its channel. ',
+        'On the node itself, ', h('code', 'channel'), ' does the same.'),
+      c.switching ? h('div.notice.warn', { style: { marginBottom: '12px' } }, 'Downloading the new channel\'s image…') : null,
+      c.stagedChannel && c.stagedChannel !== c.current && !c.switching
+        ? h('div.notice.warn', { style: { marginBottom: '12px' } }, `Switch to ${c.stagedChannel} is ready. Reboot ${node.name} to apply it.`) : null,
+      h('div.stack', { style: { gap: '0' } }, rows),
+      h('div.row', { style: { marginTop: '12px' } }, switchBtn),
+      log);
+  }
+
   load().catch(() => {});
-  return () => { stopped = true; clearTimeout(timer); };
+  loadChannel();
+  return () => { stopped = true; clearTimeout(timer); clearTimeout(chTimer); };
 }
