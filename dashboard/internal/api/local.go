@@ -527,57 +527,103 @@ func (l *Local) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, out)
 	})
+	// fileOp answers {output}: for extract and compress, the path of what they made.
 	fileOp := func(op string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var body struct {
-				Path, To, Content string
-				Create            bool
+				Path, To, Content, Mode string
+				Paths                   []string
+				Create, Recursive       bool
 			}
-			if err := readJSON(r, &body); err != nil {
-				writeErr(w, http.StatusBadRequest, err)
+			// Editor saves can be up to files.MaxEdit, which JSON escaping can more than double.
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 3*files.MaxEdit)).Decode(&body); err != nil {
+				writeErr(w, http.StatusBadRequest, errors.New("bad request body"))
 				return
 			}
 			var stdin io.Reader
 			if op == "write" {
 				stdin = strings.NewReader(body.Content)
 			}
-			err := l.files.Run(fsUser(r), op, files.Args{Path: body.Path, To: body.To, Create: body.Create}, stdin, nil)
+			a := files.Args{Path: body.Path, Paths: body.Paths, To: body.To, Mode: body.Mode, Create: body.Create, Recursive: body.Recursive}
+			var out struct{ Path string }
+			err := l.files.Run(fsUser(r), op, a, stdin, &out)
 			what := "files " + op + " ~/" + body.Path
-			if body.To != "" {
+			if len(body.Paths) > 0 {
+				what = "files " + op + " ~/" + strings.Join(body.Paths, ", ~/")
+			}
+			if body.To != "" || (op == "move" || op == "copy") && len(body.Paths) > 0 {
 				what += " -> ~/" + body.To
 			}
-			result(w, r, what, "", err)
+			if body.Mode != "" {
+				what += " " + body.Mode
+			}
+			result(w, r, what, out.Path, err)
 		}
 	}
 	mux.HandleFunc("POST /files/write", fileOp("write"))
 	mux.HandleFunc("POST /files/mkdir", fileOp("mkdir"))
 	mux.HandleFunc("POST /files/move", fileOp("move"))
+	mux.HandleFunc("POST /files/copy", fileOp("copy"))
 	mux.HandleFunc("POST /files/delete", fileOp("delete"))
+	mux.HandleFunc("POST /files/chmod", fileOp("chmod"))
+	mux.HandleFunc("POST /files/extract", fileOp("extract"))
+	mux.HandleFunc("POST /files/compress", fileOp("compress"))
 	mux.HandleFunc("POST /files/upload", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		a := files.Args{Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1"}
+		a := files.Args{Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1", Parents: q.Get("parents") == "1"}
 		var out struct{ Size int64 }
 		err := l.files.Run(fsUser(r), "upload", a, http.MaxBytesReader(w, r.Body, files.MaxUpload+1), &out)
 		result(w, r, "files upload ~/"+path.Join(a.Path, a.Name), "", err)
 	})
+	// Download: one file as is, a folder as .tar.gz, several entries (?path=a&path=b) as
+	// .zip. inline=1 shows media and PDFs in the browser instead (see previewType).
 	mux.HandleFunc("GET /files/download", func(w http.ResponseWriter, r *http.Request) {
-		a := files.Args{Path: r.URL.Query().Get("path")}
-		var st files.Stat
-		if err := l.files.Run(fsUser(r), "stat", a, nil, &st); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		name, ctype := st.Name, "application/octet-stream"
-		if st.IsDir {
-			name, ctype = st.Name+".tar.gz", "application/gzip"
+		q := r.URL.Query()
+		paths := q["path"]
+		op, a, what := "download", files.Args{Path: q.Get("path")}, "~/"+q.Get("path")
+		var name, ctype string
+		if len(paths) > 1 {
+			dir := path.Dir(strings.Trim(paths[0], "/"))
+			name = path.Base(dir)
+			if dir == "." {
+				name = userOf(r)
+			}
+			op, a, what = "zip", files.Args{Paths: paths}, "~/"+strings.Join(paths, ", ~/")
+			name, ctype = name+".zip", "application/zip"
 		} else {
-			w.Header().Set("Content-Length", strconv.FormatInt(st.Size, 10))
+			var st files.Stat
+			if err := l.files.Run(fsUser(r), "stat", a, nil, &st); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			name, ctype = st.Name, "application/octet-stream"
+			if st.IsDir {
+				name, ctype = st.Name+".tar.gz", "application/gzip"
+			} else {
+				w.Header().Set("Content-Length", strconv.FormatInt(st.Size, 10))
+			}
+		}
+		disposition := "attachment"
+		if t := previewType(name); t != "" && q.Get("inline") == "1" && op == "download" {
+			disposition, ctype = "inline", t
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			if t != "application/pdf" { // browsers refuse to show PDFs in a sandbox
+				w.Header().Set("Content-Security-Policy", "sandbox")
+			}
 		}
 		w.Header().Set("Content-Type", ctype)
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
-		log.Printf("%s: files download ~/%s", userOf(r), a.Path)
-		if err := l.files.Stream(r.Context(), fsUser(r), a, w); err != nil {
-			log.Printf("%s: download ~/%s failed: %v", userOf(r), a.Path, err)
+		w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
+		if disposition == "attachment" {
+			log.Printf("%s: files download %s", userOf(r), what)
+		}
+		sw := &sentWriter{w: w}
+		if err := l.files.Stream(r.Context(), fsUser(r), op, a, sw); err != nil {
+			log.Printf("%s: download %s failed: %v", userOf(r), what, err)
+			if !sw.sent {
+				w.Header().Del("Content-Disposition")
+				w.Header().Del("Content-Length")
+				writeErr(w, http.StatusBadRequest, err)
+			}
 		}
 	})
 
@@ -705,4 +751,45 @@ func humanBytes(n uint64) string {
 		i++
 	}
 	return strconv.FormatFloat(f, 'f', 1, 64) + " " + units[i]
+}
+
+// previewType is the content type a file may be shown inline with: images, audio, video
+// and PDF only. SVG and HTML can carry script, so they're always downloaded.
+func previewType(name string) string {
+	ext := strings.ToLower(path.Ext(name))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico":
+		if ext == ".jpg" {
+			ext = ".jpeg"
+		}
+		if ext == ".ico" {
+			return "image/x-icon"
+		}
+		return "image/" + ext[1:]
+	case ".mp4", ".webm":
+		return "video/" + ext[1:]
+	case ".mp3":
+		return "audio/mpeg"
+	case ".ogg", ".wav", ".flac":
+		return "audio/" + ext[1:]
+	case ".m4a":
+		return "audio/mp4"
+	case ".pdf":
+		return "application/pdf"
+	}
+	return ""
+}
+
+// sentWriter notes whether anything reached the client, so a failure before the first
+// byte can still be answered with an error.
+type sentWriter struct {
+	w    io.Writer
+	sent bool
+}
+
+func (s *sentWriter) Write(b []byte) (int, error) {
+	if len(b) > 0 {
+		s.sent = true
+	}
+	return s.w.Write(b)
 }
