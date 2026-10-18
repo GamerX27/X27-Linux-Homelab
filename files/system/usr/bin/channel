@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Shows or switches the release channel: which X27-Linux Homelab image the system follows.
+# Switching rebases onto that channel's signed image (bare-metal or VM, like the one
+# running now) and takes effect after a reboot. Updates then come from the new channel.
+set -euo pipefail
+
+REGISTRY=ghcr.io/gamerx27
+TRANSPORT=ostree-image-signed:docker://
+
+# channel -> image name suffix and tag. The VM images add "-vm" after x27-linux-homelab.
+declare -A SUFFIX=([stable]="" [testing]="-testing" [testing-alma]="-alma-testing")
+declare -A TAG=([stable]=44 [testing]=45 [testing-alma]=10)
+declare -A ABOUT=([stable]="Fedora 44, production" [testing]="Fedora 45, may break" [testing-alma]="AlmaLinux 10, may break")
+CHANNELS=(stable testing testing-alma)
+
+usage() {
+  cat <<'EOF'
+Usage:
+  channel                    show the current channel and the ones to choose from
+  channel <name>             switch to a channel (asks before rebooting)
+  channel <name> --reboot    switch and reboot right away
+
+Channels:
+EOF
+  local c
+  for c in "${CHANNELS[@]}"; do
+    printf '  %-14s %s\n' "$c" "${ABOUT[$c]}"
+  done
+  cat <<'EOF'
+
+Switching keeps your data, containers and settings; only the OS image changes. The image
+you're on now stays as the rollback entry until the next update.
+EOF
+}
+
+die() {
+  echo "channel: $*" >&2
+  exit 1
+}
+
+# The booted deployment's image reference, e.g.
+# ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-vm-testing:45
+booted_ref() {
+  rpm-ostree status --json 2>/dev/null |
+    jq -r 'first(.deployments[]? | select(.booted == true)) | ."container-image-reference" // empty'
+}
+
+# The staged deployment's image reference, if a switch or update is waiting for a reboot.
+staged_ref() {
+  rpm-ostree status --json 2>/dev/null |
+    jq -r 'first(.deployments[]? | select(.staged == true)) | ."container-image-reference" // empty'
+}
+
+# Image reference -> channel name, or "" for an image that isn't one of ours.
+channel_of() {
+  local name="${1##*/}" c
+  name="${name%%:*}"
+  name="${name/x27-linux-homelab-vm/x27-linux-homelab}"
+  for c in "${CHANNELS[@]}"; do
+    [[ "$name" == "x27-linux-homelab${SUFFIX[$c]}" ]] && echo "$c" && return
+  done
+  return 0
+}
+
+image_for() {
+  local vm=""
+  [[ "$2" == *x27-linux-homelab-vm* ]] && vm="-vm"
+  echo "${TRANSPORT}${REGISTRY}/x27-linux-homelab${vm}${SUFFIX[$1]}:${TAG[$1]}"
+}
+
+show() {
+  local ref cur staged c mark
+  ref="$(booted_ref)"
+  cur="$(channel_of "$ref")"
+  echo "Running: ${ref:-unknown}"
+  staged="$(staged_ref)"
+  if [[ -n "$staged" && "$staged" != "$ref" ]]; then
+    echo "After the next reboot: ${staged}"
+  fi
+  echo
+  for c in "${CHANNELS[@]}"; do
+    mark=" "
+    [[ "$c" == "$cur" ]] && mark="*"
+    printf '%s %-14s %s\n' "$mark" "$c" "${ABOUT[$c]}"
+  done
+  echo
+  echo "Switch with: channel <name>"
+}
+
+switch() {
+  local want="$1" reboot="${2:-}" ref target reply
+  [[ -n "${TAG[$want]+x}" ]] || die "unknown channel: '$want' (choose ${CHANNELS[*]})"
+  [[ -z "$reboot" || "$reboot" == --reboot ]] || die "unknown option: '$reboot'"
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+  fi
+  ref="$(booted_ref)"
+  target="$(image_for "$want" "$ref")"
+  if [[ "$ref" == "$target" && -z "$(staged_ref)" ]]; then
+    echo "Already on ${want}."
+    return
+  fi
+  echo "Switching to ${want} (${ABOUT[$want]}):"
+  echo "  ${target}"
+  rpm-ostree rebase "$target"
+  echo
+  echo "Switched to ${want}. It takes effect after a reboot."
+  if [[ "$reboot" == --reboot ]]; then
+    systemctl reboot
+  elif [[ -t 0 ]]; then
+    read -rp "Reboot now? [y/N] " reply
+    [[ "$reply" =~ ^[Yy] ]] && systemctl reboot
+  fi
+  return 0
+}
+
+case "${1:-}" in
+  "" | status) show ;;
+  help | -h | --help) usage ;;
+  *) switch "$@" ;;
+esac
