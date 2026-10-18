@@ -42,6 +42,24 @@
           }
         }
       ],
+      "ghcr.io/gamerx27/x27-linux-homelab-alma-testing": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/etc/pki/containers/x27-linux-homelab.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "ghcr.io/gamerx27/x27-linux-homelab-vm-alma-testing": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/etc/pki/containers/x27-linux-homelab.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
       "": [
         {
           "type": "insecureAcceptAnything"
