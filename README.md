@@ -24,6 +24,7 @@ Both share [common.yml](recipes/common.yml).
 - Podman removed
 - SSH (`sshd`) enabled
 - fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
+- `channel`: switch between the stable and testing images (see [Channels](#channels))
 - `autoupdate`: turn automatic updates on or off, on a schedule of your choice (see
   [Automatic updates](#automatic-updates)), with optional [Gotify](https://gotify.net) messages
 - Port 53 free for DNS containers (AdGuard Home, Pi-hole): systemd-resolved's stub
@@ -75,19 +76,45 @@ fish is the login shell (console and SSH) for every regular user. New users get 
 `fish-default-shell.service`. To go back to bash: `sudo chsh -s /bin/bash $USER`, and it stays
 that way.
 
+## Channels
+
+The image comes in three channels. Each node follows one, and its updates come from that
+channel only.
+
+| Channel | Base | Image (bare metal / VM) | Branch |
+|---|---|---|---|
+| `stable` | Fedora 44 | `x27-linux-homelab:44` / `x27-linux-homelab-vm:44` | `main` |
+| `testing` | Fedora 45 | `x27-linux-homelab-testing:45` / `x27-linux-homelab-vm-testing:45` | `testing` |
+| `testing-alma` | AlmaLinux 10 | `x27-linux-homelab-alma-testing:10` / `x27-linux-homelab-vm-alma-testing:10` | `testing-alma` |
+
+All of them are at `ghcr.io/gamerx27/`, signed, and rebuilt weekly (Sundays, 02:00 UTC).
+`stable` is the one to use. The testing channels get no [releases](#releases) and may break.
+AlmaLinux runs an older kernel than Fedora (6.12 with backports), so very new hardware may not
+be supported there yet.
+
+### Switching channels
+
+```
+channel                  # which channel this node is on, and the others
+channel testing          # switch to Fedora 45 testing (asks before rebooting)
+channel stable --reboot  # back to stable, and reboot right away
+```
+
+`channel` keeps the bare-metal or VM image the node runs now, and the switch takes effect
+after the reboot. Data, containers and settings stay; only the OS image changes. The image you
+left stays as the rollback entry, so `sudo rpm-ostree rollback` (or **Roll back** in the
+dashboard) undoes the switch until the next update. Going from `testing` back to `stable` is a
+downgrade to an older Fedora, which usually works on these images.
+
 ### Image tags
 
-- `:44`: follows Fedora 44 and is rebuilt weekly (Sundays, 02:00 UTC). Use this one.
+Each image has the same three tags; for `stable`:
+
+- `:44`: follows Fedora 44 and is rebuilt weekly. This is what `channel` uses.
 - `:<date>-44` (e.g. `:20260924-44`): one fixed build, for rolling back.
 - `:latest`: the newest build, whatever Fedora version that is.
 
-### Branches
-
-- `main`: production, Fedora 44. Publishes the tags above and a [release](#releases) per build.
-- `testing`: test images on Fedora 45, `x27-linux-homelab-testing` and
-  `x27-linux-homelab-vm-testing` (`:45`, `:latest`, `:<date>-45`), rebuilt weekly with
-  main. No releases, and it may break. To try it:
-  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-testing:45`
+The testing channels use `:45` and `:10` the same way.
 
 ## Installing software
 
@@ -105,7 +132,7 @@ available, it's installed and the system reboots. When there's nothing new, noth
 
 ```
 autoupdate                           # interactive menu
-autoupdate status                    # on/off, schedule, next and last run
+autoupdate status                    # on/off, schedule, next and last check
 autoupdate on daily 04:00
 autoupdate on weekly sun 3:30am
 autoupdate on monthly 15 11pm        # days 29-31 skip months that don't have them
