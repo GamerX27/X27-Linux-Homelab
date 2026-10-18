@@ -9,8 +9,8 @@ INSTALLER_IMAGE="ghcr.io/jasonn3/build-container-installer:v1.5.0"
 
 usage() {
   echo "Usage: $0 [--usb] [--tag TAG] [bare-metal|vm]"
-  echo "  bare-metal  x27-linux-homelab-testing (default)"
-  echo "  vm          x27-linux-homelab-vm-testing"
+  echo "  bare-metal  x27-linux-homelab-alma-testing (default)"
+  echo "  vm          x27-linux-homelab-vm-alma-testing"
   echo "  --usb       write the ISO to a USB drive after building"
   echo "  --tag TAG   image tag to install and follow: 10, latest, or a dated tag like"
   echo "              20261011-10 (default 10)"
@@ -127,8 +127,8 @@ done
 TARGET="${TARGET:-bare-metal}"
 
 case "$TARGET" in
-  bare-metal) IMAGE="x27-linux-homelab-testing" ;;
-  vm)         IMAGE="x27-linux-homelab-vm-testing" ;;
+  bare-metal) IMAGE="x27-linux-homelab-alma-testing" ;;
+  vm)         IMAGE="x27-linux-homelab-vm-alma-testing" ;;
   *)
     echo "Unknown target: $TARGET" >&2
     usage >&2

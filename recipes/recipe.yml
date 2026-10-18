@@ -1,8 +1,8 @@
 ---
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 
-name: x27-linux-homelab-testing
-description: X27-Linux Homelab testing (bare metal, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE and SSH
+name: x27-linux-homelab-alma-testing
+description: X27-Linux Homelab AlmaLinux testing (bare metal, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE and SSH
 base-image: quay.io/almalinuxorg/almalinux-bootc
 image-version: 10
 

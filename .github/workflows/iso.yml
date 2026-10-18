@@ -9,8 +9,8 @@ on:
         type: choice
         options:
           - all
-          - x27-linux-homelab-testing
-          - x27-linux-homelab-vm-testing
+          - x27-linux-homelab-alma-testing
+          - x27-linux-homelab-vm-alma-testing
 
 concurrency:
   group: ${{ github.workflow }}
@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ inputs.image == 'all' && fromJSON('["x27-linux-homelab-testing","x27-linux-homelab-vm-testing"]') || fromJSON(format('["{0}"]', inputs.image)) }}
+        image: ${{ inputs.image == 'all' && fromJSON('["x27-linux-homelab-alma-testing","x27-linux-homelab-vm-alma-testing"]') || fromJSON(format('["{0}"]', inputs.image)) }}
     permissions:
       contents: read
       packages: read

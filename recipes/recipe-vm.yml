@@ -1,8 +1,8 @@
 ---
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 
-name: x27-linux-homelab-vm-testing
-description: X27-Linux Homelab testing (VM, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE, SSH, and the QEMU guest agent
+name: x27-linux-homelab-vm-alma-testing
+description: X27-Linux Homelab AlmaLinux testing (VM, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE, SSH, and the QEMU guest agent
 base-image: quay.io/almalinuxorg/almalinux-bootc
 image-version: 10
 

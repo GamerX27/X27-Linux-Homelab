@@ -13,6 +13,7 @@ on:
     branches:
       - main
       - testing
+      - testing-alma
   pull_request:
     paths:
       - "recipes/**"
@@ -35,7 +36,8 @@ on:
 
 # Both images build straight from the bootc base image, so they run in parallel.
 # main is production (Fedora 44). The testing branch builds separate *-testing images on
-# AlmaLinux 10, so it never touches the production images.
+# Fedora 45, and testing-alma *-alma-testing images on AlmaLinux 10, so neither touches the
+# production images.
 # Every job is gated on github.server_url so the Forgejo mirror (git.xlabsx27.com), whose
 # Actions also read .github/workflows, skips them; they only run on GitHub.
 jobs:
@@ -66,17 +68,19 @@ jobs:
       id-token: write
 
   # Scheduled runs only fire on the default branch, so the weekly rebuild starts the
-  # testing branch's build from here.
+  # testing and testing-alma builds from here.
   testing-weekly:
     if: github.server_url == 'https://github.com' && github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     permissions:
       actions: write
     steps:
-      - name: Start the testing build
+      - name: Start the testing builds
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
+        run: |
+          gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
+          gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing-alma
 
   # A GitHub Release per build (main only), with what changed (scripts/release-notes.sh). The weekly
   # scheduled build is vYYYY.MM.DD; pushes and dispatches are minor releases vYYYY.MM.DD.N.
