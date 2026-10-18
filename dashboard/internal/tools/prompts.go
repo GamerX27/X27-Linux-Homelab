@@ -2,8 +2,7 @@ package tools
 
 import "fmt"
 
-// Prompt is a ready-made task: MCP clients list them as prompts, the assistant offers them
-// as suggestions.
+// Prompt is a ready-made task that MCP clients list as a prompt.
 type Prompt struct {
 	Name        string
 	Title       string

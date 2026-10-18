@@ -1,4 +1,4 @@
-import { h, clear, icon, toast, askAI } from '../ui.js';
+import { h, clear, icon, toast } from '../ui.js';
 
 const PRIORITY = ['emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug'];
 const QUICK = [
@@ -26,12 +26,6 @@ export function renderLogs(el, { api, node, query }) {
   const grep = h('input.filter-input', { type: 'search', placeholder: 'Search…', spellcheck: false });
   const followBtn = h('button.btn', { onclick: () => setFollow(!following) }, 'Follow');
   const dl = h('button.btn', { title: 'Download what\'s shown', onclick: download }, icon('download', 15), 'Download');
-  const ai = h('span');
-  const syncAI = () => {
-    const src = unitSel.value === 'kernel' ? 'the kernel log' : unitSel.value ? `the journal of ${unitSel.value}` : 'the system journal';
-    clear(ai, askAI(`Read ${src} on node ${node.name} (since ${since.selectedOptions[0]?.textContent.toLowerCase()}) and explain the errors and warnings: what they mean and whether I need to do something.`,
-      `the Logs tab of node ${node.name} (id ${node.id})`));
-  };
   const info = h('span.faint');
   const list = h('div.log-view', { role: 'log', 'aria-live': 'off' });
 
@@ -40,7 +34,7 @@ export function renderLogs(el, { api, node, query }) {
   unitSel.value = want || '';
 
   clear(el, h('div.card',
-    h('div.row', { style: { marginBottom: '12px' } }, unitSel, prio, since, grep, h('span.spacer'), info, ai, followBtn, dl),
+    h('div.row', { style: { marginBottom: '12px' } }, unitSel, prio, since, grep, h('span.spacer'), info, followBtn, dl),
     list));
 
   // The rest of the units, for the picker.
@@ -127,8 +121,7 @@ export function renderLogs(el, { api, node, query }) {
   }
 
   let debounce;
-  for (const c of [unitSel, prio, since]) c.addEventListener('change', () => { syncAI(); load(); });
-  syncAI();
+  for (const c of [unitSel, prio, since]) c.addEventListener('change', load);
   grep.addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(load, 350); });
 
   load();

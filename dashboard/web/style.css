@@ -476,34 +476,5 @@ pre.rollout-log { margin-top: 10px; max-height: 320px; overflow: auto; }
 .log-line.p7 .msg { color: #a9a8a0; }
 @media (max-width: 860px) { .log-line { grid-template-columns: 1fr; gap: 0; padding: 3px 12px; } }
 
-/* AI page */
-.chat { display: flex; flex-direction: column; height: calc(100vh - 210px); min-height: 460px; }
-.chat-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 2px 12px; }
-.chat-status { font-size: 12.5px; }
-.chat-empty { margin: auto; max-width: 560px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
-.chat-empty .row { justify-content: center; }
-.msg { max-width: min(760px, 92%); padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
-.msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); white-space: pre-wrap; border-bottom-right-radius: 4px; }
-.msg.assistant { align-self: flex-start; background: var(--surface-2); border-bottom-left-radius: 4px; }
-.msg.assistant > :first-child { margin-top: 0; }
-.msg.assistant > :last-child { margin-bottom: 0; }
-.msg.assistant p, .msg.assistant ul, .msg.assistant ol { margin: 0 0 8px; }
-.msg.assistant ul, .msg.assistant ol { padding-left: 20px; }
-.msg.assistant pre.output { margin: 6px 0; }
-.msg .md-h { text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--text); margin: 8px 0 4px; }
-.msg.thinking { display: inline-flex; align-items: center; gap: 10px; color: var(--text-2); }
-.msg.thinking .spinner { width: 14px; height: 14px; }
-.tool-calls { align-self: flex-start; display: flex; flex-direction: column; gap: 4px; max-width: min(760px, 92%); }
-.tool-chip { border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; font-size: 12.5px; background: var(--surface); }
-.tool-chip summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-chip summary::marker { color: var(--text-3); }
-.tool-chip pre.output { margin: 6px 0 4px; max-height: 260px; }
-.tool-chip.failed { border-color: color-mix(in srgb, var(--critical) 45%, var(--border)); }
-.tool-chip.waiting { border-style: dashed; }
-.card.approve { align-self: flex-start; max-width: min(760px, 92%); border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
-  display: flex; flex-direction: column; gap: 10px; }
-.chat-compose { display: flex; gap: 8px; align-items: flex-end; border-top: 1px solid var(--border); padding-top: 12px; }
-.chat-input { flex: 1; resize: vertical; min-height: 44px; max-height: 240px; font: inherit; color: inherit; background: var(--surface);
-  border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; }
-.chat-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* Integrations */
 .badge.update-plain { background: var(--accent-soft); color: var(--text); }

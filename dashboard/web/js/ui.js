@@ -49,7 +49,7 @@ export function icon(name, size = 18) {
     logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
     refresh: 'M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5',
     download: 'M12 3v12M7 10l5 5 5-5M5 21h14',
-    spark: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z',
+    plug: 'M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5',
   };
   const s = svg('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
     'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
@@ -253,12 +253,6 @@ export function codeArea(value, rows) {
     ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
   });
   return ta;
-}
-
-// A link to the AI page that asks the assistant a question, with what the person looks at.
-export function askAI(question, context, label = 'Ask AI') {
-  const q = new URLSearchParams({ q: question, ctx: context || '' });
-  return h('a.btn.small.ghost', { href: `#/ai?${q}`, title: 'Ask the assistant about this' }, icon('spark', 13), label);
 }
 
 // Is a modal dialog open? Views pause their auto-refresh while one is.

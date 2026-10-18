@@ -11,7 +11,7 @@ import { renderSettings } from './views/settings.js';
 import { renderRollout } from './views/rollout.js';
 import { renderUsers } from './views/users.js';
 import { renderLogs } from './views/logs.js';
-import { renderAI } from './views/ai.js';
+import { renderIntegrations } from './views/integrations.js';
 
 const TABS = [
   ['overview', 'Overview', renderOverview],
@@ -94,7 +94,7 @@ function showApp() {
     h('aside.sidebar',
       h('div.brand', icon('server', 22), 'Homelab'),
       h('a.side-link', { href: '#/', 'data-route': 'fleet' }, icon('grid', 16), h('span.name', 'All nodes')),
-      h('a.side-link', { href: '#/ai', 'data-route': 'ai' }, icon('spark', 16), h('span.name', 'AI')),
+      h('a.side-link', { href: '#/integrations', 'data-route': 'integrations' }, icon('plug', 16), h('span.name', 'Integrations')),
       h('div.side-label', 'Nodes'),
       nav,
       h('button.side-link', { onclick: () => addNodeDialog(refreshNodes) }, icon('plus', 16), h('span.name', 'Add node')),
@@ -190,8 +190,8 @@ function renderNav() {
       h('span.dot', { class: cls, 'aria-label': label }), h('span.name', n.name),
       n.summary?.updateAvailable && !autoPending(n.summary) ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
-  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update && !cur.ai);
-  shell.app.querySelector('[data-route=ai]').classList.toggle('active', !!cur.ai);
+  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update && !cur.integrations);
+  shell.app.querySelector('[data-route=integrations]').classList.toggle('active', !!cur.integrations);
 }
 
 function findNode(id) {
@@ -215,7 +215,7 @@ function drawHead() {
 
 function parseRoute() {
   if (/^#\/update\b/.test(location.hash)) return { id: null, update: true };
-  if (/^#\/ai\b/.test(location.hash)) return { id: null, ai: true, query: new URLSearchParams(location.hash.split('?')[1] || '') };
+  if (/^#\/integrations\b/.test(location.hash)) return { id: null, integrations: true };
   const m = location.hash.match(/^#\/n\/([^/]+)\/?([a-z]*)/);
   const query = new URLSearchParams(location.hash.split('?')[1] || '');
   return m ? { id: decodeURIComponent(m[1]), tab: m[2] || 'overview', query } : { id: null };
@@ -240,8 +240,8 @@ function route() {
     state.cleanup = renderRollout(main, { menuButton, refreshNodes });
     return;
   }
-  if (r.ai) {
-    state.cleanup = renderAI(main, { menuButton, query: r.query });
+  if (r.integrations) {
+    state.cleanup = renderIntegrations(main, { menuButton });
     return;
   }
   if (!r.id) {

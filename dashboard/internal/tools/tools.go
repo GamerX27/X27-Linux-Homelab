@@ -1,5 +1,5 @@
 // Package tools is what an AI may do on the dashboard: one registry of tools, served to
-// external clients over MCP and to the built-in assistant. Every tool calls the dashboard's
+// external clients over MCP. Every tool calls the dashboard's
 // own HTTP API (through Dispatch) as the person it acts for, so it gets the same validation,
 // node proxying and log lines as a click in the UI.
 //

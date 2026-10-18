@@ -14,14 +14,12 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/apitokens"
-	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/assistant"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/tools"
@@ -169,13 +167,12 @@ func certPEM(c tls.Certificate) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Certificate[0]})
 }
 
-// aiRoutes: the AI page's API — tokens for MCP clients, and the built-in assistant.
+// aiRoutes: the Integrations page's API — tokens for MCP clients, and what they can use.
 func aiRoutes(mux *http.ServeMux, api *http.ServeMux, o Options) (*apitokens.Store, tools.Dispatch, error) {
 	tokens, err := apitokens.Open(config.StateDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	settings := assistant.OpenSettings(config.StateDir)
 	do := dispatcher(api)
 
 	mux.Handle("/mcp", mcpHandler(o.Version, o.Dev, tokens, do))
@@ -232,82 +229,5 @@ func aiRoutes(mux *http.ServeMux, api *http.ServeMux, o Options) (*apitokens.Sto
 		writeJSON(w, http.StatusOK, map[string]any{"tools": out, "prompts": prompts})
 	})
 
-	// The assistant
-	api.HandleFunc("GET /api/assistant", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"settings": settings.Public(), "providers": assistant.Providers})
-	})
-	api.HandleFunc("POST /api/assistant/settings", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			assistant.Config
-			ClearKey bool `json:"clearKey"`
-		}
-		if err := readJSON(r, &body); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		err := settings.Save(body.Config, body.ClearKey)
-		result(w, r, fmt.Sprintf("assistant settings: %s %s, up to %s", body.BaseURL, body.Model, body.MaxScope), "", err)
-	})
-	api.HandleFunc("POST /api/assistant/models", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ BaseURL, APIKey string }
-		readJSON(r, &body)
-		c := settings.Get()
-		if body.BaseURL != "" {
-			c.BaseURL = strings.TrimSuffix(strings.TrimSpace(body.BaseURL), "/")
-		}
-		if body.APIKey != "" {
-			c.APIKey = body.APIKey
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		defer cancel()
-		ms, err := assistant.NewClient(c).Models(ctx)
-		if err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"models": ms})
-	})
-	var chatMu sync.Mutex
-	chats := map[string]int{} // running turns per user, so one person can't pile them up
-	api.HandleFunc("POST /api/assistant/chat", func(w http.ResponseWriter, r *http.Request) {
-		cfg := settings.Get()
-		if !cfg.Enabled || cfg.Model == "" {
-			writeErr(w, http.StatusBadRequest, errors.New("the assistant isn't set up: pick a model server and model on the AI page"))
-			return
-		}
-		var turn assistant.Turn
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&turn); err != nil {
-			writeErr(w, http.StatusBadRequest, errors.New("bad request body"))
-			return
-		}
-		user := userOf(r)
-		chatMu.Lock()
-		if chats[user] >= 2 {
-			chatMu.Unlock()
-			writeErr(w, http.StatusTooManyRequests, errors.New("wait for your other questions to finish"))
-			return
-		}
-		chats[user]++
-		chatMu.Unlock()
-		defer func() { chatMu.Lock(); chats[user]--; chatMu.Unlock() }()
-
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Accel-Buffering", "no")
-		flusher, _ := w.(http.Flusher)
-		enc := json.NewEncoder(w)
-		var wmu sync.Mutex
-		run := assistant.Runner{Config: cfg, Client: assistant.NewClient(cfg), User: user, Dispatch: do,
-			Emit: func(e assistant.Event) {
-				wmu.Lock()
-				defer wmu.Unlock()
-				enc.Encode(e)
-				if flusher != nil {
-					flusher.Flush()
-				}
-			},
-			Log: func(format string, a ...any) { log.Printf(user+": "+format, a...) }}
-		run.Run(r.Context(), turn)
-	})
 	return tokens, do, nil
 }

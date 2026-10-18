@@ -1,4 +1,4 @@
-import { h, clear, when, busy, switchEl, confirmAction, toast, modal, bytes, askAI } from '../ui.js';
+import { h, clear, when, busy, switchEl, confirmAction, toast, modal, bytes } from '../ui.js';
 
 export const WEEKDAYS = [['mon', 'Monday'], ['tue', 'Tuesday'], ['wed', 'Wednesday'], ['thu', 'Thursday'], ['fri', 'Friday'], ['sat', 'Saturday'], ['sun', 'Sunday']];
 
@@ -242,8 +242,7 @@ export function renderFeatures(el, { api, node }) {
           load();
         }, s.name),
         h('div.text', h('div.row', h('strong', s.name), h('code.faint', s.unit)), h('div.desc', s.description)),
-        h('span.status', { class: s.active === 'active' ? 'good' : s.active === 'failed' ? 'crit' : 'idle' }, s.active), logsLink(s.unit),
-        s.active === 'failed' ? askAI(`${s.unit} has failed on node ${node.name}. Read its journal and tell me why and how to fix it.`, `the Features tab of node ${node.name} (id ${node.id})`, 'Why?') : null))
+        h('span.status', { class: s.active === 'active' ? 'good' : s.active === 'failed' ? 'crit' : 'idle' }, s.active), logsLink(s.unit)))
         : h('div.faint', 'No services found.'));
   }
 

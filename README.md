@@ -18,7 +18,7 @@ Built with [BlueBuild](https://blue-build.org/) on Fedora's official
 Both share [common.yml](recipes/common.yml).
 
 **Contents:** [Install](#install) · [Channels](#channels) · [OS updates](#os-updates) ·
-[Container updates](#container-updates) · [Dashboard](#dashboard) · [AI](#ai) · [NetBird](#netbird) ·
+[Container updates](#container-updates) · [Dashboard](#dashboard) · [Integrations](#integrations) · [NetBird](#netbird) ·
 [What's included](#whats-included) · [Good to know](#good-to-know) ·
 [For maintainers](#for-maintainers)
 
@@ -298,22 +298,26 @@ dashboard disable
 `status` and `port` are also on each node's **Settings** page, and a paired node's port under
 **⋯ → Change port…** on the main page (the main node then follows it).
 
-Settings are in `/etc/dashboard.conf`; certificate, nodes, sessions, API tokens and assistant
-settings in `/var/lib/dashboard`.
+Settings are in `/etc/dashboard.conf`; certificate, nodes, sessions and API tokens in
+`/var/lib/dashboard`.
 
 ---
 
-## AI
+## Integrations
 
-The dashboard's **AI** page has two parts that use the same set of tools: an assistant built
-into the dashboard, and an [MCP](https://modelcontextprotocol.io) server for AI clients like
-Claude Code. Both can look at every node: health, apps and containers, their logs, the journal,
-updates, channel, services, NetBird, users and backups. Depending on the access you give them,
-they can also start, stop and update apps, and install OS updates or reboot.
+The dashboard's **Integrations** page connects other programs to your homelab.
+
+### AI clients (MCP)
+
+AI programs that speak the [Model Context Protocol](https://modelcontextprotocol.io) (Claude
+Code, Claude Desktop, LM Studio, Cursor…) connect to `https://<main node>:9090/mcp`. They can
+look at every node: health, apps and containers, their logs, the journal, updates, channel,
+services, NetBird, users and backups. Depending on the token's access, they can also start,
+stop and update apps, and install OS updates or reboot.
 
 There are no tools for files, the terminal or secrets: Gotify tokens, `.env` values and
 passwords never reach a model. Changes go through the same checks as the dashboard, and the
-journal (`journalctl -u dashboard`) logs each one with who made it.
+journal (`journalctl -u dashboard`) logs each one with the token's name.
 
 | Access | Can |
 |---|---|
@@ -321,22 +325,8 @@ journal (`journalctl -u dashboard`) logs each one with who made it.
 | operate | Also start, stop, restart and update apps and containers, run backups |
 | admin | Also OS updates, reboots, channel, services, users' groups, editing and removing apps |
 
-### Assistant
 
-A chat on your own model server: [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai)
-or anything else with the OpenAI chat API. Under **AI → Model**, pick the server, its URL
-(e.g. `http://192.168.1.30:11434/v1` for Ollama, `:1234/v1` for LM Studio), the model and the
-most it may do. The main node calls that URL, so `127.0.0.1` means the main node itself.
-
-Ask things like *"Health check all nodes"* or *"Why does jellyfin keep restarting?"*. It looks
-things up on its own; anything that changes something shows an **Approve** card first. Pick a
-model that supports tool calling (Qwen3 8B or larger, Llama 3.1/3.3, Mistral Small, gpt-oss).
-The **Ask AI** buttons on container logs, the Logs page and failed services start a chat about
-what you're looking at.
-
-### MCP for AI clients
-
-Under **AI → MCP access**, create a token (it's shown once) and add the server to your client.
+Under **Integrations**, create a token (it's shown once) and add the server to your client.
 The certificate is self-signed, so download it from the same page (or `https://<main>:9090/ca.pem`)
 and check its fingerprint against Settings → Dashboard.
 
