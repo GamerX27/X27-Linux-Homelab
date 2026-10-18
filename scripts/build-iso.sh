@@ -12,8 +12,8 @@ usage() {
   echo "  bare-metal  x27-linux-homelab-testing (default)"
   echo "  vm          x27-linux-homelab-vm-testing"
   echo "  --usb       write the ISO to a USB drive after building"
-  echo "  --tag TAG   image tag to install and follow: 10, latest, or a dated tag like"
-  echo "              20261011-10 (default 10)"
+  echo "  --tag TAG   image tag to install and follow: 45, latest, or a dated tag like"
+  echo "              20261011-45 (default 45)"
 }
 
 TARGET=""
@@ -137,7 +137,7 @@ case "$TARGET" in
 esac
 
 # The installed system keeps following this tag on updates.
-TAG="${TAG:-10}"
+TAG="${TAG:-45}"
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "Invalid tag: $TAG" >&2
   exit 1
@@ -178,8 +178,7 @@ trap cleanup EXIT
 # whose lorax templates strip /usr/sbin/load_policy. Anaconda 44.30 runs it on exit, crashes,
 # and hangs at the end-of-install Reboot button. v1.5.0 keeps it. Same args as iso.yml:
 # stock Fedora kernel (signed), so no secure boot key enrollment, and no Flatpaks, plus
-# iso/ext4.tmpl to make plain ext4 partitions the installer's default. VERSION is the Fedora
-# release the installer is built from; it deploys the AlmaLinux 10 image ($TAG).
+# iso/ext4.tmpl to make ext4 the installer's default filesystem.
 # --network host: Docker's bridge network intermittently refused connections while the host
 # reached the same servers fine.
 echo "Building ${ISO_NAME} from ${IMAGE_REF}"
@@ -197,7 +196,7 @@ sudo docker run --rm --privileged --network host \
   "IMAGE_NAME=${IMAGE}" \
   "IMAGE_REPO=${REGISTRY}" \
   "IMAGE_TAG=${TAG}" \
-  VERSION=44
+  VERSION=45
 cd "$OUT_DIR"
 sudo chown "$(id -un):$(id -gn)" "$ISO_NAME"
 sudo rm -f "${ISO_NAME}-CHECKSUM"

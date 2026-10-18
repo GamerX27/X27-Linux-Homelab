@@ -1,13 +1,12 @@
 # X27-Linux Homelab
 
 > **Testing branch:** builds `x27-linux-homelab-testing` and `x27-linux-homelab-vm-testing` on
-> AlmaLinux 10 (`:10`, `:latest`, `:<date>-10`). The install steps below describe production
+> Fedora 45 (`:45`, `:latest`, `:<date>-45`). The install steps below describe production
 > (`main`, Fedora 44). See [Branches](#branches).
 
-Docker-first, minimal headless AlmaLinux 10 server images, built with
+Docker-first, minimal headless Fedora 45 server images, built with
 [BlueBuild](https://blue-build.org/) on the official
-[`quay.io/almalinuxorg/almalinux-bootc`](https://quay.io/repository/almalinuxorg/almalinux-bootc)
-image. AlmaLinux 10 is supported until 2035, against about 13 months for a Fedora release.
+[`quay.io/fedora/fedora-bootc`](https://quay.io/repository/fedora/fedora-bootc) image.
 
 **Docker first:** the OS is a small, read-only base that updates itself. Everything you run
 on it (services, apps, tools) goes in Docker containers, managed with `docker compose`.
@@ -19,16 +18,15 @@ Both share [common.yml](recipes/common.yml).
 
 ## What's in it
 
-- No desktop, no extras: AlmaLinux bootc plus the items below
+- No desktop, no extras: Fedora bootc plus the items below
 - Docker CE from Docker's official repo (`docker-ce`, buildx, compose plugin), enabled at boot
 - `docker-compose-update`: check your containers for newer images and pick which to update (see
   [Updating containers](#updating-containers))
 - `dashboard`: a web admin UI for this server and your other servers running the image (see
   [Dashboard](#dashboard)). Off by default
 - `netbird`: the [NetBird](https://netbird.io) VPN client. Off by default (see [NetBird](#netbird))
-- Podman (and toolbox) removed
+- Podman removed
 - SSH (`sshd`) enabled
-- EPEL enabled for fish, `htop`, `ncdu` and `nvtop`
 - fish as the default login shell (console and SSH), `htop`, `git`, `wget`, `lspci` (pciutils), `ncdu`, `zip`, `unzip`
 - `autoupdate`: turn automatic updates on or off, on a schedule of your choice (see
   [Automatic updates](#automatic-updates)), with optional [Gotify](https://gotify.net) messages
@@ -52,9 +50,8 @@ download the ISO from the run's artifacts. Or build it locally (needs Docker and
 ./scripts/build-iso.sh vm     # VM         → iso-out/x27-linux-homelab-vm.iso
 ```
 
-The installer defaults to plain ext4 partitions (no LVM) for automatic partitioning instead of
-Fedora Server's XFS on LVM (`iso/ext4.tmpl`). You can still pick LVM, Btrfs or another filesystem
-in custom partitioning.
+The installer defaults to ext4 (on LVM) for automatic partitioning instead of Fedora Server's
+XFS (`iso/ext4.tmpl`). You can still pick another filesystem in custom partitioning.
 
 **Already on Fedora bootc / an image-based Fedora:** rebase onto this image.
 
@@ -91,12 +88,10 @@ that way.
 ### Branches
 
 - `main`: production, Fedora 44. Publishes the tags above and a [release](#releases) per build.
-- `testing`: test images on AlmaLinux 10, `x27-linux-homelab-testing` and
-  `x27-linux-homelab-vm-testing` (`:10`, `:latest`, `:<date>-10`), rebuilt weekly with
+- `testing`: test images on Fedora 45, `x27-linux-homelab-testing` and
+  `x27-linux-homelab-vm-testing` (`:45`, `:latest`, `:<date>-45`), rebuilt weekly with
   main. No releases, and it may break. To try it:
-  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-testing:10`
-  AlmaLinux runs an older kernel than Fedora (6.12 with backports), so very new hardware
-  may not be supported yet.
+  `sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-testing:45`
 
 ## Installing software
 

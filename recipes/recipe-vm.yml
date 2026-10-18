@@ -2,28 +2,25 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 
 name: x27-linux-homelab-vm-testing
-description: X27-Linux Homelab testing (VM, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE, SSH, and the QEMU guest agent
-base-image: quay.io/almalinuxorg/almalinux-bootc
-image-version: 10
+description: X27-Linux Homelab testing (VM, Fedora 45) - minimal headless Fedora bootc with Docker CE, SSH, and the QEMU guest agent
+base-image: quay.io/fedora/fedora-bootc
+image-version: 45
 
-# Compiles the dashboard (dashboard/, Go) on the base image itself, so the cgo PAM binding
-# links against the same glibc and libpam. Not the smaller almalinux:10 container: it lacks jq,
-# so BlueBuild's setup script tries to install coreutils, which conflicts with its
-# coreutils-single. On the bootc image /root points into /var, which is empty during a build,
-# so Go's caches go in /tmp. Tests run first: a failing test fails the image build.
-# common.yml copies the binary in.
+# Compiles the dashboard (dashboard/, Go) on the same Fedora release as the image, so the
+# cgo PAM binding links against the same glibc and libpam. Tests run first: a failing test
+# fails the image build. common.yml copies the binary in.
 stages:
   - name: dashboard
-    from: quay.io/almalinuxorg/almalinux-bootc:10
+    from: quay.io/fedora/fedora:45
     modules:
       - type: containerfile
         snippets:
           - COPY dashboard /src
           - |
             RUN set -eu \
-                && dnf -y install --setopt=install_weak_deps=False golang pam-devel \
+                && dnf5 -y install --setopt=install_weak_deps=False golang pam-devel \
                 && cd /src \
-                && export GOFLAGS=-mod=readonly CGO_ENABLED=1 GOPATH=/tmp/go GOCACHE=/tmp/go-cache \
+                && export GOFLAGS=-mod=readonly CGO_ENABLED=1 \
                 && go vet ./... \
                 && go test ./... \
                 && go build -trimpath -ldflags "-s -w -X main.version=$(date -u +%Y.%m.%d)" -o /out/dashboard . \
@@ -32,18 +29,20 @@ stages:
 modules:
   # Hardware firmware blobs and CPU microcode do nothing in a VM (the hypervisor handles
   # microcode). kernel-core only Recommends linux-firmware, so the kernel stays.
-  # dnf4 has no --no-autoremove; clean_requirements_on_remove=False does the same. The guest
-  # agent goes in here too: BlueBuild's dnf module needs dnf5.
   - type: containerfile
     snippets:
       - |
         RUN set -eu \
             && FIRMWARE="$(rpm -qa --queryformat '%{NAME}\n' | grep -E -- '-firmware$|^linux-firmware|^microcode_ctl$' || true)" \
             && echo "Removing:" ${FIRMWARE} \
-            && if [ -n "${FIRMWARE}" ]; then dnf -y remove --setopt=clean_requirements_on_remove=False ${FIRMWARE}; fi \
-            && dnf -y install --setopt=install_weak_deps=False qemu-guest-agent \
-            && dnf clean all \
-            && rpm -q kernel-core bootc qemu-guest-agent
+            && if [ -n "${FIRMWARE}" ]; then dnf5 -y remove --no-autoremove ${FIRMWARE}; fi \
+            && dnf5 clean all \
+            && rpm -q kernel-core bootc
+
+  - type: dnf
+    install:
+      packages:
+        - qemu-guest-agent
 
   - type: systemd
     system:
