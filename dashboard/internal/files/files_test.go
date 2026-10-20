@@ -59,16 +59,16 @@ func TestOps(t *testing.T) {
 	if err != nil || len(l) != 2 || l[0].Name != "etc-link" || !l[0].LinkDir || l[1].Name != "proj" || l[1].Type != "dir" {
 		t.Fatalf("list %+v %v", l, err)
 	}
-	if n, err := Upload(home, "proj", "up.bin", false, strings.NewReader("12345")); err != nil || n != 5 {
+	if n, err := Upload(home, "proj", "up.bin", false, false, strings.NewReader("12345")); err != nil || n != 5 {
 		t.Fatal(n, err)
 	}
-	if _, err := Upload(home, "proj", "up.bin", false, strings.NewReader("x")); !errors.Is(err, ErrExists) {
+	if _, err := Upload(home, "proj", "up.bin", false, false, strings.NewReader("x")); !errors.Is(err, ErrExists) {
 		t.Fatalf("upload over existing: %v", err)
 	}
-	if _, err := Upload(home, "proj", "up.bin", true, strings.NewReader("x")); err != nil {
+	if _, err := Upload(home, "proj", "up.bin", true, false, strings.NewReader("x")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Upload(home, "proj", "../escape", false, strings.NewReader("x")); err == nil {
+	if _, err := Upload(home, "proj", "../escape", false, false, strings.NewReader("x")); err == nil {
 		t.Fatal("bad upload name accepted")
 	}
 	if err := Move(home, "proj/a.txt", "proj/b.txt"); err != nil {

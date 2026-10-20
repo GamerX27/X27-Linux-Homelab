@@ -121,9 +121,9 @@ func main() {
 		if err != nil || !config.ValidPort(p) {
 			die("invalid port: %s", args[1])
 		}
-		cfg := load()
-		cfg.Port = p
-		save(cfg)
+		if err := config.SetPort(p); err != nil {
+			die("writing %s: %v", config.Path, err)
+		}
 		if active() {
 			systemctl("restart", unit)
 		}

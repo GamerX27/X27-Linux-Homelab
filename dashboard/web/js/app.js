@@ -9,6 +9,9 @@ import { renderFiles } from './views/files.js';
 import { renderFeatures } from './views/features.js';
 import { renderSettings } from './views/settings.js';
 import { renderRollout } from './views/rollout.js';
+import { renderUsers } from './views/users.js';
+import { renderLogs } from './views/logs.js';
+import { renderIntegrations } from './views/integrations.js';
 
 const TABS = [
   ['overview', 'Overview', renderOverview],
@@ -16,6 +19,8 @@ const TABS = [
   ['docker', 'Docker', renderDocker],
   ['terminal', 'Terminal', renderTerminal],
   ['files', 'Files', renderFiles],
+  ['logs', 'Logs', renderLogs],
+  ['users', 'Users', renderUsers],
   ['features', 'Features', renderFeatures],
   ['settings', 'Settings', renderSettings],
 ];
@@ -89,6 +94,7 @@ function showApp() {
     h('aside.sidebar',
       h('div.brand', icon('server', 22), 'Homelab'),
       h('a.side-link', { href: '#/', 'data-route': 'fleet' }, icon('grid', 16), h('span.name', 'All nodes')),
+      h('a.side-link', { href: '#/integrations', 'data-route': 'integrations' }, icon('plug', 16), h('span.name', 'Integrations')),
       h('div.side-label', 'Nodes'),
       nav,
       h('button.side-link', { onclick: () => addNodeDialog(refreshNodes) }, icon('plus', 16), h('span.name', 'Add node')),
@@ -99,8 +105,10 @@ function showApp() {
         h('div.row', h('span.muted', 'Theme'), themeSel),
         h('div.row', h('span.faint', `dashboard ${state.me.version}`),
           h('button.btn.small.ghost', { onclick: logout, title: 'Log out' }, icon('logout', 14), 'Log out')))),
+    // Phones: the sidebar slides over the page; tapping outside it closes it.
+    h('div.nav-scrim', { 'aria-hidden': 'true' }),
     main);
-  app.addEventListener('click', (e) => { if (e.target.closest('.side-link')) app.classList.remove('nav-open'); });
+  app.addEventListener('click', (e) => { if (e.target.closest('.side-link, .nav-scrim')) app.classList.remove('nav-open'); });
   shell = { app, nav, main };
   clear(root, app);
   refreshNodes();
@@ -184,7 +192,8 @@ function renderNav() {
       h('span.dot', { class: cls, 'aria-label': label }), h('span.name', n.name),
       n.summary?.updateAvailable && !autoPending(n.summary) ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
-  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update);
+  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update && !cur.integrations);
+  shell.app.querySelector('[data-route=integrations]').classList.toggle('active', !!cur.integrations);
 }
 
 function findNode(id) {
@@ -201,13 +210,17 @@ function drawHead() {
     h('h1', n.name),
     h('div.sub.row', h('span.status', { class: cls }, label),
       n.summary?.info?.prettyName ? h('span', `· ${n.summary.info.prettyName}`) : null,
+      n.summary?.channel ? h('a.badge', { class: n.summary.channel === 'stable' ? '' : 'warn', href: `#/n/${encodeURIComponent(n.id)}/updates`,
+        title: 'Release channel' }, n.summary.channel) : null,
       n.local ? h('span.badge', 'main node') : h('span.faint', `· ${n.address || ''}`)));
 }
 
 function parseRoute() {
   if (/^#\/update\b/.test(location.hash)) return { id: null, update: true };
+  if (/^#\/integrations\b/.test(location.hash)) return { id: null, integrations: true };
   const m = location.hash.match(/^#\/n\/([^/]+)\/?([a-z]*)/);
-  return m ? { id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { id: null };
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  return m ? { id: decodeURIComponent(m[1]), tab: m[2] || 'overview', query } : { id: null };
 }
 
 function stopView() {
@@ -219,6 +232,10 @@ function menuButton() {
   return h('button.btn.small.menu-btn', { onclick: () => shell.app.classList.toggle('nav-open'), 'aria-label': 'Menu' }, icon('menu', 16));
 }
 
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && shell?.app.classList.contains('nav-open')) shell.app.classList.remove('nav-open');
+});
+
 function route() {
   if (!state.me || !shell) return;
   stopView();
@@ -227,6 +244,10 @@ function route() {
   const main = shell.main;
   if (r.update) {
     state.cleanup = renderRollout(main, { menuButton, refreshNodes });
+    return;
+  }
+  if (r.integrations) {
+    state.cleanup = renderIntegrations(main, { menuButton });
     return;
   }
   if (!r.id) {
@@ -243,7 +264,9 @@ function route() {
         'aria-selected': String(id === tab[0]) }, name))),
     body);
   drawHead();
-  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes });
+  // On a phone the tab strip scrolls sideways; keep the current tab in view.
+  main.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes, query: r.query });
 }
 
 window.addEventListener('hashchange', route);

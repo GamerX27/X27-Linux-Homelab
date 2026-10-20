@@ -251,13 +251,19 @@ func Delete(home, rel string) error {
 }
 
 // Upload streams r into dir/name, through a temp file so a broken upload leaves nothing.
-func Upload(home, dirRel, name string, overwrite bool, r io.Reader) (int64, error) {
+// parents creates dir first if it's missing (for dropped folders).
+func Upload(home, dirRel, name string, overwrite, parents bool, r io.Reader) (int64, error) {
 	if err := ValidName(name); err != nil {
 		return 0, err
 	}
 	dir, err := Resolve(home, dirRel)
 	if err != nil {
 		return 0, err
+	}
+	if parents {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return 0, clean(err, home)
+		}
 	}
 	p := filepath.Join(dir, name)
 	if st, err := os.Lstat(p); err == nil && (!overwrite || st.IsDir()) {

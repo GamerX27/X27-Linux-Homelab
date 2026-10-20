@@ -17,6 +17,7 @@ usage() {
   cat <<'EOF'
 Usage:
   channel                    show the current channel and the ones to choose from
+  channel --json             the same as JSON (what the dashboard reads)
   channel <name>             switch to a channel (asks before rebooting)
   channel <name> --reboot    switch and reboot right away
 
@@ -87,6 +88,22 @@ show() {
   echo "Switch with: channel <name>"
 }
 
+# The same as show, for the dashboard. jq builds it so the strings are always escaped.
+show_json() {
+  local ref cur staged c list=()
+  ref="$(booted_ref)"
+  cur="$(channel_of "$ref")"
+  staged="$(staged_ref)"
+  for c in "${CHANNELS[@]}"; do
+    list+=("$(jq -nc --arg n "$c" --arg a "${ABOUT[$c]}" --arg i "$(image_for "$c" "$ref")" \
+      '{name: $n, about: $a, image: $i}')")
+  done
+  jq -n --arg cur "$cur" --arg ref "$ref" --arg staged "$staged" \
+    --arg stagedch "$(channel_of "$staged")" --argjson vm "$([[ "$ref" == *x27-linux-homelab-vm* ]] && echo true || echo false)" \
+    '{current: $cur, booted: $ref, staged: $staged, stagedChannel: $stagedch, vm: $vm,
+      channels: [$ARGS.positional[] | fromjson]}' --args "${list[@]}"
+}
+
 switch() {
   local want="$1" reboot="${2:-}" ref target reply
   [[ -n "${TAG[$want]+x}" ]] || die "unknown channel: '$want' (choose ${CHANNELS[*]})"
@@ -116,6 +133,7 @@ switch() {
 
 case "${1:-}" in
   "" | status) show ;;
+  --json) show_json ;;
   help | -h | --help) usage ;;
   *) switch "$@" ;;
 esac

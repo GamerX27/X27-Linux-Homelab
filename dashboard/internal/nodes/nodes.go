@@ -132,6 +132,24 @@ func (s *Store) Rename(id, name string) error {
 	return errors.New("no such node")
 }
 
+// SetAddress moves a node to a new address, after its port changed.
+func (s *Store) SetAddress(id, address string) error {
+	a, err := NormalizeAddress(address)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.nodes {
+		if s.nodes[i].ID == id {
+			s.nodes[i].Address = a
+			delete(s.clients, id)
+			return s.saveLocked()
+		}
+	}
+	return errors.New("no such node")
+}
+
 // NormalizeAddress accepts "host", "host:port" or "https://host:port/".
 func NormalizeAddress(a string) (string, error) {
 	a = strings.TrimSpace(a)
@@ -247,9 +265,28 @@ func (s *Store) PostJSON(n Node, path string, timeout time.Duration, out any) er
 	return s.call(n, "POST", path, timeout, out)
 }
 
+// PostBody is PostJSON with a JSON request body, acting as user.
+func (s *Store) PostBody(n Node, user, path string, timeout time.Duration, body, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return s.do(n, "POST", path, user, bytes.NewReader(b), timeout, out)
+}
+
 func (s *Store) call(n Node, method, path string, timeout time.Duration, out any) error {
-	req, _ := http.NewRequest(method, "https://"+n.Address+"/api/v1"+path, nil)
+	return s.do(n, method, path, "", nil, timeout, out)
+}
+
+func (s *Store) do(n Node, method, path, user string, body io.Reader, timeout time.Duration, out any) error {
+	req, _ := http.NewRequest(method, "https://"+n.Address+"/api/v1"+path, body)
 	req.Header.Set("Authorization", "Bearer "+n.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if user != "" {
+		req.Header.Set(UserHeader, user)
+	}
 	c := newClient(n.Fingerprint, nil, timeout)
 	c.Transport = s.client(n).Transport
 	resp, err := c.Do(req)

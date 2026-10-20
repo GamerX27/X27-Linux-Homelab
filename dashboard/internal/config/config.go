@@ -99,6 +99,37 @@ func Load() (Config, error) {
 
 func ValidPort(p int) bool { return p >= 1 && p <= 65535 }
 
+// SetPort stores a new port; the caller restarts the service. Shared by `dashboard port` and
+// the Settings tab.
+func SetPort(p int) error {
+	if !ValidPort(p) {
+		return fmt.Errorf("invalid port: %d", p)
+	}
+	c, err := Load()
+	if err != nil {
+		return err
+	}
+	c.Port = p
+	return c.Save()
+}
+
+// SetPresets stores the compose presets repository ("" goes back to the default).
+func SetPresets(url string) error {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		url = DefaultPresetsRepo
+	}
+	if !strings.HasPrefix(url, "https://") || strings.ContainsAny(url, " \t\n") {
+		return errors.New("the presets repository must be an https:// URL")
+	}
+	c, err := Load()
+	if err != nil {
+		return err
+	}
+	c.Presets = strings.TrimSuffix(url, "/")
+	return c.Save()
+}
+
 // Save writes atomically with mode 600.
 func (c Config) Save() error {
 	body := fmt.Sprintf("# Written by dashboard. Change it with: dashboard enable ... / dashboard port ... / dashboard pair\n"+

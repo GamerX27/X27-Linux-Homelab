@@ -10,18 +10,47 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Args is what the server passes to `dashboard fsop <op> <json>`.
 type Args struct {
-	Path      string `json:"path,omitempty"`
-	To        string `json:"to,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Create    bool   `json:"create,omitempty"`
-	Overwrite bool   `json:"overwrite,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Paths     []string `json:"paths,omitempty"` // several entries; with To, a folder to put them in
+	To        string   `json:"to,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	Mode      string   `json:"mode,omitempty"` // octal, for chmod
+	Create    bool     `json:"create,omitempty"`
+	Overwrite bool     `json:"overwrite,omitempty"`
+	Parents   bool     `json:"parents,omitempty"`
+	Recursive bool     `json:"recursive,omitempty"`
+}
+
+// each runs fn for Path -> To, or for every entry in Paths -> To/<its name>. It goes
+// through all of them and reports every failure.
+func each(a Args, fn func(from, to string) error) error {
+	if len(a.Paths) == 0 {
+		return fn(a.Path, a.To)
+	}
+	var msgs []string
+	for _, p := range a.Paths {
+		name := path.Base(strings.Trim(p, "/"))
+		if err := fn(p, path.Join(a.To, name)); err != nil {
+			msg := err.Error()
+			if !strings.HasPrefix(msg, strings.Trim(p, "/")) {
+				msg = name + ": " + msg
+			}
+			msgs = append(msgs, msg)
+		}
+	}
+	if len(msgs) > 0 {
+		return errors.New(strings.Join(msgs, "; "))
+	}
+	return nil
 }
 
 type Stat struct {
@@ -75,11 +104,30 @@ func Fsop(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "mkdir":
 		return out(map[string]bool{"ok": true}, Mkdir(home, a.Path))
 	case "move":
-		return out(map[string]bool{"ok": true}, Move(home, a.Path, a.To))
+		return out(map[string]bool{"ok": true}, each(a, func(from, to string) error { return Move(home, from, to) }))
+	case "copy":
+		return out(map[string]bool{"ok": true}, each(a, func(from, to string) error { return Copy(home, from, to) }))
 	case "delete":
-		return out(map[string]bool{"ok": true}, Delete(home, a.Path))
+		return out(map[string]bool{"ok": true}, each(a, func(p, _ string) error { return Delete(home, p) }))
+	case "chmod":
+		m, err := strconv.ParseUint(a.Mode, 8, 32)
+		if err != nil || m > 0o777 {
+			return fail(errors.New("permissions must be three octal digits, like 644"))
+		}
+		return out(map[string]bool{"ok": true}, each(a, func(p, _ string) error { return Chmod(home, p, os.FileMode(m), a.Recursive) }))
+	case "extract":
+		p, err := Extract(home, a.Path)
+		return out(map[string]string{"path": p}, err)
+	case "compress":
+		p, err := Compress(home, a.Paths)
+		return out(map[string]string{"path": p}, err)
+	case "zip":
+		if err := Zip(home, a.Paths, stdout); err != nil {
+			return fail(err)
+		}
+		return 0
 	case "upload":
-		n, err := Upload(home, a.Path, a.Name, a.Overwrite, stdin)
+		n, err := Upload(home, a.Path, a.Name, a.Overwrite, a.Parents, stdin)
 		return out(map[string]int64{"size": n}, err)
 	case "stat":
 		p, err := Resolve(home, a.Path)
@@ -133,7 +181,8 @@ func opError(stderr *bytes.Buffer, err error) error {
 // Run executes op, feeding stdin, and decodes its JSON result into out.
 func (r Runner) Run(username, op string, a Args, stdin io.Reader, out any) error {
 	timeout := 30 * time.Second
-	if op == "upload" || op == "delete" || op == "move" {
+	switch op {
+	case "upload", "write", "delete", "move", "copy", "chmod", "extract", "compress":
 		timeout = 2 * time.Hour
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -153,9 +202,9 @@ func (r Runner) Run(username, op string, a Args, stdin io.Reader, out any) error
 	return json.Unmarshal(stdout.Bytes(), out)
 }
 
-// Stream runs a download straight into w.
-func (r Runner) Stream(ctx context.Context, username string, a Args, w io.Writer) error {
-	cmd, err := r.command(ctx, username, "download", a)
+// Stream runs a download (op "download" or "zip") straight into w.
+func (r Runner) Stream(ctx context.Context, username, op string, a Args, w io.Writer) error {
+	cmd, err := r.command(ctx, username, op, a)
 	if err != nil {
 		return err
 	}
