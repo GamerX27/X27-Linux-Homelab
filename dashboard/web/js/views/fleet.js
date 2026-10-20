@@ -351,7 +351,7 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const osChannel = osImage.length ? h('button.btn.small', { disabled: running, onclick: () => channelDialog(osImage, refreshNodes) }, 'Switch channel…') : null;
   const channels = [...new Set(osImage.map((n) => n.summary.channel).filter(Boolean))];
 
-  return h('div.grid.two',
+  return h('div.grid.two.update-cards',
     h('div.card.update-card',
       h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osUpdate, osStart, osChannel)),
       osSummary,
