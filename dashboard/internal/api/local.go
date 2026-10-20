@@ -180,6 +180,9 @@ type Summary struct {
 	Containers         int         `json:"containers"`
 	DashboardVersion   string      `json:"dashboardVersion"`
 	Channel            string      `json:"channel"` // release channel, "" if unknown
+
+	// The images behind ContainerUpdates, with the stacks and containers that use them.
+	ContainerUpdateImages []docker.ImageUpdate `json:"containerUpdateImages,omitempty"`
 }
 
 func (l *Local) summary() Summary {
@@ -204,6 +207,7 @@ func (l *Local) summary() Summary {
 	for _, i := range ct.Images {
 		if i.State == "update" {
 			s.ContainerUpdates++
+			s.ContainerUpdateImages = append(s.ContainerUpdateImages, i)
 		}
 	}
 	s.ContainersUpdating = ct.Job != nil && ct.Job.Running()

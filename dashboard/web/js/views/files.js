@@ -202,9 +202,9 @@ export function renderFiles(el, { api, node, query }) {
     });
   }
 
-  function sortHead(key, label) {
+  function sortHead(key, label, cls = '') {
     const on = sort.key === key;
-    return h('th', { 'aria-sort': on ? (sort.desc ? 'descending' : 'ascending') : 'none' },
+    return h('th', { class: cls, 'aria-sort': on ? (sort.desc ? 'descending' : 'ascending') : 'none' },
       h('button.sort-btn', { class: on ? 'on' : '', onclick: () => {
         sort = { key, desc: on ? !sort.desc : false };
         localStorage.setItem('files-sort', JSON.stringify(sort));
@@ -236,8 +236,8 @@ export function renderFiles(el, { api, node, query }) {
           h('span.file-icon', { 'aria-hidden': 'true' }, fileIcon(e)), e.name),
         e.type === 'link' ? h('span.faint.mono', { style: { fontSize: '12px', marginLeft: '8px' } }, `→ ${e.target}`) : null),
         h('td.num-cell.muted', isDir ? '' : bytes(e.size)),
-        h('td.num-cell.muted', fmtTime(e.modTime)),
-        h('td.mono.faint', { style: { fontSize: '12px' } }, e.mode),
+        h('td.num-cell.muted.col-mod', fmtTime(e.modTime)),
+        h('td.mono.faint.col-perm', { style: { fontSize: '12px' } }, e.mode),
         h('td.actions', menu([
           { label: isDir ? 'Open' : kind ? 'Preview' : 'Edit', onclick: open },
           { label: 'Edit as text', onclick: () => edit(path), hidden: isDir || !kind },
@@ -255,8 +255,8 @@ export function renderFiles(el, { api, node, query }) {
     clear(listBox,
       dir ? h('button.link-btn.up-row', { onclick: () => load(parent(dir)) }, '↑ Up to ', parent(dir) ? parent(dir).split('/').pop() : 'Home') : null,
       rows.length ? h('div.table-wrap', h('table.files-table',
-        h('thead', h('tr', h('th.check-cell', all), sortHead('name', 'Name'), sortHead('size', 'Size'), sortHead('modTime', 'Modified'),
-          h('th', 'Permissions'), h('th', ''))),
+        h('thead', h('tr', h('th.check-cell', all), sortHead('name', 'Name'), sortHead('size', 'Size'), sortHead('modTime', 'Modified', 'col-mod'),
+          h('th.col-perm', 'Permissions'), h('th', ''))),
         h('tbody', rows)))
         : h('div.empty', q ? 'Nothing matches the filter.' : entries.length ? `Only hidden files here (${hiddenCount}).` : 'This folder is empty. Drop files here to upload them.'),
       h('div.faint.files-foot', plural(shown.length, 'item'),

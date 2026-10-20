@@ -325,6 +325,26 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
     refreshNodes();
   } }, `Update all (${ctTotal})`) : null;
 
+  // What has the updates: per node, the stacks (or standalone containers) and their images.
+  const ctList = ctNodes.length ? h('ul.ct-updates', ctNodes.map((n) => {
+    const groups = new Map();
+    for (const i of n.summary.containerUpdateImages || []) {
+      const label = i.projects?.length ? i.projects.join(', ') : 'Standalone';
+      const g = groups.get(label) || { names: [], images: [] };
+      g.names.push(...(i.containers || []));
+      g.images.push(i.image);
+      groups.set(label, g);
+    }
+    return h('li',
+      h('a.ct-updates-node', { href: `#/n/${encodeURIComponent(n.id)}/docker` }, n.name, ' ›'),
+      groups.size ? h('ul', [...groups].sort(([a], [b]) => (a === 'Standalone') - (b === 'Standalone') || a.localeCompare(b))
+        .map(([label, g]) => h('li',
+          h('div', h('strong', label), g.names.length ? h('span.muted', ` · ${g.names.join(', ')}`) : null),
+          g.images.map((img) => h('div.ct-updates-images.mono.faint', { title: img }, img)))))
+        // A node on an older dashboard only reports the count.
+        : h('div.muted', `${n.summary.containerUpdates} image update${n.summary.containerUpdates > 1 ? 's' : ''}`));
+  })) : null;
+
   const ctSummary = ctTotal ? h('span.status.warn', `${ctTotal} image update${ctTotal > 1 ? 's' : ''} on ${ctNodes.length} of ${online.length} node${online.length > 1 ? 's' : ''}`)
     : h('span.status.good', 'All containers up to date');
 
@@ -341,6 +361,7 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
     h('div.card.update-card',
       h('div.card-head', h('h2', 'Container updates'), h('div.row', ctCheck, ctUpdate)),
       ctSummary,
+      ctList,
       h('p.faint', { style: { margin: '6px 0 0', fontSize: '12.5px' } }, 'Pulls newer images and recreates only what uses them. Data in volumes and bind mounts is kept.'),
       progressList(progress.ct, byId)));
 }

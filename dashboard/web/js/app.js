@@ -105,8 +105,10 @@ function showApp() {
         h('div.row', h('span.muted', 'Theme'), themeSel),
         h('div.row', h('span.faint', `dashboard ${state.me.version}`),
           h('button.btn.small.ghost', { onclick: logout, title: 'Log out' }, icon('logout', 14), 'Log out')))),
+    // Phones: the sidebar slides over the page; tapping outside it closes it.
+    h('div.nav-scrim', { 'aria-hidden': 'true' }),
     main);
-  app.addEventListener('click', (e) => { if (e.target.closest('.side-link')) app.classList.remove('nav-open'); });
+  app.addEventListener('click', (e) => { if (e.target.closest('.side-link, .nav-scrim')) app.classList.remove('nav-open'); });
   shell = { app, nav, main };
   clear(root, app);
   refreshNodes();
@@ -230,6 +232,10 @@ function menuButton() {
   return h('button.btn.small.menu-btn', { onclick: () => shell.app.classList.toggle('nav-open'), 'aria-label': 'Menu' }, icon('menu', 16));
 }
 
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && shell?.app.classList.contains('nav-open')) shell.app.classList.remove('nav-open');
+});
+
 function route() {
   if (!state.me || !shell) return;
   stopView();
@@ -258,6 +264,8 @@ function route() {
         'aria-selected': String(id === tab[0]) }, name))),
     body);
   drawHead();
+  // On a phone the tab strip scrolls sideways; keep the current tab in view.
+  main.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes, query: r.query });
 }
 

@@ -16,12 +16,12 @@ const fmtTime = (ms) => {
 export function renderLogs(el, { api, node, query }) {
   let timer, stopped = false, cursor = '', lines = [], following = false, gen = 0;
 
-  const unitSel = h('select', { 'aria-label': 'Source', style: { width: 'auto', maxWidth: '260px' } },
+  const unitSel = h('select.log-source', { 'aria-label': 'Source' },
     h('optgroup', { label: 'Common' }, QUICK.map(([v, l]) => h('option', { value: v }, l))));
-  const prio = h('select', { 'aria-label': 'Priority', style: { width: 'auto' } },
+  const prio = h('select.log-select', { 'aria-label': 'Priority' },
     h('option', { value: '7' }, 'All priorities'), h('option', { value: '6' }, 'Info and up'),
     h('option', { value: '4' }, 'Warnings and up'), h('option', { value: '3' }, 'Errors only'));
-  const since = h('select', { 'aria-label': 'Since', style: { width: 'auto' } },
+  const since = h('select.log-select', { 'aria-label': 'Since' },
     [['boot', 'This boot'], ['15m', 'Last 15 min'], ['1h', 'Last hour'], ['24h', 'Last 24 h'], ['7d', 'Last 7 days'], ['', 'All']].map(([v, l]) => h('option', { value: v }, l)));
   const grep = h('input.filter-input', { type: 'search', placeholder: 'Search…', spellcheck: false });
   const followBtn = h('button.btn', { onclick: () => setFollow(!following) }, 'Follow');
@@ -34,7 +34,7 @@ export function renderLogs(el, { api, node, query }) {
   unitSel.value = want || '';
 
   clear(el, h('div.card',
-    h('div.row', { style: { marginBottom: '12px' } }, unitSel, prio, since, grep, h('span.spacer'), info, followBtn, dl),
+    h('div.row.log-tools', unitSel, prio, since, grep, h('span.spacer'), info, followBtn, dl),
     list));
 
   // The rest of the units, for the picker.
