@@ -731,6 +731,7 @@ func (l *Local) Handler() http.Handler {
 		result(w, r, "ntp "+strconv.FormatBool(body.Enabled), "", system.SetNTP(body.Enabled))
 	})
 	l.adminRoutes(mux)
+	l.storageRoutes(mux)
 	return mux
 }
 

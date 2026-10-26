@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/run"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/systemd"
 )
 
 const (
@@ -62,20 +63,7 @@ var services = []Service{
 		Warning: "Turning Docker off stops every container."},
 }
 
-func show(unit string, props ...string) map[string]string {
-	args := []string{"show", unit, "--timestamp=unix"}
-	for _, p := range props {
-		args = append(args, "-p", p)
-	}
-	out, _ := run.Cmd(5*time.Second, "systemctl", args...)
-	m := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if k, v, ok := strings.Cut(line, "="); ok {
-			m[k] = v
-		}
-	}
-	return m
-}
+var show = systemd.Show
 
 func unixTS(v string) int64 {
 	var n int64

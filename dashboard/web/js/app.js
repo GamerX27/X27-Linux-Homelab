@@ -6,6 +6,7 @@ import { renderUpdates } from './views/updates.js';
 import { renderDocker } from './views/docker.js';
 import { renderTerminal } from './views/terminal.js';
 import { renderFiles } from './views/files.js';
+import { renderStorage } from './views/storage.js';
 import { renderFeatures } from './views/features.js';
 import { renderSettings } from './views/settings.js';
 import { renderRollout } from './views/rollout.js';
@@ -19,6 +20,7 @@ const TABS = [
   ['docker', 'Docker', renderDocker],
   ['terminal', 'Terminal', renderTerminal],
   ['files', 'Files', renderFiles],
+  ['storage', 'Storage', renderStorage],
   ['logs', 'Logs', renderLogs],
   ['users', 'Users', renderUsers],
   ['features', 'Features', renderFeatures],

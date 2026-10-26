@@ -243,6 +243,7 @@ several nodes at once, switch their channel, and update containers on all nodes.
 | Updates | Current OS image, available update, last update and its log; update, reboot or roll back. The release channel, and switching it |
 | Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, logs, remove. Plus images, volumes and networks for cleanup |
 | Files | Your home folder: browse, edit, upload, download, rename, delete. Same permissions as over SSH |
+| Storage | NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
 | Terminal | A shell in the browser, as your user |
 | Logs | The system journal, the kernel, or one service; filter by priority, time and text, follow it live, download it |
 | Users | Regular users: wheel and docker membership, login shell, password, lock, add and delete |
@@ -270,6 +271,46 @@ places.
 
 To use another preset repository, set `PRESETS_REPO=https://host/owner/repo` in
 `/etc/dashboard.conf`. It needs the same `Composes/<name>/compose.yml` layout.
+
+### Network shares (Storage)
+
+The **Storage** page mounts NFS exports and SMB (Samba, Windows) shares on a node, for
+containers that keep their data on a NAS. A share named `nas-media` is mounted at
+`/var/mnt/nas-media`; give it to a container as a bind mount:
+
+```yaml
+services:
+  jellyfin:
+    volumes:
+      - /var/mnt/nas-media:/media
+```
+
+- **Add share:** the server, the export path (NFS, with **Browse** to list them) or the share
+  name (SMB), and for SMB the username and password. **Test** mounts it once and lists what's
+  there; **Add and mount** does the same test first and saves nothing if it fails.
+- **More options:** protocol version, read-only, **mount on first access** instead of at boot,
+  and for SMB the user who owns the files on the node and their permissions (SMB has no Linux
+  owners, so all files show up as that user).
+- **Docker waits for this share at boot** (on by default): Docker starts after the share is
+  mounted, so containers don't write into the empty folder underneath. If the server is down,
+  Docker starts anyway once the mount gives up (up to 45 seconds). Applies from the next boot.
+- A server that's down never stops the node from booting: that mount fails on its own, and the
+  page shows **Failed** with the reason under **⋯ → Logs**.
+- **Remove** unmounts it and deletes the mount and its stored password. The files on the server
+  aren't touched. Unmounting fails while containers use the share: stop them first.
+
+<details>
+<summary>Where things are stored</summary>
+
+- Each share is a systemd unit in `/etc/systemd/system/`, like `var-mnt-nas\x2dmedia.mount`
+  (plus a `.automount` for mount on first access). They start with `# Managed by dashboard`;
+  the page lists only those, and never touches `/etc/fstab` or units you wrote yourself.
+- SMB passwords: `/etc/dashboard/smb/<name>.cred` (root only). The dashboard never shows them
+  again, and AI clients can't see them.
+- Docker's wait list: `/etc/systemd/system/docker.service.d/dashboard-mounts.conf`.
+- By hand: `systemctl status 'var-mnt-nas\x2dmedia.mount'`, `findmnt /var/mnt/nas-media`.
+
+</details>
 
 ### How an OS update runs
 
@@ -312,7 +353,7 @@ The dashboard's **Integrations** page connects other programs to your homelab.
 AI programs that speak the [Model Context Protocol](https://modelcontextprotocol.io) (Claude
 Code, Claude Desktop, LM Studio, Cursor…) connect to `https://<main node>:9090/mcp`. They can
 look at every node: health, apps and containers, their logs, the journal, updates, channel,
-services, NetBird, users and backups. Depending on the token's access, they can also start,
+services, NetBird, users, backups and network shares. Depending on the token's access, they can also start,
 stop and update apps, and install OS updates or reboot.
 
 There are no tools for files, the terminal or secrets: Gotify tokens, `.env` values and
@@ -323,7 +364,7 @@ journal (`journalctl -u dashboard`) logs each one with the token's name.
 |---|---|
 | read | Look only: status, logs, updates, compose files |
 | operate | Also start, stop, restart and update apps and containers, run backups |
-| admin | Also OS updates, reboots, channel, services, users' groups, editing and removing apps |
+| admin | Also OS updates, reboots, channel, services, users' groups, editing and removing apps, mounting and unmounting network shares |
 
 
 Under **Integrations**, create a token (it's shown once) and add the server to your client.
@@ -398,7 +439,7 @@ Settings go in `/etc/sysconfig/netbird`, state is in `/var/lib/netbird`, logs wi
 | **Base** | Fedora bootc, no desktop. SSH on. Podman removed. |
 | **Docker** | Docker CE from Docker's repo, with buildx and the compose plugin. On at boot. |
 | **Commands** | `channel`, `autoupdate`, `docker-compose-update`, `dashboard` (off), `netbird` (off) |
-| **Tools** | fish, `htop`, `git`, `wget`, `lspci`, `ncdu`, `zip`, `unzip` |
+| **Tools** | fish, `htop`, `git`, `wget`, `lspci`, `ncdu`, `zip`, `unzip`, NFS and SMB clients (`nfs-utils`, `cifs-utils`) |
 | **Bare metal only** | `smartmontools` (smartd on), `nvme-cli`, `nvtop`, `lm_sensors` |
 | **VM only** | `qemu-guest-agent` on; no hardware firmware or CPU microcode |
 | **DNS-ready** | Port 53 is free for AdGuard Home or Pi-hole, with larger UDP buffers for DNS-over-QUIC |
@@ -448,3 +489,6 @@ the `SIGNING_SECRET` Actions secret.
 
 `DASHBOARD_FAKE_OS=1 dashboard serve --dev` fakes a node with an update (download, a 15-second
 reboot, done). `DASHBOARD_FAKE_OS=fail` makes it come back on the old image.
+
+`DASHBOARD_FAKE_STORAGE=1 dashboard serve --dev` keeps Storage mounts in memory, so the page
+works without root or a NAS. A test against the server `fail.example` fails.

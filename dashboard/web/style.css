@@ -308,6 +308,7 @@ textarea.code {
 }
 textarea.code:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 details > summary { cursor: pointer; font-size: 13px; margin-bottom: 6px; }
+.mounts-table .phone-share { display: none; }
 pre.error-output { background: color-mix(in srgb, var(--critical) 14%, var(--surface)); color: var(--text); max-height: 220px; }
 
 /* Published ports */
@@ -578,6 +579,12 @@ pre.rollout-log { margin-top: 10px; max-height: 320px; overflow: auto; }
   .meter-row .num { min-width: 0; }
   .form-grid { grid-template-columns: 1fr; }
   .feature-row { gap: 12px; }
+
+  /* Storage: name, status, boot switch and menu fit; the share moves under the name */
+  .mounts-table .col-usage, .mounts-table .col-share, .mounts-table .mount-point { display: none; }
+  .mounts-table .phone-share { display: block; }
+  .mounts-table th, .mounts-table td { padding-left: 6px; padding-right: 6px; }
+  .mounts-table td .sub { overflow-wrap: anywhere; }
 
   /* Files */
   .files-table .col-mod, .files-table .col-perm { display: none; }
