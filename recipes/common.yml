@@ -80,7 +80,7 @@ modules:
         RUN set -eu \
             && if [ "$(date -u +%d)" = 01 ]; then SECURITY=; else SECURITY=--security; fi \
             && dnf -y upgrade --refresh --setopt=install_weak_deps=False ${SECURITY} \
-            && OLD="$(dnf repoquery --installonly --latest-limit=-1 -q)" \
+            && OLD="$(dnf repoquery --installed --installonly --latest-limit=-1 -q)" \
             && if [ -n "${OLD}" ]; then dnf -y remove --setopt=clean_requirements_on_remove=False ${OLD}; fi \
             && dnf clean all \
             && test "$(ls /usr/lib/modules | wc -l)" = 1 \
