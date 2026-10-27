@@ -68,6 +68,24 @@ modules:
         - bootc-fetch-apply-updates.timer
         - bootc-fetch-apply-updates.service
 
+  # OS updates on top of the frozen base (see build.yml): security fixes only, except on the
+  # 1st of the month, when the base was just refreshed and everything is upgraded. EPEL is
+  # still enabled, so its advisories count too. No weak deps, or a new kernel-core pulls
+  # linux-firmware back into the VM image. A kernel is installonly, so an upgrade installs it
+  # next to the old one; the old one is removed and exactly one kernel with an initramfs
+  # must be left.
+  - type: containerfile
+    snippets:
+      - |
+        RUN set -eu \
+            && if [ "$(date -u +%d)" = 01 ]; then SECURITY=; else SECURITY=--security; fi \
+            && dnf -y upgrade --refresh --setopt=install_weak_deps=False ${SECURITY} \
+            && OLD="$(dnf repoquery --installonly --latest-limit=-1 -q)" \
+            && if [ -n "${OLD}" ]; then dnf -y remove --setopt=clean_requirements_on_remove=False ${OLD}; fi \
+            && dnf clean all \
+            && test "$(ls /usr/lib/modules | wc -l)" = 1 \
+            && test -f /usr/lib/modules/*/initramfs.img
+
   # Set directly here, not via BlueBuild's os-release module: a value substituted into
   # the recipe by an earlier workflow step doesn't survive blue-build's own checkout.
   - type: containerfile

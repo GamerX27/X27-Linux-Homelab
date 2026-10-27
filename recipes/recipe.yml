@@ -3,9 +3,12 @@
 
 name: x27-linux-homelab-alma-testing
 description: X27-Linux Homelab AlmaLinux testing (bare metal, AlmaLinux 10) - minimal headless AlmaLinux bootc with Docker CE and SSH
-base-image: quay.io/almalinuxorg/almalinux-bootc
+base-image: ghcr.io/gamerx27/x27-base-almalinux-bootc
 image-version: 10
 
+# Builds from a frozen copy of quay.io/almalinuxorg/almalinux-bootc:10, refreshed monthly (see
+# .github/workflows/build.yml).
+#
 # Compiles the dashboard (dashboard/, Go) on the base image itself, so the cgo PAM binding
 # links against the same glibc and libpam. Not the smaller almalinux:10 container: it lacks jq,
 # so BlueBuild's setup script tries to install coreutils, which conflicts with its
@@ -14,7 +17,7 @@ image-version: 10
 # common.yml copies the binary in.
 stages:
   - name: dashboard
-    from: quay.io/almalinuxorg/almalinux-bootc:10
+    from: ghcr.io/gamerx27/x27-base-almalinux-bootc:10
     modules:
       - type: containerfile
         snippets:
