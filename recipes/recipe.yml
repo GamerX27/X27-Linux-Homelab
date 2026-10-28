@@ -23,7 +23,7 @@ stages:
                 && export GOFLAGS=-mod=readonly CGO_ENABLED=1 \
                 && go vet ./... \
                 && go test ./... \
-                && go build -trimpath -ldflags "-s -w -X main.version=$(date -u +%Y.%m.%d)" -o /out/dashboard . \
+                && go build -trimpath -ldflags "-s -w -X main.version=$(cat build-number 2>/dev/null || date -u +%Y.%m.%d)" -o /out/dashboard . \
                 && /out/dashboard help >/dev/null
 
 modules:

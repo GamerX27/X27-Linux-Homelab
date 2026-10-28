@@ -64,17 +64,21 @@ modules:
         - bootc-fetch-apply-updates.timer
         - bootc-fetch-apply-updates.service
 
-  # Set directly here, not via BlueBuild's os-release module: a value substituted into
-  # the recipe by an earlier workflow step doesn't survive blue-build's own checkout.
+  # Set directly here, not via BlueBuild's os-release module. The build number comes from
+  # .github/workflows/build-image.yml (e.g. 2026.10.28.3-testing); a local build without it
+  # uses the date.
   - type: containerfile
     snippets:
+      # cosign.pub is always there, so the COPY doesn't fail when build-number isn't.
+      - COPY cosign.pub build-numbe[r] /tmp/x27-build/
       - |
         RUN set -eu \
-            && BUILD_DATE="$(date -u +%Y-%m-%d)" \
+            && BUILD="$(cat /tmp/x27-build/build-number 2>/dev/null || date -u +%Y-%m-%d)" \
+            && rm -rf /tmp/x27-build \
             && . /etc/os-release \
             && sed -i --follow-symlinks -e '/^NAME=/d' -e '/^PRETTY_NAME=/d' -e '/^BUILD_ID=/d' /etc/os-release \
             && printf 'NAME="X27-Linux Homelab"\nPRETTY_NAME="X27-Linux Homelab %s (%s)"\nBUILD_ID="%s-%s"\n' \
-                 "${VERSION_ID}" "${BUILD_DATE}" "${VERSION_ID}" "${BUILD_DATE}" >> /etc/os-release
+                 "${VERSION_ID}" "${BUILD}" "${VERSION_ID}" "${BUILD}" >> /etc/os-release
 
   # Last step: all dnf5 calls above are done. See files/system/usr/libexec/x27-dnf-guard.
   - type: containerfile

@@ -17,10 +17,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the build number counts today's commits
+
+      # The build number: the date, how many commits went into the branch that day (left out
+      # when none did, as in a rebuild without changes), and the branch for anything but main:
+      # 2026.10.28.3-testing, or 2026.10.28.3 on main. The image build reads it from
+      # build-number (recipes and common.yml); BlueBuild builds this checkout (skip_checkout).
+      - name: Build number
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -eu
+          n="$(git rev-list --count --since="$(date -u +%Y-%m-%d)T00:00:00Z" HEAD)"
+          v="$(date -u +%Y.%m.%d)"
+          if [ "$n" -gt 0 ]; then v="${v}.${n}"; fi
+          if [ "$BRANCH" != main ]; then v="${v}-${BRANCH//\//-}"; fi
+          echo "Build number: ${v}"
+          echo "$v" > build-number
+          cp build-number dashboard/build-number
 
       - name: Build custom image
         uses: blue-build/github-action@v1.10
         with:
+          skip_checkout: true
           recipe: ${{ inputs.recipe }}
           cosign_private_key: ${{ secrets.SIGNING_SECRET }}
           registry_token: ${{ github.token }}
