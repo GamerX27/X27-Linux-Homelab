@@ -110,8 +110,9 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-2); text-transform: up
 .tab {
   padding: 8px 14px; border: 0; background: none; cursor: pointer;
   color: var(--text-2); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  text-decoration: none;
 }
-.tab:hover { color: var(--text); }
+.tab:hover { color: var(--text); border-bottom-color: var(--border); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 550; }
 
 /* Cards & grid */

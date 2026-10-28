@@ -17,7 +17,7 @@ export const projectName = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, '').re
 
 // Create (no name) or edit a stack in ~/docker/<name>/. Resolves true when something was saved.
 export async function openStackEditor({ api, root, name, onDone }) {
-  const create = !name;
+  let create = !name;
   let files = { compose: BLANK, env: '' };
   if (!create) {
     try { files = await api.get(`/docker/stacks/${encodeURIComponent(name)}`); }
@@ -28,6 +28,9 @@ export async function openStackEditor({ api, root, name, onDone }) {
   const note = h('div.notice.warn.hidden', { style: { whiteSpace: 'pre-wrap' } });
   const compose = codeArea(files.compose, 20);
   const env = codeArea(files.env || '', 5);
+  // What's saved; the dialog asks before closing with anything else in the editors.
+  let saved = { compose: compose.value, env: env.value };
+  const dirty = () => compose.value !== saved.compose || env.value !== saved.env || (create && nameInput.value !== '');
   const envBox = h('details', { open: !!files.env }, h('summary.muted', '.env (optional, kept private to the owner)'), env);
   const nameInput = h('input', { type: 'text', placeholder: 'e.g. jellyfin', spellcheck: false, autocapitalize: 'off' });
   const pathHint = h('div.faint.mono', { style: { fontSize: '12px' } });
@@ -74,7 +77,8 @@ export async function openStackEditor({ api, root, name, onDone }) {
     envBox,
     h('p.faint', { style: { margin: 0, fontSize: '12.5px' } },
       'Checked with ', h('code', 'docker compose config'), ' before saving. Relative paths like ',
-      h('code', './data'), ' are inside the stack folder.' + (create ? '' : ' The previous version is kept as .bak.')),
+      h('code', './data'), ' are inside the stack folder.' + (create ? '' : ' The previous version is kept as .bak.'),
+      ' Ctrl+S saves without closing.'),
     err);
 
   const save = (start) => async () => {
@@ -85,6 +89,9 @@ export async function openStackEditor({ api, root, name, onDone }) {
       const r = await api.post(create ? '/docker/stacks' : `/docker/stacks/${encodeURIComponent(name)}`,
         { name: stackName, compose: compose.value, env: env.value, start });
       toast(start ? `${stackName}: saved and ${create ? 'started' : 'recreated'}.` : `${stackName}: saved.`);
+      saved = { compose: compose.value, env: env.value };
+      // Saved once, a new stack is edited from here on.
+      if (create) { create = false; name = stackName; }
       if (start && r.output) modal(`Stack ${stackName}`, h('pre.output', r.output), [{ label: 'Close', value: true, class: 'primary' }]);
       onDone?.();
       return true;
@@ -96,9 +103,15 @@ export async function openStackEditor({ api, root, name, onDone }) {
     }
   };
 
+  for (const ta of [compose, env]) {
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 's' && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); save(false)(); }
+    });
+  }
+
   return modal(create ? 'New stack' : `Edit ${name}`, body, [
     { label: 'Cancel', value: false },
     { label: 'Save', onclick: save(false) },
     { label: create ? 'Save & start' : 'Save & recreate', class: 'primary', onclick: save(true) },
-  ]);
+  ], { dirty });
 }

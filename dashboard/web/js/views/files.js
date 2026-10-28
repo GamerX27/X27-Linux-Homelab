@@ -505,8 +505,10 @@ export function renderFiles(el, { api, node, query }) {
     }
     const ta = codeArea(content, 24);
     const err = h('div.error-text');
+    let saved = content;
     const save = async () => {
-      try { await api.post('/files/write', { path, content: ta.value }); err.textContent = ''; toast('Saved.'); load(); return true; }
+      const text = ta.value;
+      try { await api.post('/files/write', { path, content: text }); saved = text; err.textContent = ''; toast('Saved.'); load(); return true; }
       catch (e) { err.textContent = e.message; return false; }
     };
     ta.addEventListener('keydown', (e) => {
@@ -516,7 +518,7 @@ export function renderFiles(el, { api, node, query }) {
       { label: 'Close', value: false },
       { label: 'Download', onclick: () => { download([path]); return false; } },
       { label: 'Save', class: 'primary', onclick: save },
-    ]);
+    ], { dirty: () => ta.value !== saved });
   }
 
   // Uploads go straight to the node through XHR so progress can be shown. Each item is a

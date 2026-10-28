@@ -63,10 +63,30 @@ export function toast(msg, error = false) {
   setTimeout(() => t.remove(), error ? 9000 : 4500);
 }
 
-export function modal(title, body, actions = []) {
+// With `dirty` (a function, true while there are unsaved changes) the backdrop doesn't close the
+// dialog, and Escape or a dismiss button asks before discarding the changes.
+export function modal(title, body, actions = [], { dirty } = {}) {
   return new Promise((resolve) => {
-    const close = (v) => { back.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
-    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    const close = (v) => {
+      back.remove();
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('beforeunload', onUnload);
+      resolve(v);
+    };
+    let asking = false;
+    const dismiss = async (v) => {
+      if (dirty?.()) {
+        if (asking) return;
+        asking = true;
+        const discard = await confirmAction('Discard changes?', "Your changes haven't been saved.", 'Discard');
+        asking = false;
+        if (!discard) return;
+      }
+      close(v);
+    };
+    const top = () => [...document.querySelectorAll('.modal-back')].at(-1) === back;
+    const onKey = (e) => { if (e.key === 'Escape' && top()) dismiss(null); };
+    const onUnload = (e) => { if (dirty?.()) e.preventDefault(); };
     const box = h('div.modal', { role: 'dialog', 'aria-modal': 'true' },
       h('h2', title), body,
       actions.length ? h('div.actions', actions.map((a) =>
@@ -78,11 +98,19 @@ export function modal(title, body, actions = []) {
               const v = await a.onclick();
               if (v !== false) close(v === undefined ? a.value : v);
             } finally { btn.disabled = false; btn.classList.remove('busy'); }
-          } else close(a.value);
+          } else if (a.value == null || a.value === false) dismiss(a.value);
+          else close(a.value);
         } }, a.label))) : null);
     if (body?.dataset?.wide) box.classList.add('wide');
-    const back = h('div.modal-back', { onclick: (e) => { if (e.target === back) close(null); } }, box);
+    // Only a click that starts and ends on the backdrop closes the dialog, so a text selection
+    // dragged out of it doesn't.
+    let downOnBack = false;
+    const back = h('div.modal-back', {
+      onpointerdown: (e) => { downOnBack = e.target === back; },
+      onclick: (e) => { if (e.target === back && downOnBack && !dirty) close(null); },
+    }, box);
     document.addEventListener('keydown', onKey);
+    if (dirty) window.addEventListener('beforeunload', onUnload);
     document.body.append(back);
     (box.querySelector('input, select') || box.querySelector('.btn.primary, .btn'))?.focus();
   });
