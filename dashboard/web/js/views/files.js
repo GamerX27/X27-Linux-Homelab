@@ -69,6 +69,17 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
   const top = root ? `🗄 ${root}` : '🏠 Home';
   const prefix = root ? `/var/mnt/${root}/` : '~/';
   let dir = query?.get('path') ?? lastDir.get(place) ?? '';
+  // A share mounted read-only: the node refuses every change, so the actions that would make
+  // one are grayed out (RO is their tooltip) and files open for viewing only.
+  let readOnly = false;
+  // The folder paths are relative to on the node (home, or /var/mnt/<share>), from the list.
+  let base = '';
+  const fullPath = (p) => (p ? `${base}/${p}` : base);
+  const copyPath = async (p) => {
+    try { await navigator.clipboard.writeText(fullPath(p)); toast(`Copied ${fullPath(p)}`); }
+    catch { toast("Couldn't copy", true); }
+  };
+  const RO = 'This share is read-only';
   let entries = [];
   let showHidden = false;
   let loading = 0;
@@ -101,6 +112,11 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
     clear(places, h('option', { value: '' }, 'Home'), names.map((n) => h('option', { value: n }, n)));
     places.value = root;
     places.classList.remove('hidden');
+    if (root && (r.mounts || []).find((m) => m.name === root)?.readOnly) {
+      readOnly = true;
+      drawCrumbs();
+      drawList();
+    }
   }).catch(() => {});
 
   clear(el, h('div.stack',
@@ -114,6 +130,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
   listBox.addEventListener('drop', async (e) => {
     e.preventDefault();
     listBox.classList.remove('drop');
+    if (readOnly) { toast(`${RO}; nothing can be uploaded to it.`, true); return; }
     // Entries have to be taken during the event; reading them can happen later.
     const items = [...(e.dataTransfer?.items || [])].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
     if (!items.length) {
@@ -161,6 +178,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
       dir = to;
       lastDir.set(place, dir);
       entries = r.entries || [];
+      base = r.home || base;
       pruneSelection();
       syncURL();
       drawCrumbs();
@@ -195,7 +213,9 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
     clear(crumbs,
       h('button.crumb', { onclick: () => load('') }, top),
       parts.map((p, i) => [h('span.faint', ' › '),
-        i === parts.length - 1 ? h('strong.crumb-here', p) : h('button.crumb', { onclick: () => load(parts.slice(0, i + 1).join('/')) }, p)]));
+        i === parts.length - 1 ? h('strong.crumb-here', p) : h('button.crumb', { onclick: () => load(parts.slice(0, i + 1).join('/')) }, p)]),
+      base ? h('button.link-btn.copy-path', { onclick: () => copyPath(dir), title: `Copy ${fullPath(dir)}` }, 'Copy path') : null,
+      readOnly ? h('span.badge.warn.ro-badge', { title: 'Mounted read-only: nothing on this node can change these files' }, 'read-only') : null);
   }
 
   function drawTools() {
@@ -203,18 +223,18 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
       clear(tools,
         h('strong.sel-count', `${selected.size} selected`),
         h('button.btn', { onclick: () => download([...selected].map((n) => join(dir, n))) }, selected.size > 1 ? 'Download .zip' : 'Download'),
-        h('button.btn', { onclick: () => copyTo([...selected]) }, 'Copy to…'),
-        h('button.btn', { onclick: () => moveTo([...selected]) }, 'Move to…'),
-        h('button.btn', { onclick: () => compress([...selected]) }, 'Compress'),
-        h('button.btn.danger', { onclick: delSelected }, 'Delete'),
+        h('button.btn', { onclick: () => copyTo([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Copy to…'),
+        h('button.btn', { onclick: () => moveTo([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Move to…'),
+        h('button.btn', { onclick: () => compress([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Compress'),
+        h('button.btn.danger', { onclick: delSelected, disabled: readOnly, title: readOnly ? RO : null }, 'Delete'),
         h('button.btn', { onclick: () => { selected.clear(); drawList(); }, title: 'Clear selection (Esc)' }, 'Clear'));
       return;
     }
     clear(tools, filter, hiddenToggle,
       h('button.btn', { onclick: () => load(), title: 'Refresh', 'aria-label': 'Refresh' }, icon('refresh', 15)),
-      h('button.btn', { onclick: newFolder }, 'New folder'),
-      h('button.btn', { onclick: newFile }, 'New file'),
-      h('button.btn.primary', { onclick: () => fileInput.click() }, 'Upload'));
+      h('button.btn', { onclick: newFolder, disabled: readOnly, title: readOnly ? RO : null }, 'New folder'),
+      h('button.btn', { onclick: newFile, disabled: readOnly, title: readOnly ? RO : null }, 'New file'),
+      h('button.btn.primary', { onclick: () => fileInput.click(), disabled: readOnly, title: readOnly ? RO : null }, 'Upload'));
   }
 
   function visible() {
@@ -267,17 +287,18 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
         h('td.num-cell.muted.col-mod', fmtTime(e.modTime)),
         h('td.mono.faint.col-perm', { style: { fontSize: '12px' } }, e.mode),
         h('td.actions', menu([
-          { label: isDir ? 'Open' : kind ? 'Preview' : 'Edit', onclick: open },
-          { label: 'Edit as text', onclick: () => edit(path), hidden: isDir || !kind },
+          { label: isDir ? 'Open' : kind ? 'Preview' : readOnly ? 'View' : 'Edit', onclick: open },
+          { label: readOnly ? 'View as text' : 'Edit as text', onclick: () => edit(path), hidden: isDir || !kind },
           { label: isDir ? 'Download as .tar.gz' : 'Download', onclick: () => download([path]) },
-          { label: 'Extract here', onclick: () => extract(e), hidden: isDir || !ARCHIVE.test(e.name) },
-          { label: 'Compress to .zip', onclick: () => compress([e.name]) },
-          { label: 'Duplicate', onclick: () => duplicate(e) },
-          { label: 'Rename', onclick: () => rename(e) },
-          { label: 'Copy to…', onclick: () => copyTo([e.name]) },
-          { label: 'Move to…', onclick: () => moveTo([e.name]) },
-          { label: 'Permissions…', onclick: () => perms(e), hidden: e.type === 'link' },
-          { label: 'Delete', danger: true, onclick: () => del(e) },
+          { label: 'Copy path', onclick: () => copyPath(path) },
+          { label: 'Extract here', onclick: () => extract(e), hidden: isDir || !ARCHIVE.test(e.name), disabled: readOnly && RO },
+          { label: 'Compress to .zip', onclick: () => compress([e.name]), disabled: readOnly && RO },
+          { label: 'Duplicate', onclick: () => duplicate(e), disabled: readOnly && RO },
+          { label: 'Rename', onclick: () => rename(e), disabled: readOnly && RO },
+          { label: 'Copy to…', onclick: () => copyTo([e.name]), disabled: readOnly && RO },
+          { label: 'Move to…', onclick: () => moveTo([e.name]), disabled: readOnly && RO },
+          { label: 'Permissions…', onclick: () => perms(e), hidden: e.type === 'link', disabled: readOnly && RO },
+          { label: 'Delete', danger: true, onclick: () => del(e), disabled: readOnly && RO },
         ], `Actions for ${e.name}`)));
     });
     clear(listBox,
@@ -286,9 +307,10 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
         h('thead', h('tr', h('th.check-cell', all), sortHead('name', 'Name'), sortHead('size', 'Size'), sortHead('modTime', 'Modified', 'col-mod'),
           h('th.col-perm', 'Permissions'), h('th', ''))),
         h('tbody', rows)))
-        : h('div.empty', q ? 'Nothing matches the filter.' : entries.length ? `Only hidden files here (${hiddenCount}).` : 'This folder is empty. Drop files here to upload them.'),
+        : h('div.empty', q ? 'Nothing matches the filter.' : entries.length ? `Only hidden files here (${hiddenCount}).`
+          : readOnly ? 'This folder is empty.' : 'This folder is empty. Drop files here to upload them.'),
       h('div.faint.files-foot', plural(shown.length, 'item'),
-        !showHidden && hiddenCount ? ` · ${hiddenCount} hidden` : '', ' · drop files or folders here to upload'));
+        !showHidden && hiddenCount ? ` · ${hiddenCount} hidden` : '', readOnly ? ' · read-only share' : ' · drop files or folders here to upload'));
   }
 
   function download(paths) {
@@ -532,6 +554,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
       return;
     }
     const ta = codeArea(content, 24);
+    ta.readOnly = readOnly;
     const err = h('div.error-text');
     let saved = content;
     const save = async () => {
@@ -540,13 +563,14 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
       catch (e) { err.textContent = e.message; return false; }
     };
     ta.addEventListener('keydown', (e) => {
-      if (e.key === 's' && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); save(); }
+      if (e.key === 's' && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); if (!readOnly) save(); }
     });
-    await modal(prefix + path, h('div.stack', { 'data-wide': '1' }, ta, h('div.faint', { style: { fontSize: '12px' } }, 'Ctrl+S saves without closing.'), err), [
+    await modal(prefix + path, h('div.stack', { 'data-wide': '1' }, ta,
+      h('div.faint', { style: { fontSize: '12px' } }, readOnly ? `${RO}: view only.` : 'Ctrl+S saves without closing.'), err), [
       { label: 'Close', value: false },
       { label: 'Download', onclick: () => { download([path]); return false; } },
-      { label: 'Save', class: 'primary', onclick: save },
-    ], { dirty: () => ta.value !== saved });
+      readOnly ? null : { label: 'Save', class: 'primary', onclick: save },
+    ].filter(Boolean), { dirty: () => ta.value !== saved });
   }
 
   // Uploads go straight to the node through XHR so progress can be shown. Each item is a

@@ -244,8 +244,11 @@ export function menu(items, label = 'More actions') {
     if (openMenu?.btn === btn) { closeMenu(); return; }
     closeMenu();
     const list = items.filter((i) => i && !i.hidden);
+    // A disabled item stays in the list, grayed out, with its reason (`disabled`, if a string)
+    // as the tooltip.
     const pop = h('div.menu', { role: 'menu' }, list.map((i) =>
-      h('button.menu-item', { type: 'button', role: 'menuitem', class: i.danger ? 'danger' : '',
+      h('button.menu-item', { type: 'button', role: 'menuitem', class: i.danger ? 'danger' : '', disabled: !!i.disabled,
+        title: typeof i.disabled === 'string' ? i.disabled : null,
         onclick: (ev) => { ev.stopPropagation(); closeMenu(); i.onclick(); } }, i.label)));
     document.body.append(pop);
     const r = btn.getBoundingClientRect();
@@ -254,7 +257,7 @@ export function menu(items, label = 'More actions') {
     pop.style.top = (r.bottom + ht + 8 > innerHeight ? r.top - ht - 4 : r.bottom + 4) + 'px';
     const outside = (ev) => { if (!pop.contains(ev.target) && ev.target !== btn) closeMenu(); };
     const keys = (ev) => {
-      const els = [...pop.querySelectorAll('.menu-item')];
+      const els = [...pop.querySelectorAll('.menu-item:not(:disabled)')];
       const i = els.indexOf(document.activeElement);
       if (ev.key === 'Escape') { ev.preventDefault(); closeMenu(); btn.focus(); }
       else if (ev.key === 'ArrowDown') { ev.preventDefault(); els[(i + 1) % els.length]?.focus(); }
@@ -266,7 +269,7 @@ export function menu(items, label = 'More actions') {
     document.addEventListener('mousedown', outside, true);
     document.addEventListener('keydown', keys, true);
     window.addEventListener('scroll', closeMenu, true);
-    pop.querySelector('.menu-item')?.focus();
+    pop.querySelector('.menu-item:not(:disabled)')?.focus();
   });
   return btn;
 }
