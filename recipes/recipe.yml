@@ -3,9 +3,12 @@
 
 name: x27-linux-homelab
 description: X27-Linux Homelab (bare metal) - minimal headless Fedora bootc with Docker CE and SSH
-base-image: quay.io/fedora/fedora-bootc
+base-image: ghcr.io/gamerx27/x27-base-fedora-bootc
 image-version: 44
 
+# Builds from a frozen copy of quay.io/fedora/fedora-bootc:44, refreshed monthly (see
+# .github/workflows/build.yml).
+#
 # Compiles the dashboard (dashboard/, Go) on the same Fedora release as the image, so the
 # cgo PAM binding links against the same glibc and libpam. Tests run first: a failing test
 # fails the image build. common.yml copies the binary in.

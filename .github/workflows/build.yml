@@ -1,7 +1,7 @@
 name: build
 on:
   schedule:
-    - cron: "0 2 * * 0" # rebuild weekly, Sundays at 02:00 UTC, to pick up upstream Fedora/Docker updates
+    - cron: "0 2 * * *" # daily at 02:00 UTC; plan decides whether that day builds
   push:
     paths:
       - "recipes/**"
@@ -32,16 +32,79 @@ on:
           - all
           - recipe.yml
           - recipe-vm.yml
+      refresh_base:
+        description: "Copy the newest upstream base images to the mirrors first"
+        required: false
+        default: false
+        type: boolean
 
-# Both images build straight from quay.io/fedora/fedora-bootc, so they run in parallel.
+# Both images build from the same frozen base image, so they run in parallel.
 # main is production (Fedora 44). The testing branch builds separate *-testing images on
 # Fedora 45, so it never touches the production images.
 # Every job is gated on github.server_url so the Forgejo mirror (git.xlabsx27.com), whose
-# Actions also read .github/workflows, skips them; they only run on GitHub.
+# Actions also read .github/workflows, skips them (through plan); they only run on GitHub.
+#
+# Update cycle: the recipes build from frozen copies of the upstream base images
+# (ghcr.io/gamerx27/x27-base-*), which upstream rebuilds daily. refresh-base copies the newest
+# ones on the 1st of the month, and the build then runs a full dnf upgrade. Every other build
+# that month uses the same base plus `dnf upgrade --security` (see common.yml).
 jobs:
+  # The schedule fires daily but only builds on Sundays (security updates) and on the 1st
+  # (base refresh and full upgrade). One cron instead of two, so a 1st that falls on a
+  # Sunday builds once. Pushes, pull requests and dispatches always build.
+  plan:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      refresh: ${{ steps.plan.outputs.refresh }}
+      sunday: ${{ steps.plan.outputs.sunday }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REFRESH: ${{ inputs.refresh_base }}
+        run: |
+          build=true refresh="${REFRESH:-false}" sunday=false
+          if [[ "$EVENT" == schedule ]]; then
+            if [[ "$(date -u +%u)" == 7 ]]; then sunday=true; fi
+            if [[ "$(date -u +%d)" == 01 ]]; then refresh=true; fi
+            if [[ "$sunday" == false && "$refresh" == false ]]; then build=false; fi
+          fi
+          echo "build=${build} refresh=${refresh} sunday=${sunday}"
+          {
+            echo "build=${build}"
+            echo "refresh=${refresh}"
+            echo "sunday=${sunday}"
+          } >> "$GITHUB_OUTPUT"
+
+  refresh-base:
+    needs: plan
+    if: needs.plan.outputs.refresh == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Copy the upstream base images
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for pair in \
+            quay.io/fedora/fedora-bootc:44=x27-base-fedora-bootc:44 \
+            quay.io/almalinuxorg/almalinux-bootc:10=x27-base-almalinux-bootc:10; do
+            src="${pair%%=*}"
+            dest="ghcr.io/${owner}/${pair#*=}"
+            echo "${src} -> ${dest}"
+            skopeo copy --all --preserve-digests "docker://${src}" "docker://${dest}"
+          done
+
   bare-metal:
+    needs: [plan, refresh-base]
     if: >-
-      github.server_url == 'https://github.com'
+      always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","recipe.yml"]'), inputs.recipe))
     uses: ./.github/workflows/build-image.yml
     with:
@@ -53,8 +116,9 @@ jobs:
       id-token: write
 
   vm:
+    needs: [plan, refresh-base]
     if: >-
-      github.server_url == 'https://github.com'
+      always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","recipe-vm.yml"]'), inputs.recipe))
     uses: ./.github/workflows/build-image.yml
     with:
@@ -65,10 +129,13 @@ jobs:
       packages: write
       id-token: write
 
-  # Scheduled runs only fire on the default branch, so the weekly rebuild starts the
-  # testing and testing-alma builds from here.
+  # Scheduled runs only fire on the default branch, so they start the testing builds from
+  # here: testing-alma on every scheduled build, testing (no frozen base) only on Sundays.
   testing-weekly:
-    if: github.server_url == 'https://github.com' && github.event_name == 'schedule'
+    needs: [plan, refresh-base]
+    if: >-
+      always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
+      && github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -76,8 +143,11 @@ jobs:
       - name: Start the testing builds
         env:
           GH_TOKEN: ${{ github.token }}
+          SUNDAY: ${{ needs.plan.outputs.sunday }}
         run: |
-          gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
+          if [[ "$SUNDAY" == true ]]; then
+            gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
+          fi
           gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing-alma
 
   # A GitHub Release per build (main only), with what changed (scripts/release-notes.sh). The weekly

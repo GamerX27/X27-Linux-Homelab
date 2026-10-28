@@ -81,7 +81,9 @@ before the next update.
 <details>
 <summary>Image names and tags</summary>
 
-All images are at `ghcr.io/gamerx27/`, signed, and rebuilt every Sunday at 02:00 UTC.
+All images are at `ghcr.io/gamerx27/`, signed, and rebuilt every Sunday at 02:00 UTC with
+security updates only. On the 1st of the month the base image is refreshed and everything is
+upgraded.
 
 | Channel | Bare metal | VM | Branch |
 |---|---|---|---|
@@ -432,7 +434,7 @@ is turned off.
 Every `stable` build publishes a [GitHub Release](../../releases) listing what changed: key
 versions (kernel, systemd, Docker…), commits, and the packages upgraded, added or removed.
 
-- `vYYYY.MM.DD`: the weekly rebuild
+- `vYYYY.MM.DD`: the weekly security rebuild, or the monthly full update on the 1st
 - `vYYYY.MM.DD.N`: builds from changes pushed in between
 
 ### Signing
