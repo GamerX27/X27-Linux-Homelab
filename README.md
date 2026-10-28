@@ -367,17 +367,33 @@ journal (`journalctl -u dashboard`) logs each one with the token's name.
 | admin | Also OS updates, reboots, channel, services, users' groups, editing and removing apps, mounting and unmounting network shares |
 
 
-Under **Integrations**, create a token (it's shown once) and add the server to your client.
-The certificate is self-signed, so download it from the same page (or `https://<main>:9090/ca.pem`)
-and check its fingerprint against Settings → Dashboard.
+Under **Integrations**, create a token (it's shown once). The page then shows every command
+below with the server's name, address and token filled in.
 
-**Claude Code** connects over HTTP. Start it with the certificate trusted:
+**Claude Code** connects over HTTP. The dashboard's certificate is self-signed, so Claude Code
+has to trust it first:
 
-```sh
-claude mcp add --transport http homelab https://192.168.1.10:9090/mcp \
-  --header "Authorization: Bearer x27hl_…"
-NODE_EXTRA_CA_CERTS=~/homelab-dashboard.pem claude
-```
+1. Download the certificate from the Integrations page (or `https://<main>:9090/ca.pem`), check
+   its fingerprint against Settings → Dashboard, and keep it somewhere permanent:
+   ```sh
+   mkdir -p ~/.config/homelab
+   mv ~/Downloads/homelab-<host>.pem ~/.config/homelab/
+   ```
+2. Trust it in every terminal. `NODE_EXTRA_CA_CERTS` is read when Claude Code starts and holds
+   one file; for several dashboards, `cat` their certificates into one.
+   ```sh
+   echo 'export NODE_EXTRA_CA_CERTS=~/.config/homelab/homelab-<host>.pem' >> ~/.bashrc  # bash/zsh
+   set -Ux NODE_EXTRA_CA_CERTS ~/.config/homelab/homelab-<host>.pem                       # fish
+   ```
+3. Add the server for every folder (`--scope user`; without it, it only exists in the folder you
+   ran the command in):
+   ```sh
+   claude mcp add --scope user --transport http homelab-<host> https://192.168.1.10:9090/mcp \
+     --header "Authorization: Bearer x27hl_…"
+   ```
+4. Start Claude Code from a new terminal and check `/mcp`. `UNABLE_TO_VERIFY_LEAF_SIGNATURE`
+   means the certificate isn't trusted yet (step 2); `401` means the token is wrong or cut off
+   (remove the server and add it again).
 
 **LM Studio, Claude Desktop, Cursor** and other desktop apps are started from the menu, where
 `NODE_EXTRA_CA_CERTS` isn't set, and a remote `url` entry has nowhere to put it. Run the server
@@ -387,12 +403,12 @@ Node.js on that computer. The PEM path must be absolute (`~` isn't expanded in `
 ```json
 {
   "mcpServers": {
-    "homelab": {
+    "homelab-<host>": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://192.168.1.10:9090/mcp", "--header", "Authorization:${AUTH_HEADER}"],
       "env": {
         "AUTH_HEADER": "Bearer x27hl_…",
-        "NODE_EXTRA_CA_CERTS": "/home/you/homelab-dashboard.pem"
+        "NODE_EXTRA_CA_CERTS": "/home/you/.config/homelab/homelab-<host>.pem"
       }
     }
   }
