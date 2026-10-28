@@ -58,7 +58,6 @@ jobs:
     outputs:
       build: ${{ steps.plan.outputs.build }}
       refresh: ${{ steps.plan.outputs.refresh }}
-      sunday: ${{ steps.plan.outputs.sunday }}
     steps:
       - id: plan
         env:
@@ -71,11 +70,10 @@ jobs:
             if [[ "$(date -u +%d)" == 01 ]]; then refresh=true; fi
             if [[ "$sunday" == false && "$refresh" == false ]]; then build=false; fi
           fi
-          echo "build=${build} refresh=${refresh} sunday=${sunday}"
+          echo "build=${build} refresh=${refresh}"
           {
             echo "build=${build}"
             echo "refresh=${refresh}"
-            echo "sunday=${sunday}"
           } >> "$GITHUB_OUTPUT"
 
   refresh-base:
@@ -129,9 +127,10 @@ jobs:
       packages: write
       id-token: write
 
-  # Scheduled runs only fire on the default branch, so they start the testing builds from
-  # here: testing-alma on every scheduled build, testing (no frozen base) only on Sundays.
-  testing-weekly:
+  # Scheduled runs only fire on the default branch, so testing-alma's scheduled builds are
+  # started from here. The testing branch (Fedora 45) has no scheduled builds; it only builds
+  # when something is pushed to it, or by hand.
+  testing-alma:
     needs: [plan, refresh-base]
     if: >-
       always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
@@ -140,15 +139,10 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Start the testing builds
+      - name: Start the testing-alma build
         env:
           GH_TOKEN: ${{ github.token }}
-          SUNDAY: ${{ needs.plan.outputs.sunday }}
-        run: |
-          if [[ "$SUNDAY" == true ]]; then
-            gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
-          fi
-          gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing-alma
+        run: gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing-alma
 
   # A GitHub Release per build (main only), with what changed (scripts/release-notes.sh). The weekly
   # scheduled build is vYYYY.MM.DD; pushes and dispatches are minor releases vYYYY.MM.DD.N.

@@ -83,7 +83,7 @@ before the next update.
 
 All images are at `ghcr.io/gamerx27/`, signed, and rebuilt every Sunday at 02:00 UTC with
 security updates only. On the 1st of the month the base image is refreshed and everything is
-upgraded.
+upgraded. The `testing` images aren't rebuilt on a schedule, only when that branch changes.
 
 | Channel | Bare metal | VM | Branch |
 |---|---|---|---|
