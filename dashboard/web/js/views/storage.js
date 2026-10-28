@@ -7,6 +7,12 @@ const STATES = {
 };
 const source = (m) => m.type === 'smb' ? `//${m.server}/${m.path}` : `${m.server.includes(':') ? `[${m.server}]` : m.server}:${m.path}`;
 
+// A mount's name as the node accepts it (1-32 lowercase letters, digits and dashes, no dash
+// at either end): lowercased, with spaces, underscores and dots turned into dashes and
+// anything else left out.
+const mountName = (s) => s.trim().toLowerCase().replace(/[\s_.]+/g, '-').replace(/[^a-z0-9-]/g, '')
+  .replace(/-+/g, '-').slice(0, 32).replace(/^-+|-+$/g, '');
+
 // NFS and SMB shares mounted on the node, under /var/mnt/<name>, for containers to use.
 export function renderStorage(el, { api, node }) {
   const content = h('div.stack', h('div.card.empty', 'Loading…'));
@@ -101,16 +107,18 @@ export function renderStorage(el, { api, node }) {
       const cur = version.value || m.version || '';
       clear(version, h('option', { value: '' }, 'Automatic'), VERSIONS[type].map((v) => h('option', { value: v }, v)));
       version.value = VERSIONS[type].includes(cur) ? cur : '';
-      const p = `/var/mnt/${name.value.trim() || '<name>'}`;
+      const p = `/var/mnt/${mountName(name.value) || '<name>'}`;
       where.textContent = p;
       compose.textContent = `- ${p}:/data`;
     }
     guest.addEventListener('change', sync);
     name.addEventListener('input', sync);
+    // Show the name it gets once the field is left: "My NAS" becomes my-nas.
+    name.addEventListener('change', () => { if (!editing) name.value = mountName(name.value); });
     sync();
 
     const body = () => ({
-      name: name.value.trim(), type, server: server.value.trim(), path: path.value.trim(), version: version.value,
+      name: editing ? m.name : mountName(name.value), type, server: server.value.trim(), path: path.value.trim(), version: version.value,
       readOnly: readOnly.checked, automount: automount.checked, dockerWaits: dockerWaits.checked,
       guest: guest.checked, username: username.value.trim(), password: password.value, domain: domain.value.trim(),
       owner: owner.value, fileMode: fileMode.value.trim(), dirMode: dirMode.value.trim(),
