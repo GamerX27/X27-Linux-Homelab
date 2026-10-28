@@ -1,8 +1,7 @@
 name: build
 on:
   schedule:
-    - cron: "0 2 * * 0" # weekly security rebuild, Sundays at 02:00 UTC
-    - cron: "0 2 1 * *" # monthly full update on the 1st: refreshes the frozen base image first
+    - cron: "0 2 * * *" # daily at 02:00 UTC; plan decides whether that day builds
   push:
     paths:
       - "recipes/**"
@@ -43,17 +42,45 @@ on:
 # main is production (Fedora 44). The testing branch builds separate *-testing images on
 # Fedora 45, so it never touches the production images.
 # Every job is gated on github.server_url so the Forgejo mirror (git.xlabsx27.com), whose
-# Actions also read .github/workflows, skips them; they only run on GitHub.
+# Actions also read .github/workflows, skips them (through plan); they only run on GitHub.
 #
 # Update cycle: the recipes build from frozen copies of the upstream base images
 # (ghcr.io/gamerx27/x27-base-*), which upstream rebuilds daily. refresh-base copies the newest
 # ones on the 1st of the month, and the build then runs a full dnf upgrade. Every other build
 # that month uses the same base plus `dnf upgrade --security` (see common.yml).
 jobs:
+  # The schedule fires daily but only builds on Sundays (security updates) and on the 1st
+  # (base refresh and full upgrade). One cron instead of two, so a 1st that falls on a
+  # Sunday builds once. Pushes, pull requests and dispatches always build.
+  plan:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      refresh: ${{ steps.plan.outputs.refresh }}
+      sunday: ${{ steps.plan.outputs.sunday }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REFRESH: ${{ inputs.refresh_base }}
+        run: |
+          build=true refresh="${REFRESH:-false}" sunday=false
+          if [[ "$EVENT" == schedule ]]; then
+            if [[ "$(date -u +%u)" == 7 ]]; then sunday=true; fi
+            if [[ "$(date -u +%d)" == 01 ]]; then refresh=true; fi
+            if [[ "$sunday" == false && "$refresh" == false ]]; then build=false; fi
+          fi
+          echo "build=${build} refresh=${refresh} sunday=${sunday}"
+          {
+            echo "build=${build}"
+            echo "refresh=${refresh}"
+            echo "sunday=${sunday}"
+          } >> "$GITHUB_OUTPUT"
+
   refresh-base:
-    if: >-
-      github.server_url == 'https://github.com'
-      && (github.event.schedule == '0 2 1 * *' || inputs.refresh_base)
+    needs: plan
+    if: needs.plan.outputs.refresh == 'true'
     runs-on: ubuntu-24.04
     permissions:
       packages: write
@@ -75,10 +102,9 @@ jobs:
           done
 
   bare-metal:
-    needs: refresh-base
+    needs: [plan, refresh-base]
     if: >-
-      always() && needs.refresh-base.result != 'failure'
-      && github.server_url == 'https://github.com'
+      always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","recipe.yml"]'), inputs.recipe))
     uses: ./.github/workflows/build-image.yml
     with:
@@ -90,10 +116,9 @@ jobs:
       id-token: write
 
   vm:
-    needs: refresh-base
+    needs: [plan, refresh-base]
     if: >-
-      always() && needs.refresh-base.result != 'failure'
-      && github.server_url == 'https://github.com'
+      always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
       && (github.event_name != 'workflow_dispatch' || contains(fromJSON('["all","recipe-vm.yml"]'), inputs.recipe))
     uses: ./.github/workflows/build-image.yml
     with:
@@ -105,12 +130,12 @@ jobs:
       id-token: write
 
   # Scheduled runs only fire on the default branch, so they start the testing builds from
-  # here: testing-alma on both schedules, testing (no frozen base) only on the weekly one.
+  # here: testing-alma on every scheduled build, testing (no frozen base) only on Sundays.
   testing-weekly:
-    needs: refresh-base
+    needs: [plan, refresh-base]
     if: >-
-      always() && needs.refresh-base.result != 'failure'
-      && github.server_url == 'https://github.com' && github.event_name == 'schedule'
+      always() && needs.plan.outputs.build == 'true' && needs.refresh-base.result != 'failure'
+      && github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     permissions:
       actions: write
@@ -118,9 +143,9 @@ jobs:
       - name: Start the testing builds
         env:
           GH_TOKEN: ${{ github.token }}
-          SCHEDULE: ${{ github.event.schedule }}
+          SUNDAY: ${{ needs.plan.outputs.sunday }}
         run: |
-          if [[ "$SCHEDULE" == "0 2 * * 0" ]]; then
+          if [[ "$SUNDAY" == true ]]; then
             gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing
           fi
           gh workflow run build.yml -R "$GITHUB_REPOSITORY" --ref testing-alma
