@@ -67,6 +67,11 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
           + 'You can follow it on the update page.', s.staged ? 'Reboot to apply' : 'Update and reboot', false)) return;
         busy(updateBtn, () => startUpdate([node.id]));
       } }, s.staged && !c.available ? 'Reboot to apply' : 'Update now');
+    // Only while it downloads: once staged, there's nothing left to stop (and no reboot yet).
+    const cancelBtn = s.updating && ['checking', 'downloading'].includes(job?.phase) ? h('button.btn', { onclick: async () => {
+      if (!await confirmAction('Cancel update', `Stop downloading the update on ${node.name}? Nothing is installed; the next update starts over.`, 'Stop the download')) return;
+      busy(cancelBtn, () => api.post('/os/cancel')).then(() => setTimeout(load, 1000));
+    } }, 'Cancel') : null;
     const rebootBtn = h('button.btn', { onclick: async () => {
       if (!await confirmAction('Reboot', `Reboot ${node.name} now?`, 'Reboot')) return;
       busy(rebootBtn, () => api.post('/power/reboot'));
@@ -76,7 +81,7 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
       busy(rollbackBtn, () => api.post('/os/rollback'));
     } }, 'Roll back') : null;
 
-    head.append(h('div.row', checkBtn, updateBtn, rebootBtn, rollbackBtn));
+    head.append(h('div.row', checkBtn, updateBtn, cancelBtn, rebootBtn, rollbackBtn));
     clear(osCard, head,
       h('div.row', { style: { marginBottom: '12px' } }, status,
         h('span.faint', `· last checked ${when(c.checkedAt)} · checks every 6 hours`)),
@@ -94,14 +99,15 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
 
   // The latest update run (from the dashboard, the schedule or `autoupdate-run`) once it's over.
   function lastJob(j) {
-    if (!j || !['done', 'failed'].includes(j.phase)) return null;
+    if (!j || !['done', 'failed', 'cancelled'].includes(j.phase)) return null;
     const at = when(j.finishedAt || j.updatedAt);
     const line = j.phase === 'done'
       ? h('span.status.good', `Updated ${j.fromName || j.from || '?'} → ${j.toName || j.to || 'new image'}, checked after the reboot`)
+      : j.phase === 'cancelled' ? h('span.status.idle', 'Last update cancelled')
       : h('span.status.crit', 'Last update failed');
     return h('div.notice.last-update', { class: j.phase },
       h('div.row', line, h('span.faint', `· ${at}`), h('button.btn.small.ghost', { onclick: () => showLog(api, node.name) }, 'Log')),
-      j.phase === 'failed' && j.error ? h('div.muted', { style: { marginTop: '4px' } }, j.error) : null);
+      j.phase !== 'done' && j.error ? h('div.muted', { style: { marginTop: '4px' } }, j.error) : null);
   }
 
   // The channel a staged deployment switches to, when it isn't the one running.

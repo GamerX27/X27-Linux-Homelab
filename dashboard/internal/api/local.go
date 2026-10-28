@@ -256,6 +256,9 @@ func (l *Local) Handler() http.Handler {
 	mux.HandleFunc("POST /os/apply", func(w http.ResponseWriter, r *http.Request) {
 		result(w, r, "reboot into OS update", "Rebooting into the update…", l.osAction(osupdate.Apply))
 	})
+	mux.HandleFunc("POST /os/cancel", func(w http.ResponseWriter, r *http.Request) {
+		result(w, r, "cancel OS update", "Update cancelled.", l.osAction(osupdate.Cancel))
+	})
 	mux.HandleFunc("GET /os/log", func(w http.ResponseWriter, r *http.Request) {
 		off, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
 		text, next := osupdate.ReadLog(off)

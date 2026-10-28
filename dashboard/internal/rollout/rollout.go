@@ -400,6 +400,9 @@ func (m *Manager) stage(n *Node) {
 			case osupdate.PhaseFailed:
 				m.fail(n, orDefault(jb.Error, "The update failed; see the log."))
 				return
+			case osupdate.PhaseCancelled:
+				m.fail(n, orDefault(jb.Error, "The update was cancelled."))
+				return
 			default:
 				m.setStep(n, StepStaging, orDefault(st.Progress, "Downloading…"))
 			}
