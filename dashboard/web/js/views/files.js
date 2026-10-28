@@ -1,8 +1,9 @@
 import { h, clear, bytes, modal, confirmAction, toast, icon, menu, codeArea, modalOpen, menuOpen } from '../ui.js';
 import { csrfToken } from '../api.js';
 
-// The logged-in user's home folder. Everything runs on the node as that user, so the same
-// files are readable and writable as over SSH.
+// The logged-in user's home folder, or a network share's folder (?root=<share>, from the
+// Storage page). Everything runs on the node as that user, so the same files are readable and
+// writable as over SSH.
 
 const join = (dir, name) => (dir ? `${dir}/${name}` : name);
 const parent = (p) => p.split('/').slice(0, -1).join('/');
@@ -54,8 +55,20 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 // Remember where the user was per node while the page is open.
 const lastDir = new Map();
 
-export function renderFiles(el, { api, node, query }) {
-  let dir = query?.get('path') ?? lastDir.get(node.id) ?? '';
+// The node's API with ?root=<share> on every call, so the whole view works in that share.
+function withRoot(api, root) {
+  if (!root) return api;
+  const add = (p) => `${p}${p.includes('?') ? '&' : '?'}root=${encodeURIComponent(root)}`;
+  return { ...api, get: (p) => api.get(add(p)), post: (p, b) => api.post(add(p), b), url: (p) => api.url(add(p)) };
+}
+
+export function renderFiles(el, { api: nodeApi, node, query }) {
+  const root = query?.get('root') || '';
+  const api = withRoot(nodeApi, root);
+  const place = `${node.id}:${root}`;
+  const top = root ? `🗄 ${root}` : '🏠 Home';
+  const prefix = root ? `/var/mnt/${root}/` : '~/';
+  let dir = query?.get('path') ?? lastDir.get(place) ?? '';
   let entries = [];
   let showHidden = false;
   let loading = 0;
@@ -78,8 +91,20 @@ export function renderFiles(el, { api, node, query }) {
   const listBox = h('div.card.files-card');
   const uploads = h('div.uploads');
 
+  // Home or one of the node's network shares; only shown once there are shares.
+  const places = h('select.places', { 'aria-label': 'Folder to browse', class: 'hidden', onchange: () => {
+    location.hash = `#/n/${encodeURIComponent(node.id)}/files` + (places.value ? `?root=${encodeURIComponent(places.value)}` : '');
+  } });
+  nodeApi.get('/storage/mounts').then((r) => {
+    const names = (r.mounts || []).map((m) => m.name);
+    if (!names.length || stopped) return;
+    clear(places, h('option', { value: '' }, 'Home'), names.map((n) => h('option', { value: n }, n)));
+    places.value = root;
+    places.classList.remove('hidden');
+  }).catch(() => {});
+
   clear(el, h('div.stack',
-    h('div.row', crumbs, h('span.spacer'), tools, fileInput),
+    h('div.row', places, crumbs, h('span.spacer'), tools, fileInput),
     uploads,
     listBox));
 
@@ -134,7 +159,7 @@ export function renderFiles(el, { api, node, query }) {
       if (n !== loading || stopped) return;
       if (to !== dir) { selected.clear(); filter.value = ''; }
       dir = to;
-      lastDir.set(node.id, dir);
+      lastDir.set(place, dir);
       entries = r.entries || [];
       pruneSelection();
       syncURL();
@@ -145,7 +170,7 @@ export function renderFiles(el, { api, node, query }) {
       if (to !== dir) { toast(e.message, true); return; }
       drawCrumbs();
       drawTools();
-      clear(listBox, h('div.notice.warn', e.message, dir ? [' ', h('button.link-btn', { onclick: () => load('') }, 'Go home')] : null));
+      clear(listBox, h('div.notice.warn', e.message, dir ? [' ', h('button.link-btn', { onclick: () => load('') }, root ? 'Go to the top' : 'Go home')] : null));
     }
   }
 
@@ -154,7 +179,10 @@ export function renderFiles(el, { api, node, query }) {
   function syncURL() {
     const base = `#/n/${encodeURIComponent(node.id)}/files`;
     if (!location.hash.startsWith(base)) return;
-    history.replaceState(null, '', base + (dir ? `?path=${encodeURIComponent(dir)}` : ''));
+    const q = new URLSearchParams();
+    if (root) q.set('root', root);
+    if (dir) q.set('path', dir);
+    history.replaceState(null, '', base + (q.size ? `?${q}` : ''));
   }
 
   function pruneSelection() {
@@ -165,7 +193,7 @@ export function renderFiles(el, { api, node, query }) {
   function drawCrumbs() {
     const parts = dir ? dir.split('/') : [];
     clear(crumbs,
-      h('button.crumb', { onclick: () => load('') }, '🏠 Home'),
+      h('button.crumb', { onclick: () => load('') }, top),
       parts.map((p, i) => [h('span.faint', ' › '),
         i === parts.length - 1 ? h('strong.crumb-here', p) : h('button.crumb', { onclick: () => load(parts.slice(0, i + 1).join('/')) }, p)]));
   }
@@ -314,7 +342,7 @@ export function renderFiles(el, { api, node, query }) {
     if (await op('/files/copy', { path: join(dir, e.name), to: join(dir, name) }, `Copied to ${name}.`)) load();
   }
 
-  const where = (p) => (p ? `~/${p}` : 'your home folder');
+  const where = (p) => (p ? prefix + p : root ? `the top of ${root}` : 'your home folder');
 
   async function copyTo(names) {
     const to = await pickFolder(names.length === 1 ? `Copy ${names[0]}` : `Copy ${plural(names.length, 'item')}`, 'Copy here');
@@ -382,7 +410,7 @@ export function renderFiles(el, { api, node, query }) {
         at = p;
         err.textContent = '';
         const parts = at ? at.split('/') : [];
-        clear(crumbsEl, h('button.crumb', { type: 'button', onclick: () => go('') }, '🏠 Home'),
+        clear(crumbsEl, h('button.crumb', { type: 'button', onclick: () => go('') }, top),
           parts.map((x, i) => [h('span.faint', ' › '), i === parts.length - 1 ? h('strong.crumb-here', x)
             : h('button.crumb', { type: 'button', onclick: () => go(parts.slice(0, i + 1).join('/')) }, x)]));
         const dirs = (r.entries || []).filter((e) => isDirEntry(e) && (showHidden || !e.name.startsWith('.')))
@@ -514,7 +542,7 @@ export function renderFiles(el, { api, node, query }) {
     ta.addEventListener('keydown', (e) => {
       if (e.key === 's' && (e.ctrlKey || e.metaKey) && !e.altKey) { e.preventDefault(); save(); }
     });
-    await modal(`~/${path}`, h('div.stack', { 'data-wide': '1' }, ta, h('div.faint', { style: { fontSize: '12px' } }, 'Ctrl+S saves without closing.'), err), [
+    await modal(prefix + path, h('div.stack', { 'data-wide': '1' }, ta, h('div.faint', { style: { fontSize: '12px' } }, 'Ctrl+S saves without closing.'), err), [
       { label: 'Close', value: false },
       { label: 'Download', onclick: () => { download([path]); return false; } },
       { label: 'Save', class: 'primary', onclick: save },

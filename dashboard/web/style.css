@@ -623,3 +623,8 @@ pre.rollout-log { margin-top: 10px; max-height: 320px; overflow: auto; }
   pre.output { font-size: 11.5px; }
   .login .card { padding: 22px 18px; }
 }
+
+/* Files: Home or a network share */
+select.places { width: auto; max-width: 180px; }
+a.share-name { font-weight: 600; color: var(--text); text-decoration: none; }
+a.share-name:hover { color: var(--accent); text-decoration: underline; }

@@ -519,15 +519,24 @@ func (l *Local) Handler() http.Handler {
 	})
 
 	// Files: the acting user's home folder, with that user's permissions (see internal/files).
+	// ?root=<share> on any of them works in that network share's folder instead.
 	fsUser := func(r *http.Request) string { return userOf(r) }
+	fsRoot := func(r *http.Request) string { return r.URL.Query().Get("root") }
+	// fsWhere is how the log names a path: ~/... or /var/mnt/<share>/...
+	fsWhere := func(r *http.Request, p string) string {
+		if s := fsRoot(r); s != "" {
+			return path.Join(files.ShareRoot, s, p)
+		}
+		return "~/" + p
+	}
 	mux.HandleFunc("GET /files/list", func(w http.ResponseWriter, r *http.Request) {
 		var out json.RawMessage
-		err := l.files.Run(fsUser(r), "list", files.Args{Path: r.URL.Query().Get("path")}, nil, &out)
+		err := l.files.Run(fsUser(r), "list", files.Args{Root: fsRoot(r), Path: r.URL.Query().Get("path")}, nil, &out)
 		ok(w, out, err)
 	})
 	mux.HandleFunc("GET /files/read", func(w http.ResponseWriter, r *http.Request) {
 		var out json.RawMessage
-		err := l.files.Run(fsUser(r), "read", files.Args{Path: r.URL.Query().Get("path")}, nil, &out)
+		err := l.files.Run(fsUser(r), "read", files.Args{Root: fsRoot(r), Path: r.URL.Query().Get("path")}, nil, &out)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -551,15 +560,19 @@ func (l *Local) Handler() http.Handler {
 			if op == "write" {
 				stdin = strings.NewReader(body.Content)
 			}
-			a := files.Args{Path: body.Path, Paths: body.Paths, To: body.To, Mode: body.Mode, Create: body.Create, Recursive: body.Recursive}
+			a := files.Args{Root: fsRoot(r), Path: body.Path, Paths: body.Paths, To: body.To, Mode: body.Mode, Create: body.Create, Recursive: body.Recursive}
 			var out struct{ Path string }
 			err := l.files.Run(fsUser(r), op, a, stdin, &out)
-			what := "files " + op + " ~/" + body.Path
+			what := "files " + op + " " + fsWhere(r, body.Path)
 			if len(body.Paths) > 0 {
-				what = "files " + op + " ~/" + strings.Join(body.Paths, ", ~/")
+				ps := make([]string, len(body.Paths))
+				for i, p := range body.Paths {
+					ps[i] = fsWhere(r, p)
+				}
+				what = "files " + op + " " + strings.Join(ps, ", ")
 			}
 			if body.To != "" || (op == "move" || op == "copy") && len(body.Paths) > 0 {
-				what += " -> ~/" + body.To
+				what += " -> " + fsWhere(r, body.To)
 			}
 			if body.Mode != "" {
 				what += " " + body.Mode
@@ -577,25 +590,28 @@ func (l *Local) Handler() http.Handler {
 	mux.HandleFunc("POST /files/compress", fileOp("compress"))
 	mux.HandleFunc("POST /files/upload", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		a := files.Args{Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1", Parents: q.Get("parents") == "1"}
+		a := files.Args{Root: fsRoot(r), Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1", Parents: q.Get("parents") == "1"}
 		var out struct{ Size int64 }
 		err := l.files.Run(fsUser(r), "upload", a, http.MaxBytesReader(w, r.Body, files.MaxUpload+1), &out)
-		result(w, r, "files upload ~/"+path.Join(a.Path, a.Name), "", err)
+		result(w, r, "files upload "+fsWhere(r, path.Join(a.Path, a.Name)), "", err)
 	})
 	// Download: one file as is, a folder as .tar.gz, several entries (?path=a&path=b) as
 	// .zip. inline=1 shows media and PDFs in the browser instead (see previewType).
 	mux.HandleFunc("GET /files/download", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		paths := q["path"]
-		op, a, what := "download", files.Args{Path: q.Get("path")}, "~/"+q.Get("path")
+		op, a, what := "download", files.Args{Root: fsRoot(r), Path: q.Get("path")}, fsWhere(r, q.Get("path"))
 		var name, ctype string
 		if len(paths) > 1 {
 			dir := path.Dir(strings.Trim(paths[0], "/"))
 			name = path.Base(dir)
 			if dir == "." {
 				name = userOf(r)
+				if s := fsRoot(r); s != "" {
+					name = s
+				}
 			}
-			op, a, what = "zip", files.Args{Paths: paths}, "~/"+strings.Join(paths, ", ~/")
+			op, a, what = "zip", files.Args{Root: fsRoot(r), Paths: paths}, fsWhere(r, strings.Join(paths, ", "))
 			name, ctype = name+".zip", "application/zip"
 		} else {
 			var st files.Stat

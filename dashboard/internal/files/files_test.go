@@ -26,6 +26,21 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestShareDir(t *testing.T) {
+	old := ShareRoot
+	ShareRoot = t.TempDir()
+	defer func() { ShareRoot = old }()
+	os.Mkdir(filepath.Join(ShareRoot, "media"), 0o755)
+	if got, err := ShareDir("media"); err != nil || got != filepath.Join(ShareRoot, "media") {
+		t.Errorf("media: %q %v", got, err)
+	}
+	for _, bad := range []string{"", "..", "../etc", "a/b", "Media", "-x", "missing"} {
+		if _, err := ShareDir(bad); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
 func TestOps(t *testing.T) {
 	home := t.TempDir()
 	if err := Mkdir(home, "proj"); err != nil {

@@ -1,7 +1,8 @@
 // Package files is the Files tab: browsing and changing the logged-in user's home folder.
 // The operations here run inside `dashboard fsop`, which the server starts as that user
 // (runuser -u <user>), so the kernel applies the user's own permissions. Paths are relative
-// to the home folder and can't climb out of it.
+// to the home folder and can't climb out of it; with a root (Args.Root), to a network share's
+// folder instead.
 package files
 
 import (
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -25,6 +27,25 @@ const (
 )
 
 var ErrExists = errors.New("a file or folder with that name already exists")
+
+// ShareRoot is where the Storage page mounts shares (/var/mnt/<name>). Moved for --dev with
+// DASHBOARD_SHARE_ROOT.
+var ShareRoot = "/var/mnt"
+
+var shareNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+
+// ShareDir is the folder of the share with that name, browsed in place of home. Reading it
+// mounts an automount share.
+func ShareDir(name string) (string, error) {
+	if !shareNameRe.MatchString(name) {
+		return "", errors.New("not a share name")
+	}
+	p := filepath.Join(ShareRoot, name)
+	if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("the share %s isn't there; check it's mounted on the Storage page", name)
+	}
+	return p, nil
+}
 
 // Resolve turns a path relative to home ("", "docker/jellyfin") into an absolute one,
 // refusing absolute paths and anything that climbs above home.

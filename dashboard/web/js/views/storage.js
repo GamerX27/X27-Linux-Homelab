@@ -31,6 +31,7 @@ export function renderStorage(el, { api, node }) {
     if (!stopped) timer = setTimeout(load, 15000);
   }
 
+  const browse = (m) => `#/n/${encodeURIComponent(node.id)}/files?root=${encodeURIComponent(m.name)}`;
   const act = (m, action, msg) => api.post(`/storage/mounts/${encodeURIComponent(m.name)}/${action}`).then((r) => { if (msg) toast(msg); return r; });
 
   async function users() {
@@ -187,7 +188,7 @@ export function renderStorage(el, { api, node }) {
     }, `Mount ${m.name} at boot`);
     const up = m.state === 'mounted' || m.state === 'mounting';
     return h('tr',
-      h('td', h('strong', m.name), h('div.sub.mono.mount-point', m.mountPoint), h('div.sub.mono.phone-share', source(m))),
+      h('td', h('a.share-name', { href: browse(m), title: `Browse ${m.mountPoint}` }, m.name), h('div.sub.mono.mount-point', m.mountPoint), h('div.sub.mono.phone-share', source(m))),
       h('td.col-share', h('span.mono', source(m)),
         h('div.sub', [m.type.toUpperCase() + (m.version ? ` ${m.version}` : ''), m.readOnly ? 'read-only' : null,
           m.type === 'smb' ? (m.guest ? 'guest' : m.username) : null, m.dockerWaits ? 'Docker waits' : null].filter(Boolean).join(' · '))),
@@ -199,6 +200,7 @@ export function renderStorage(el, { api, node }) {
           try { await act(m, up ? 'unmount' : 'mount', up ? `${m.name} unmounted.` : `${m.name} mounted.`); } catch (e) { toast(e.message, true); }
           load();
         } },
+        { label: 'Browse files', onclick: () => { location.hash = browse(m); } },
         { label: 'Edit…', onclick: () => mountDialog(m) },
         { label: 'Copy path', onclick: async () => {
           try { await navigator.clipboard.writeText(m.mountPoint); toast('Path copied.'); } catch { toast('Couldn\'t copy', true); }

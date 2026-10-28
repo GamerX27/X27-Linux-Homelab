@@ -19,6 +19,7 @@ import (
 
 // Args is what the server passes to `dashboard fsop <op> <json>`.
 type Args struct {
+	Root      string   `json:"root,omitempty"` // a share's name: paths are relative to its folder, not home
 	Path      string   `json:"path,omitempty"`
 	Paths     []string `json:"paths,omitempty"` // several entries; with To, a folder to put them in
 	To        string   `json:"to,omitempty"`
@@ -78,6 +79,14 @@ func Fsop(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	home := u.HomeDir
+	if v := os.Getenv("DASHBOARD_SHARE_ROOT"); v != "" {
+		ShareRoot = v
+	}
+	if a.Root != "" {
+		if home, err = ShareDir(a.Root); err != nil {
+			return fail(err)
+		}
+	}
 	out := func(v any, err error) int {
 		if err != nil {
 			return fail(err)
@@ -139,7 +148,7 @@ func Fsop(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(clean(err, home))
 		}
 		name := filepath.Base(p)
-		if p == filepath.Clean(home) {
+		if p == filepath.Clean(home) && a.Root == "" {
 			name = u.Username
 		}
 		return out(Stat{Name: name, IsDir: st.IsDir(), Size: st.Size()}, nil)
