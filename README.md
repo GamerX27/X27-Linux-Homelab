@@ -248,7 +248,7 @@ several nodes at once, switch their channel, and update containers on all nodes.
 | Logs | The system journal, the kernel, or one service; filter by priority, time and text, follow it live, download it |
 | Users | Regular users: wheel and docker membership, login shell, password, lock, add and delete |
 | Features | Automatic updates, Gotify messages, NetBird (connect, peers, disconnect), and turning services (SSH, smartd, Docker…) on or off |
-| Settings | Hostname, time zone, network time, reboot and shut down. The dashboard's port, addresses and certificate fingerprint |
+| Settings | Hostname, time zone, network time, reboot and shut down. IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept. The dashboard's port, addresses and certificate fingerprint |
 
 Your sidebar picture comes from [Gravatar](https://gravatar.com): click your name and enter
 your email. Only a hash of it is stored.
@@ -508,3 +508,6 @@ reboot, done). `DASHBOARD_FAKE_OS=fail` makes it come back on the old image.
 
 `DASHBOARD_FAKE_STORAGE=1 dashboard serve --dev` keeps Storage mounts in memory, so the page
 works without root or a NAS. A test against the server `fail.example` fails.
+
+`DASHBOARD_FAKE_NETWORK=1 dashboard serve --dev` fakes one wired connection for the Network
+card on Settings, with the same 2-minute revert.

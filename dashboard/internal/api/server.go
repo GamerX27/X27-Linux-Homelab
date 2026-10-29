@@ -18,6 +18,7 @@ import (
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/network"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/nodes"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/presets"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/tlsutil"
@@ -181,6 +182,46 @@ func NewMain(o Options) (http.Handler, error) {
 			err = store.SetAddress(n.ID, net.JoinHostPort(host, strconv.Itoa(body.Port)))
 		}
 		result(w, r, "port of node "+n.Name+" to "+strconv.Itoa(body.Port), "Restarting on port "+strconv.Itoa(body.Port)+".", err)
+	})
+	// A paired node's network change. If it moves the address the main node reaches it on,
+	// the main node follows it there and keeps the change itself once the node answers;
+	// if it never does, NetworkManager on the node reverts and the old address comes back.
+	api.HandleFunc("POST /api/nodes/{id}/network/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		var body network.Conn
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		n, ok := store.Get(r.PathValue("id"))
+		if !ok {
+			writeErr(w, http.StatusNotFound, errors.New("no such node"))
+			return
+		}
+		uuid := r.PathValue("uuid")
+		var before struct{ Connections []network.Conn }
+		if err := store.GetJSON(n, "/settings/network", 15*time.Second, &before); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		var out struct{ Pending network.Pending }
+		if err := store.PostBody(n, userOf(r), "/settings/network/"+uuid, 15*time.Second, body, &out); err != nil {
+			result(w, r, "network change on node "+n.Name, "", err)
+			return
+		}
+		moved := ""
+		if host, port, err := net.SplitHostPort(n.Address); err == nil && body.Method == "manual" && len(body.Addresses) > 0 {
+			newIP, _, _ := strings.Cut(body.Addresses[0], "/")
+			for _, c := range before.Connections {
+				if c.UUID == uuid && hasIP(c.Current.Addresses, host) && !hasIP(body.Addresses, host) {
+					moved = net.JoinHostPort(newIP, port)
+				}
+			}
+		}
+		if moved != "" {
+			go followNode(store, n, moved)
+		}
+		log.Printf("%s: network change on node %s", userOf(r), n.Name)
+		writeJSON(w, http.StatusOK, map[string]any{"pending": out.Pending, "movedTo": moved})
 	})
 	api.HandleFunc("DELETE /api/nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		n, err := store.Remove(r.PathValue("id"))

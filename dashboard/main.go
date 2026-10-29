@@ -23,6 +23,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/network"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/nodes"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/osupdate"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/storage"
@@ -324,6 +325,7 @@ func serve(args []string) {
 	osupdate.Fake = *dev && (fakeOS == "1" || fakeOS == "fail")
 	osupdate.FakeFail = osupdate.Fake && fakeOS == "fail"
 	storage.Fake = *dev && os.Getenv("DASHBOARD_FAKE_STORAGE") == "1"
+	network.Fake = *dev && os.Getenv("DASHBOARD_FAKE_NETWORK") == "1"
 	opts := api.Options{Version: version, Mode: cfg.Mode, Dev: *dev, Cert: c, Web: web.FS, Auth: auth.PAM, Presets: cfg.Presets}
 	if *dev {
 		opts.Auth = func(u, p string) error {
