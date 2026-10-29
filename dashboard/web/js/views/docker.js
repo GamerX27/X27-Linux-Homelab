@@ -469,6 +469,42 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       table(['App', 'File', 'Size', 'Taken', ''], rows, 'No backups yet.'));
   }
 
+  // The config download: every app's compose file and .env, plus the data of the apps ticked.
+  async function downloadConfig() {
+    const list = h('div.stack', { style: { gap: '6px' } }, h('p.faint', 'Loading…'));
+    const stop = h('input', { type: 'checkbox', checked: true });
+    const stopRow = h('label.check-row.hidden', stop, h('span', 'Stop running apps while their data is copied'));
+    const total = h('p.faint', { style: { margin: '8px 0 0' } });
+    let boxes = [];
+    const sync = () => {
+      const on = boxes.filter((x) => x.box.checked);
+      stopRow.classList.toggle('hidden', !on.some((x) => x.a.running));
+      total.textContent = on.length ? `Data: ${bytes(on.reduce((n, x) => n + x.a.size, 0))}, plus the config files.` : 'Config files only: a few KB.';
+    };
+    api.get('/docker/backups/data-apps').then((r) => {
+      boxes = r.apps.map((a) => {
+        const box = h('input', { type: 'checkbox', onchange: sync });
+        return { a, box, el: h('label.check-row', box, h('span', h('strong', a.name), h('span.faint', ` · ${bytes(a.size)}`),
+          a.running ? h('span.status.good', { style: { marginLeft: '8px' } }, 'running') : null)) };
+      });
+      clear(list, boxes.length ? boxes.map((x) => x.el) : h('p.faint', 'No app holds data beyond its config files.'));
+      sync();
+    }).catch((e) => clear(list, h('p.status.crit', e.message)));
+    const ok = await modal('Download config backup', h('div',
+      h('p.muted', { style: { marginTop: 0 } }, 'Every app\'s compose file, .env and the other files at the top of its folder, in one .tar.gz. Tick apps to include their data (the whole folder) too.'),
+      h('h3', { style: { margin: '4px 0 8px' } }, 'Include data'),
+      list, total, stopRow), [
+      { label: 'Cancel', value: false },
+      { label: 'Download', value: true, class: 'primary' },
+    ]);
+    if (!ok) return;
+    const params = new URLSearchParams();
+    boxes.filter((x) => x.box.checked).forEach((x) => params.append('data', x.a.name));
+    if (stop.checked) params.set('stop', '1');
+    h('a', { href: api.url(`/docker/backups/download?${params}`), download: '' }).click();
+    toast('Download started.');
+  }
+
   function drawBackups() {
     const { backups: b, apps } = data.backups;
     // While polling, refresh only the status and the list; the form keeps what's typed.
@@ -546,6 +582,12 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
           h('label.field', { style: { gridColumn: '1 / -1' } }, 'Backup folder', dest)),
         h('p.faint', { style: { fontSize: '12.5px' } }, 'Leave empty for ', h('span.mono', '~/backups/docker'), '. Any absolute path works, like a mounted NAS or USB disk, as long as it\'s outside ~/docker.'),
         h('div.row', save, bk.runBtn)),
+      h('div.card',
+        h('div.card-head', h('h2', 'Download config')),
+        h('div.row',
+          h('p.muted', { style: { margin: 0 } }, 'Every app\'s compose file and .env in one .tar.gz, to keep anywhere. App data can be added.'),
+          h('span.spacer'),
+          h('button.btn', { onclick: () => downloadConfig() }, 'Download…'))),
       bk.list);
   }
 

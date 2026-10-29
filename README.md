@@ -272,6 +272,16 @@ places.
 To use another preset repository, set `PRESETS_REPO=https://host/owner/repo` in
 `/etc/dashboard.conf`. It needs the same `Composes/<name>/compose.yml` layout.
 
+**Download config** (under Docker → Backups) gives you one small `.tar.gz` with every app's
+`compose.yml`, `.env` and the other files at the top of its folder. Tick apps to add their data
+(the whole folder) too; running ones are stopped while it's copied, then started again. Named
+volumes aren't included. To restore, unpack it into `~/docker` and start each app:
+
+```sh
+tar -xzf <host>-docker-config-<date>.tar.gz -C ~/docker
+cd ~/docker/<app> && docker compose up -d
+```
+
 ### Network shares (Storage)
 
 The **Storage** page mounts NFS exports and SMB (Samba, Windows) shares on a node, for

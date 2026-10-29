@@ -470,6 +470,44 @@ func (l *Local) Handler() http.Handler {
 		}
 		ok(w, map[string]any{"backups": l.backups.Status(o), "apps": apps}, err)
 	})
+	// The config download: every stack's compose file and .env, plus the data of the apps picked.
+	mux.HandleFunc("GET /docker/backups/data-apps", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		cs, err := l.docker.Containers()
+		ok(w, map[string]any{"apps": backup.DataApps(o, cs)}, err)
+	})
+	mux.HandleFunc("GET /docker/backups/download", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		data := q["data"]
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		what := "config backup download"
+		if len(data) > 0 {
+			what += " (data: " + strings.Join(data, ", ") + ")"
+		}
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": backup.DownloadName(time.Now())}))
+		log.Printf("%s: %s", userOf(r), what)
+		sw := &sentWriter{w: w}
+		if err := l.backups.Download(r.Context(), sw, o, data, q.Get("stop") == "1"); err != nil {
+			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			if !sw.sent {
+				w.Header().Del("Content-Disposition")
+				status := http.StatusBadRequest
+				if errors.Is(err, backup.ErrRunning) {
+					status = http.StatusConflict
+				}
+				writeErr(w, status, err)
+			}
+		}
+	})
 	mux.HandleFunc("POST /docker/backups/config", func(w http.ResponseWriter, r *http.Request) {
 		var body backup.Config
 		if err := readJSON(r, &body); err != nil {
