@@ -41,7 +41,7 @@ function setupSnippets(secret, me) {
       selfSigned ? step('Download this dashboard\'s certificate',
         note('It\'s self-signed, so Claude Code has to be told to trust it. ',
           h('a', { href: '/ca.pem', download: `${name}.pem` }, `Download ${name}.pem`),
-          me?.fingerprint ? [' and check that its fingerprint is ', h('code', me.fingerprint), ' (also under Settings → Dashboard).'] : '.'),
+          me?.fingerprint ? [' and check that its fingerprint is ', h('code', me.fingerprint), ' (also under System → Settings → Dashboard).'] : '.'),
         snippet('Put it where Claude Code will find it', `mkdir -p ~/.config/homelab\nmv ~/Downloads/${name}.pem ${pem}`)) : null,
       selfSigned ? step('Trust it in every terminal',
         snippet('bash or zsh', `echo 'export NODE_EXTRA_CA_CERTS=${pem}' >> ~/.bashrc   # ~/.zshrc for zsh`),

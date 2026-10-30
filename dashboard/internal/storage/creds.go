@@ -62,3 +62,23 @@ func readCred(p string) (username, password, domain string) {
 	}
 	return
 }
+
+// Share is a mount with its SMB password, for Backup → Export & import.
+type Share struct {
+	Mount
+	Password string `json:"password,omitempty"`
+}
+
+// Export lists the mounts with their stored SMB passwords. It's for the export file only,
+// which is marked as holding secrets; the UI never gets the passwords.
+func Export() []Share {
+	out := []Share{}
+	for _, m := range List() {
+		s := Share{Mount: m}
+		if m.Type == "smb" && !m.Guest && !Fake {
+			_, s.Password, _ = readCred(credPath(m.Name))
+		}
+		out = append(out, s)
+	}
+	return out
+}

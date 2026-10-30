@@ -143,7 +143,7 @@ autoupdate gotify show                         # show the stored URL and token
 autoupdate gotify off
 ```
 
-Nothing is saved if the test message doesn't arrive. The dashboard's **Features** page can do
+Nothing is saved if the test message doesn't arrive. The dashboard's **System → Features** page can do
 the same.
 
 <details>
@@ -237,18 +237,17 @@ several nodes at once, switch their channel, and update containers on all nodes.
 
 **For each node:**
 
-| Page | What's on it |
+| Tab | What's on it |
 |---|---|
 | Overview | CPU, memory, disks, network, temperatures, uptime, OS version |
 | Updates | Current OS image, available update, last update and its log; update, reboot or roll back. The release channel, and switching it |
 | Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, logs, remove. Plus images, volumes and networks for cleanup |
-| Files | Your home folder: browse, edit, upload, download, rename, delete. Same permissions as over SSH |
-| Storage | NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
+| Files | **Files:** your home folder: browse, edit, upload, download, rename, delete, with the same permissions as over SSH. **Network shares:** NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
+| Backup | **Backups:** apps archived on a schedule or now, kept per app. **Export & import:** every app's config plus the server's own settings in one file, and restoring it here or on a new server |
 | Terminal | A shell in the browser, as your user |
-| Logs | The system journal, the kernel, or one service; filter by priority, time and text, follow it live, download it |
-| Users | Regular users: wheel and docker membership, login shell, password, lock, add and delete |
-| Features | Automatic updates, Gotify messages, NetBird (connect, peers, disconnect), and turning services (SSH, smartd, Docker…) on or off |
-| Settings | Hostname, time zone, network time, reboot and shut down. IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept. The dashboard's port, addresses and certificate fingerprint |
+| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint. **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download |
+
+Each sub-tab has its own address, like `#/n/<node>/system/logs`, so a reload stays on it.
 
 Your sidebar picture comes from [Gravatar](https://gravatar.com): click your name and enter
 your email. Only a hash of it is stored.
@@ -272,19 +271,40 @@ places.
 To use another preset repository, set `PRESETS_REPO=https://host/owner/repo` in
 `/etc/dashboard.conf`. It needs the same `Composes/<name>/compose.yml` layout.
 
-**Download config** (under Docker → Backups) gives you one small `.tar.gz` with every app's
-`compose.yml`, `.env` and the other files at the top of its folder. Tick apps to add their data
-(the whole folder) too; running ones are stopped while it's copied, then started again. Named
-volumes aren't included. To restore, unpack it into `~/docker` and start each app:
+### Export & import
+
+**Backup → Export & import** puts a whole server in one `.tar.gz`:
+
+- `docker/`: every app in `~/docker` with the files at the top of its folder (`compose.yml`,
+  `.env` and so on, up to 1 MiB each). Tick apps to add their data (the whole folder) too;
+  running ones are stopped while it's copied, then started again. Named volumes aren't included.
+- `server.json`, with the parts you tick: **dashboard settings** (port, compose presets, the
+  backup schedule, and on the main node the paired nodes and API tokens), **network shares**
+  (with their SMB passwords), **updates & Gotify** (the schedule, the Gotify server and token,
+  which services are on), and **network & host** (hostname, time zone, NTP, IPv4 per connection).
+- `README.txt`: what's inside and how to restore it by hand.
+
+**The file holds secrets:** the apps' `.env` files, SMB passwords, the Gotify token and the
+paired nodes' tokens. Keep it somewhere safe.
+
+**Import** takes such a file and shows what's in it before changing anything. Pick the apps
+(one that's already in `~/docker` is skipped unless you tick **Replace**, which writes the
+exported files over it and keeps the rest), whether to start them, and which server settings
+to apply. Network & host is off by default; an IPv4 change from it is undone after 2 minutes
+unless you keep it under System → Settings. The import runs in the background with a log, like
+a backup. Files can't be written outside `~/docker`, symlinks are recreated as they were, and
+files the exporting user owned become yours.
+
+To restore the apps by hand:
 
 ```sh
-tar -xzf <host>-docker-config-<date>.tar.gz -C ~/docker
+tar -xzf <host>-export-<date>.tar.gz -C ~ docker/
 cd ~/docker/<app> && docker compose up -d
 ```
 
-### Network shares (Storage)
+### Network shares
 
-The **Storage** page mounts NFS exports and SMB (Samba, Windows) shares on a node, for
+**Files → Network shares** mounts NFS exports and SMB (Samba, Windows) shares on a node, for
 containers that keep their data on a NAS. A share named `nas-media` is mounted at
 `/var/mnt/nas-media`; give it to a container as a bind mount:
 
@@ -346,7 +366,7 @@ dashboard port 9443     # change the port (default 9090)
 dashboard disable
 ```
 
-`status` and `port` are also on each node's **Settings** page, and a paired node's port under
+`status` and `port` are also on each node's **System → Settings** page, and a paired node's port under
 **⋯ → Change port…** on the main page (the main node then follows it).
 
 Settings are in `/etc/dashboard.conf`; certificate, nodes, sessions and API tokens in
@@ -384,7 +404,7 @@ below with the server's name, address and token filled in.
 has to trust it first:
 
 1. Download the certificate from the Integrations page (or `https://<main>:9090/ca.pem`), check
-   its fingerprint against Settings → Dashboard, and keep it somewhere permanent:
+   its fingerprint against System → Settings → Dashboard, and keep it somewhere permanent:
    ```sh
    mkdir -p ~/.config/homelab
    mv ~/Downloads/homelab-<host>.pem ~/.config/homelab/
@@ -450,7 +470,7 @@ netbird status
 ```
 
 It stays connected across reboots and updates. `sudo netbird down` disconnects, and
-`sudo systemctl disable --now netbird` turns it off. The dashboard's **Features** page does all
+`sudo systemctl disable --now netbird` turns it off. The dashboard's **System → Features** page does all
 of this too: turn it on, connect with a setup key or a browser login, see the peers, disconnect.
 
 Settings go in `/etc/sysconfig/netbird`, state is in `/var/lib/netbird`, logs with
@@ -516,8 +536,8 @@ the `SIGNING_SECRET` Actions secret.
 `DASHBOARD_FAKE_OS=1 dashboard serve --dev` fakes a node with an update (download, a 15-second
 reboot, done). `DASHBOARD_FAKE_OS=fail` makes it come back on the old image.
 
-`DASHBOARD_FAKE_STORAGE=1 dashboard serve --dev` keeps Storage mounts in memory, so the page
+`DASHBOARD_FAKE_STORAGE=1 dashboard serve --dev` keeps network share mounts in memory, so the page
 works without root or a NAS. A test against the server `fail.example` fails.
 
 `DASHBOARD_FAKE_NETWORK=1 dashboard serve --dev` fakes one wired connection for the Network
-card on Settings, with the same 2-minute revert.
+card on System → Settings, with the same 2-minute revert.

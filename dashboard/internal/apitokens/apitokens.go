@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,32 @@ func (s *Store) List() []Token {
 		out = append(out, t)
 	}
 	return out
+}
+
+// Export returns the tokens with their hashes, for Backup → Export & import.
+func (s *Store) Export() []Token {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Token{}, s.tokens...)
+}
+
+// Import adds tokens from an export; one whose id is already here is skipped. It returns
+// how many were added.
+func (s *Store) Import(list []Token) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	added := 0
+	for _, t := range list {
+		if t.ID == "" || t.Hash == "" || slices.ContainsFunc(s.tokens, func(o Token) bool { return o.ID == t.ID }) {
+			continue
+		}
+		s.tokens = append(s.tokens, t)
+		added++
+	}
+	if added == 0 {
+		return 0, nil
+	}
+	return added, s.saveLocked()
 }
 
 func randomHex(n int) string {

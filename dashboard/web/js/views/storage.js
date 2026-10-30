@@ -31,7 +31,7 @@ export function renderStorage(el, { api, node }) {
     if (!stopped) timer = setTimeout(load, 15000);
   }
 
-  const browse = (m) => `#/n/${encodeURIComponent(node.id)}/files?root=${encodeURIComponent(m.name)}`;
+  const browse = (m) => `#/n/${encodeURIComponent(node.id)}/files/files?root=${encodeURIComponent(m.name)}`;
   const act = (m, action, msg) => api.post(`/storage/mounts/${encodeURIComponent(m.name)}/${action}`).then((r) => { if (msg) toast(msg); return r; });
 
   async function users() {
@@ -205,7 +205,7 @@ export function renderStorage(el, { api, node }) {
         { label: 'Copy path', onclick: async () => {
           try { await navigator.clipboard.writeText(m.mountPoint); toast('Path copied.'); } catch { toast('Couldn\'t copy', true); }
         } },
-        { label: 'Logs', onclick: () => { location.hash = `#/n/${encodeURIComponent(node.id)}/logs?unit=${encodeURIComponent(m.unit)}`; } },
+        { label: 'Logs', onclick: () => { location.hash = `#/n/${encodeURIComponent(node.id)}/system/logs?unit=${encodeURIComponent(m.unit)}`; } },
         { label: 'Remove…', danger: true, onclick: () => remove(m) },
       ], `Actions for ${m.name}`)));
   }

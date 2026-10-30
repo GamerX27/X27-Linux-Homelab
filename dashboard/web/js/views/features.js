@@ -21,7 +21,7 @@ export function renderFeatures(el, { api, node }) {
   const nbCard = h('div.card', h('h2', 'NetBird VPN'), h('div.faint', 'Loading…'));
   let nbTimer, stopped = false;
   clear(el, content);
-  const logsLink = (unit) => h('a.btn.small.ghost', { href: `#/n/${encodeURIComponent(node.id)}/logs?unit=${encodeURIComponent(unit)}` }, 'Logs');
+  const logsLink = (unit) => h('a.btn.small.ghost', { href: `#/n/${encodeURIComponent(node.id)}/system/logs?unit=${encodeURIComponent(unit)}` }, 'Logs');
 
   async function load() {
     try {

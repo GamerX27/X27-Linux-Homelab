@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -81,13 +82,14 @@ func DataApps(o docker.Owner, cs []docker.Container) []DataApp {
 	return out
 }
 
-// DownloadName is the archive's file name: <hostname>-docker-config-YYYYMMDD-HHMMSS.tar.gz.
-func DownloadName(t time.Time) string {
-	return hostname() + "-docker-config-" + t.Format("20060102-150405") + ".tar.gz"
+// ExportName is the archive's file name: <hostname>-export-YYYYMMDD-HHMMSS.tar.gz.
+func ExportName(t time.Time) string {
+	return hostname() + "-export-" + t.Format("20060102-150405") + ".tar.gz"
 }
 
-// Download streams the config backup to w; see WriteConfig. It can't overlap a backup run.
-func (m *Manager) Download(ctx context.Context, w io.Writer, o docker.Owner, data []string, stop bool) error {
+// Export streams the export (see WriteExport) with the server parts asked for. It can't
+// overlap a backup or import run.
+func (m *Manager) Export(ctx context.Context, w io.Writer, o docker.Owner, data []string, stop bool, parts Parts) error {
 	cs, err := m.dk.Containers()
 	if err != nil {
 		return err
@@ -102,31 +104,42 @@ func (m *Manager) Download(ctx context.Context, w io.Writer, o docker.Owner, dat
 		return ErrRunning
 	}
 	defer m.running.Unlock()
-	return WriteConfig(ctx, w, o, stacks, data, stop, m.dk)
+	man := m.collect(o, parts)
+	return WriteExport(ctx, w, o, stacks, data, stop, m.dk, man)
 }
 
-// WriteConfig writes a .tar.gz of every stack's top-level config files, with paths relative
-// to ~/docker so it unpacks straight back in. The stacks named in data get their whole folder
-// instead; with stop, a running one is stopped while it's packed and started again after,
-// as backupApp does. Modes, numeric owners and mtimes are kept; symlinks aren't followed.
-func WriteConfig(ctx context.Context, w io.Writer, o docker.Owner, stacks []docker.Stack, data []string, stop bool, dk *docker.Client) error {
+// WriteExport writes a .tar.gz with README.txt, server.json (man, with the apps filled in)
+// and every stack's top-level config files under docker/, so `tar -xzf … -C ~ docker/`
+// puts them back in ~/docker. The stacks named in data get their whole folder instead;
+// with stop, a running one is stopped while it's packed and started again after, as
+// backupApp does. Modes, numeric owners and mtimes are kept; symlinks aren't followed.
+func WriteExport(ctx context.Context, w io.Writer, o docker.Owner, stacks []docker.Stack, data []string, stop bool, dk *docker.Client, man Manifest) error {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
 	now := time.Now()
 
-	var withData []string
+	man.Version, man.Host, man.Taken = ManifestVersion, hostname(), now.Unix()
+	man.Owner = &ManifestOwner{Name: o.Name, UID: o.UID, GID: o.GID}
+	man.Apps = []ManifestApp{}
 	for _, s := range stacks {
-		if slices.Contains(data, s.Name) {
-			withData = append(withData, s.Name)
+		man.Apps = append(man.Apps, ManifestApp{Name: filepath.Base(s.Dir), Data: slices.Contains(data, s.Name)})
+	}
+	js, err := json.MarshalIndent(man, "", "  ")
+	if err != nil {
+		return err
+	}
+	for _, f := range []struct {
+		name string
+		mode int64
+		body []byte
+	}{{"README.txt", 0o644, []byte(readmeText(now, man))}, {"server.json", 0o600, append(js, '\n')}} {
+		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.body)), ModTime: now,
+			Uid: o.UID, Gid: o.GID, Typeflag: tar.TypeReg}); err != nil {
+			return err
 		}
-	}
-	readme := readmeText(now, withData)
-	if err := tw.WriteHeader(&tar.Header{Name: "README.txt", Mode: 0o644, Size: int64(len(readme)), ModTime: now,
-		Uid: o.UID, Gid: o.GID, Typeflag: tar.TypeReg}); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(tw, readme); err != nil {
-		return err
+		if _, err := tw.Write(f.body); err != nil {
+			return err
+		}
 	}
 
 	for _, s := range stacks {
@@ -149,27 +162,57 @@ func WriteConfig(ctx context.Context, w io.Writer, o docker.Owner, stacks []dock
 	return gz.Close()
 }
 
-func readmeText(t time.Time, withData []string) string {
+func readmeText(t time.Time, man Manifest) string {
+	var withData []string
+	for _, a := range man.Apps {
+		if a.Data {
+			withData = append(withData, a.Name)
+		}
+	}
 	data := "none"
 	if len(withData) > 0 {
 		data = strings.Join(withData, ", ")
 	}
-	return fmt.Sprintf(`Docker config backup of %s, taken %s.
+	var parts []string
+	if man.Dashboard != nil {
+		parts = append(parts, "dashboard settings (port, presets, backup schedule, paired nodes, API tokens)")
+	}
+	if man.Shares != nil {
+		parts = append(parts, "network shares")
+	}
+	if man.Updates != nil {
+		parts = append(parts, "automatic updates, Gotify and services")
+	}
+	if man.Network != nil {
+		parts = append(parts, "hostname, time zone and IPv4 settings")
+	}
+	server := "none"
+	if len(parts) > 0 {
+		server = strings.Join(parts, "; ")
+	}
+	return fmt.Sprintf(`Export of %s, taken %s.
 
-Every app in ~/docker with the files at the top of its folder (compose file, .env and so on).
-Apps included with their data (the whole folder): %s.
-Named Docker volumes aren't included.
+docker/       Every app in ~/docker with the files at the top of its folder (compose
+              file, .env and so on). Named Docker volumes aren't included.
+              Apps with their data (the whole folder): %s.
+server.json   The server's own settings: %s.
 
-To restore, unpack it into ~/docker and start each app again:
+THIS FILE HOLDS SECRETS: the apps' .env files, and in server.json the SMB passwords,
+the Gotify token and the paired nodes' tokens. Keep it somewhere safe.
 
-  tar -xzf <this file> -C ~/docker
+To restore everything, open the dashboard on the new server and use
+Backup → Export & import → Import.
+
+To restore the apps by hand, unpack docker/ into your home folder and start each app:
+
+  tar -xzf <this file> -C ~ docker/
   cd ~/docker/<app> && docker compose up -d
-`, hostname(), t.Format("2006-01-02 15:04:05 MST"), data)
+`, hostname(), t.Format("2006-01-02 15:04:05 MST"), data, server)
 }
 
 // writeConfigOnly adds the stack folder and the config files at its top.
 func writeConfigOnly(tw *tar.Writer, dir string) error {
-	base := filepath.Base(dir)
+	base := "docker/" + filepath.Base(dir)
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
@@ -189,14 +232,14 @@ func writeConfigOnly(tw *tar.Writer, dir string) error {
 // writeDataApp adds the whole stack folder, stopping the app around it when asked.
 func writeDataApp(ctx context.Context, tw *tar.Writer, o docker.Owner, s docker.Stack, stop bool, dk *docker.Client) (err error) {
 	if stop && s.Running > 0 && dk != nil {
-		log.Printf("config backup: stopping %s while its data is copied", s.Name)
+		log.Printf("export: stopping %s while its data is copied", s.Name)
 		if out, serr := dk.StackAction(o, s.Name, "stop"); serr != nil {
 			return fmt.Errorf("stopping: %w %s", serr, strings.TrimSpace(out))
 		}
 		defer func() {
-			log.Printf("config backup: starting %s again", s.Name)
+			log.Printf("export: starting %s again", s.Name)
 			if out, serr := dk.StackAction(o, s.Name, "resume"); serr != nil {
-				log.Printf("config backup: starting %s again: %v %s", s.Name, serr, strings.TrimSpace(out))
+				log.Printf("export: starting %s again: %v %s", s.Name, serr, strings.TrimSpace(out))
 				if err == nil {
 					err = fmt.Errorf("starting it again: %w", serr)
 				}
@@ -216,7 +259,7 @@ func writeDataApp(ctx context.Context, tw *tar.Writer, o docker.Owner, s docker.
 			return err
 		}
 		rel, _ := filepath.Rel(parent, p)
-		return addEntry(tw, p, filepath.ToSlash(rel), info)
+		return addEntry(tw, p, "docker/"+filepath.ToSlash(rel), info)
 	})
 }
 

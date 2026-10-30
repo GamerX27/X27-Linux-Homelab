@@ -42,7 +42,7 @@ func ShareDir(name string) (string, error) {
 	}
 	p := filepath.Join(ShareRoot, name)
 	if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("the share %s isn't there; check it's mounted on the Storage page", name)
+		return "", fmt.Errorf("the share %s isn't there; check it's mounted under Files → Network shares", name)
 	}
 	return p, nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/features"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/osupdate"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/run"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/system"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/terminal"
 )
@@ -113,6 +114,16 @@ func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	l := &Local{Version: version, Dev: dev, Upgrader: up,
 		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d),
 		backups: backup.New(d), files: files.Runner{Dev: dev}}
+	l.backups.Server = backup.ServerHooks{Dev: dev, Changed: l.dropAutoupdate}
+	if !dev {
+		// An import that changed the port or presets: after the UI saw the job end.
+		l.backups.Server.Restart = func() {
+			go func() {
+				time.Sleep(6 * time.Second)
+				run.Cmd(30*time.Second, "systemctl", "restart", "dashboard.service")
+			}()
+		}
+	}
 	go func() {
 		time.Sleep(time.Minute)
 		for {
@@ -470,7 +481,8 @@ func (l *Local) Handler() http.Handler {
 		}
 		ok(w, map[string]any{"backups": l.backups.Status(o), "apps": apps}, err)
 	})
-	// The config download: every stack's compose file and .env, plus the data of the apps picked.
+	// Export & import: every stack's compose file and .env, the data of the apps picked, and
+	// the server's own settings in server.json. Its progress shows through /docker/backups.
 	mux.HandleFunc("GET /docker/backups/data-apps", func(w http.ResponseWriter, r *http.Request) {
 		o, err := l.owner(r)
 		if err != nil {
@@ -480,23 +492,28 @@ func (l *Local) Handler() http.Handler {
 		cs, err := l.docker.Containers()
 		ok(w, map[string]any{"apps": backup.DataApps(o, cs)}, err)
 	})
-	mux.HandleFunc("GET /docker/backups/download", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /backup/export", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		data := q["data"]
+		parts, err := backup.ParseParts(q["parts"])
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 		o, err := l.owner(r)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		what := "config backup download"
+		what := "export (data: none; parts: " + parts.String() + ")"
 		if len(data) > 0 {
-			what += " (data: " + strings.Join(data, ", ") + ")"
+			what = "export (data: " + strings.Join(data, ", ") + "; parts: " + parts.String() + ")"
 		}
 		w.Header().Set("Content-Type", "application/gzip")
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": backup.DownloadName(time.Now())}))
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": backup.ExportName(time.Now())}))
 		log.Printf("%s: %s", userOf(r), what)
 		sw := &sentWriter{w: w}
-		if err := l.backups.Download(r.Context(), sw, o, data, q.Get("stop") == "1"); err != nil {
+		if err := l.backups.Export(r.Context(), sw, o, data, q.Get("stop") == "1", parts); err != nil {
 			log.Printf("%s: %s failed: %v", userOf(r), what, err)
 			if !sw.sent {
 				w.Header().Del("Content-Disposition")
@@ -507,6 +524,41 @@ func (l *Local) Handler() http.Handler {
 				writeErr(w, status, err)
 			}
 		}
+	})
+	mux.HandleFunc("POST /backup/import", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		pv, err := l.backups.Upload(o, http.MaxBytesReader(w, r.Body, files.MaxUpload))
+		if err != nil {
+			log.Printf("%s: import upload failed: %v", userOf(r), err)
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		log.Printf("%s: import upload: export of %s with %d app(s)", userOf(r), pv.Host, len(pv.Apps))
+		writeJSON(w, http.StatusOK, pv)
+	})
+	mux.HandleFunc("POST /backup/import/apply", func(w http.ResponseWriter, r *http.Request) {
+		var body backup.ImportRequest
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		o, err := l.owner(r)
+		var job backup.Job
+		if err == nil {
+			job, err = l.backups.StartImport(o, body)
+		}
+		what := "import (apps: " + strings.Join(body.Apps, ", ") + "; parts: " + strings.Join(body.Parts, ", ") + ")"
+		if err != nil {
+			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		log.Printf("%s: %s started", userOf(r), what)
+		writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 	})
 	mux.HandleFunc("POST /docker/backups/config", func(w http.ResponseWriter, r *http.Request) {
 		var body backup.Config

@@ -104,7 +104,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
 
   // Home or one of the node's network shares; only shown once there are shares.
   const places = h('select.places', { 'aria-label': 'Folder to browse', class: 'hidden', onchange: () => {
-    location.hash = `#/n/${encodeURIComponent(node.id)}/files` + (places.value ? `?root=${encodeURIComponent(places.value)}` : '');
+    location.hash = `#/n/${encodeURIComponent(node.id)}/files/files` + (places.value ? `?root=${encodeURIComponent(places.value)}` : '');
   } });
   nodeApi.get('/storage/mounts').then((r) => {
     const names = (r.mounts || []).map((m) => m.name);
@@ -195,8 +195,8 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
   // Keep the folder in the address so a reload or a shared link lands here. replaceState
   // doesn't fire hashchange, so the view isn't rebuilt.
   function syncURL() {
-    const base = `#/n/${encodeURIComponent(node.id)}/files`;
-    if (!location.hash.startsWith(base)) return;
+    const tab = `#/n/${encodeURIComponent(node.id)}/files`, base = `${tab}/files`;
+    if (!location.hash.startsWith(tab) || location.hash.startsWith(`${tab}/shares`)) return;
     const q = new URLSearchParams();
     if (root) q.set('root', root);
     if (dir) q.set('path', dir);

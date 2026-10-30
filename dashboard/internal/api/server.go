@@ -268,9 +268,12 @@ func NewMain(o Options) (http.Handler, error) {
 		writeJSON(w, http.StatusOK, f)
 	})
 	rolloutRoutes(api, local, store)
-	if _, _, err := aiRoutes(mux, api, o); err != nil {
+	tokens, _, err := aiRoutes(mux, api, o)
+	if err != nil {
 		return nil, err
 	}
+	// Export & import carry the paired nodes and API tokens, which only the main node has.
+	local.backups.Server.Nodes, local.backups.Server.Tokens = store, tokens
 	api.HandleFunc("/api/n/{id}/", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		prefix := "/api/n/" + id

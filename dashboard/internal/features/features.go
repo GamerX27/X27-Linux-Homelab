@@ -159,6 +159,26 @@ func ScheduleArgs(freq, weekday, day, clock string) ([]string, error) {
 	return nil, errors.New("choose daily, weekly or monthly")
 }
 
+var calendarRe = regexp.MustCompile(`^(?:([A-Za-z]{3}) )?\*-\*-(\*|\d{2}) (\d{2}:\d{2}):00$`)
+
+// ParseCalendar reads back the OnCalendar= value autoupdate writes ("Sun *-*-* 03:30:00")
+// as the schedule SetAutoupdate takes, so an exported schedule can be set again.
+func ParseCalendar(cal string) (freq, weekday, day, clock string, ok bool) {
+	m := calendarRe.FindStringSubmatch(strings.TrimSpace(cal))
+	if m == nil {
+		return "", "", "", "", false
+	}
+	switch {
+	case m[1] != "" && m[2] == "*":
+		return "weekly", strings.ToLower(m[1]), "", m[3], true
+	case m[1] == "" && m[2] == "*":
+		return "daily", "", "", m[3], true
+	case m[1] == "":
+		return "monthly", "", strings.TrimLeft(m[2], "0"), m[3], true
+	}
+	return "", "", "", "", false
+}
+
 func autoupdate(args ...string) (string, error) {
 	return run.Cmd(2*time.Minute, autoupdateCmd, args...)
 }

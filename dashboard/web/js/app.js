@@ -13,19 +13,22 @@ import { renderRollout } from './views/rollout.js';
 import { renderUsers } from './views/users.js';
 import { renderLogs } from './views/logs.js';
 import { renderIntegrations } from './views/integrations.js';
+import { renderBackups, renderExport } from './views/backup.js';
+import { renderGroup } from './views/group.js';
 
 const TABS = [
   ['overview', 'Overview', renderOverview],
   ['updates', 'Updates', renderUpdates],
   ['docker', 'Docker', renderDocker],
+  ['files', 'Files', renderGroup([['files', 'Files', renderFiles], ['shares', 'Network shares', renderStorage]])],
+  ['backup', 'Backup', renderGroup([['backups', 'Backups', renderBackups], ['export', 'Export & import', renderExport]])],
   ['terminal', 'Terminal', renderTerminal],
-  ['files', 'Files', renderFiles],
-  ['storage', 'Storage', renderStorage],
-  ['logs', 'Logs', renderLogs],
-  ['users', 'Users', renderUsers],
-  ['features', 'Features', renderFeatures],
-  ['settings', 'Settings', renderSettings],
+  ['system', 'System', renderGroup([['settings', 'Settings', renderSettings], ['users', 'Users', renderUsers],
+    ['features', 'Features', renderFeatures], ['logs', 'Logs', renderLogs]])],
 ];
+
+// Tabs that became sub-tabs, so old links and bookmarks still land in the right place.
+const ALIASES = { storage: 'files/shares', logs: 'system/logs', users: 'system/users', features: 'system/features', settings: 'system/settings' };
 
 const root = document.getElementById('root');
 const state = { me: null, nodes: [], rollout: null, cleanup: null, nodesTimer: null };
@@ -220,9 +223,15 @@ function drawHead() {
 function parseRoute() {
   if (/^#\/update\b/.test(location.hash)) return { id: null, update: true };
   if (/^#\/integrations\b/.test(location.hash)) return { id: null, integrations: true };
-  const m = location.hash.match(/^#\/n\/([^/]+)\/?([a-z]*)/);
+  const m = location.hash.match(/^#\/n\/([^/?]+)\/?([a-z]*)\/?([a-z-]*)/);
   const query = new URLSearchParams(location.hash.split('?')[1] || '');
-  return m ? { id: decodeURIComponent(m[1]), tab: m[2] || 'overview', query } : { id: null };
+  if (!m) return { id: null };
+  const r = { id: decodeURIComponent(m[1]), tab: m[2] || 'overview', sub: m[3] || '', query };
+  if (ALIASES[r.tab]) {
+    [r.tab, r.sub] = ALIASES[r.tab].split('/');
+    r.moved = `#/n/${m[1]}/${ALIASES[m[2]]}${query.size ? `?${query}` : ''}`;
+  }
+  return r;
 }
 
 function stopView() {
@@ -256,6 +265,7 @@ function route() {
     state.cleanup = renderFleet(main, { nodes: () => state.nodes, rollout: () => state.rollout, refreshNodes, menuButton });
     return;
   }
+  if (r.moved) history.replaceState(null, '', r.moved); // no hashchange: render it here
   const n = findNode(r.id);
   const tab = TABS.find((t) => t[0] === r.tab) || TABS[0];
   const body = h('div');
@@ -268,7 +278,8 @@ function route() {
   drawHead();
   // On a phone the tab strip scrolls sideways; keep the current tab in view.
   main.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes, query: r.query });
+  state.cleanup = tab[2](body, { api: api.node(r.id), node: n, getNode: () => findNode(r.id), me: state.me, refreshNodes,
+    query: r.query, tab: tab[0], sub: r.sub });
 }
 
 window.addEventListener('hashchange', route);
