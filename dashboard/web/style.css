@@ -372,6 +372,12 @@ a.port::after { content: " ↗"; font-size: 10px; }
 .update-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 8px 8px 14px; }
 .update-result.failed { background: color-mix(in srgb, var(--critical) 10%, transparent); }
 .update-result.done { background: color-mix(in srgb, var(--good) 10%, transparent); }
+.update-result.warned { background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.stack-result { margin: 4px 8px; }
+.app-title .sub.job-line { color: var(--text-2); }
+.ct-trouble { display: block; color: var(--warning-ink); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.ct-trouble:hover { color: var(--warning-ink); }
+.live-status:empty { display: none; }
 .spinner.small { width: 12px; height: 12px; border-width: 2px; }
 .badge.updating { background: var(--accent-soft); color: var(--text); }
 .badge.updating .spinner { border-color: var(--accent); border-right-color: transparent; }

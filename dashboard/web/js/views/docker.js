@@ -1,5 +1,5 @@
-import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct, when, menu, menuOpen, modalOpen } from '../ui.js';
-import { openStackEditor } from './stackeditor.js';
+import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct, when, menu, menuOpen, modalOpen, showLiveLog } from '../ui.js';
+import { openStackEditor, showStackLog, STACK_ACTION, stackJobRunning, stackJobLine, stackJobResult } from './stackeditor.js';
 import { backupNow } from './backup.js';
 
 const SECTIONS = ['Apps', 'Images', 'Storage'];
@@ -17,6 +17,19 @@ function ago(unix) {
 }
 
 const cname = (c) => c.Names?.[0]?.replace(/^\//, '') || c.Id.slice(0, 12);
+
+// What's wrong with a container, from its list state: "keeps restarting", "exited with code 1".
+// A container that exited with 0 finished its job, so it isn't flagged.
+function ctTrouble(c) {
+  if (c.State === 'restarting') return 'keeps restarting';
+  if (c.State === 'dead') return 'dead';
+  const m = c.State === 'exited' && /^Exited \((\d+)\)/.exec(c.Status || '');
+  if (m && m[1] !== '0') return `exited with code ${m[1]}`;
+  return '';
+}
+
+// Up in some way, so it can be stopped: running, crash-looping or paused.
+const ctActive = (c) => c.State === 'running' || c.State === 'restarting' || c.State === 'paused';
 
 // Host to open published ports on: the page's own host for the main node, the node's
 // address for paired nodes.
@@ -80,35 +93,26 @@ export function jobSummary(j) {
 }
 
 // The running or last update's output, refreshed while it runs.
-export async function showUpdateLog(api, title = 'Update log') {
-  const pre = h('pre.output', { style: { maxHeight: '60vh' } }, 'Loading…');
-  let t, open = true;
-  const tick = async () => {
-    let running = false;
-    try {
-      const [l, st] = await Promise.all([api.get('/docker/updates/log'), api.get('/docker/updates')]);
-      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-      pre.textContent = l.text || (jobRunning(st.job) ? 'Waiting for output…' : 'No output.');
-      if (atBottom) pre.scrollTop = pre.scrollHeight;
-      running = jobRunning(st.job);
-    } catch (e) { pre.textContent = e.message; }
-    if (open && running) t = setTimeout(tick, 2000);
-  };
-  tick();
-  await modal(title, h('div', { 'data-wide': '1' }, pre), [{ label: 'Close', value: true, class: 'primary' }]);
-  open = false; clearTimeout(t);
+export function showUpdateLog(api, title = 'Update log') {
+  return showLiveLog(title, async () => {
+    const [l, st] = await Promise.all([api.get('/docker/updates/log'), api.get('/docker/updates')]);
+    return { text: l.text, running: jobRunning(st.job) };
+  });
 }
 
 export function renderDocker(el, { api, node, getNode, refreshNodes }) {
   let section = 'Apps', timer, stopped = false;
   let watching = null, dismissed = null; // job IDs: the one to toast when it ends, the hidden result
+  const stackWatch = new Set(); // stack job IDs started here, toasted when they end
+  const stackDismissed = new Set(); // stack job IDs whose result was dismissed
+  const pendingCt = new Map(); // container ID → what is being done to it ("Stopping")
   const data = {};
   const expanded = new Map(); // group key → open? (only once the user toggled it)
   const body = h('div.stack');
   const nav = h('div.seg', { role: 'tablist' });
   const filter = h('input.filter-input', { type: 'search', placeholder: 'Filter…', 'aria-label': 'Filter', oninput: () => draw() });
   const newStackBtn = h('button.btn.primary', { onclick: () =>
-    openStackEditor({ api, root: data.stacks?.root || '~/docker', onDone: () => load() }) }, icon('plus', 15), 'New stack');
+    openStackEditor({ api, root: data.stacks?.root || '~/docker', onDone: onSaved }) }, icon('plus', 15), 'New stack');
   const refreshBtn = h('button.btn', { onclick: () => load(), title: 'Refresh', 'aria-label': 'Refresh' }, icon('refresh', 15));
   clear(el, h('div.stack',
     h('div.row', nav, h('span.spacer'), filter, refreshBtn, newStackBtn),
@@ -128,6 +132,12 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         const [stacks, containers, updates] = await Promise.all([
           api.get('/docker/stacks'), api.get('/docker/containers'), api.get('/docker/updates')]);
         Object.assign(data, { stacks, containers, updates });
+        for (const sj of stacks.jobs || []) {
+          if (!stackWatch.has(sj.id) || stackJobRunning(sj)) continue;
+          stackWatch.delete(sj.id);
+          toast(stackJobResult(sj), sj.phase === 'failed' || !!sj.warning); // a warning stays up longer too
+          if (sj.action === 'recreate') refreshNodes?.();
+        }
         const j = updates.job;
         if (jobRunning(j)) watching = j.id;
         else if (j && j.id === watching) {
@@ -160,7 +170,8 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     timer = setTimeout(() => {
       if (menuOpen() || modalOpen()) schedule();
       else load();
-    }, jobRunning(data.updates?.job) ? 2000 : data.updates?.checking ? 3000 : 5000);
+    }, jobRunning(data.updates?.job) || stackJobs().some(stackJobRunning) || pendingCt.size ? 2000
+      : data.updates?.checking ? 3000 : 5000);
   }
 
   const match = (...fields) => {
@@ -179,6 +190,42 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
   }
 
   // ---- Apps: stacks with their containers, and image updates --------------------------
+
+  const stackJobs = () => data.stacks?.jobs || [];
+  const stackJob = (name) => stackJobs().find((j) => j.stack === name);
+
+  function watchStack(job) {
+    stackWatch.add(job.id);
+    expanded.delete('s:' + job.stack); // let it open while it runs
+    if (data.stacks) data.stacks.jobs = [...stackJobs().filter((j) => j.stack !== job.stack), job];
+    if (!menuOpen() && !modalOpen()) draw();
+  }
+
+  // After the editor saved: follow what it started.
+  function onSaved(job) {
+    if (job) watchStack(job);
+    load();
+  }
+
+  // Runs a stack action in the background; its progress shows on the stack's row.
+  // Resolves true when it started (or, on older nodes, finished).
+  async function runStack(name, action, extra = {}) {
+    const a = STACK_ACTION[action];
+    try {
+      const r = await api.post(`/docker/stacks/${encodeURIComponent(name)}/${action}`, { ...extra, background: true });
+      if (r?.job) watchStack(r.job);
+      else { // an older node ran it while answering
+        toast(`${name} ${a.done}.`);
+        if (action === 'recreate') { showOutput(`${a.label}: ${name}`, r?.output); refreshNodes?.(); }
+      }
+      load();
+      return true;
+    } catch (e) {
+      toast(`${a.label} ${name}: ${e.message}`, true);
+      load();
+      return false;
+    }
+  }
 
   // Starts an update job; its progress then shows in the strip and on the rows.
   async function startUpdate(btn, path, body) {
@@ -253,9 +300,14 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     const names = outdated(g.containers, upd);
     const updates = names.length;
     const running = g.containers.filter((c) => c.State === 'running').length;
+    const active = g.containers.filter(ctActive).length;
     const total = s ? s.total : g.containers.length;
-    const troubled = total > 0 && running < total;
-    const open = expanded.has(g.key) ? expanded.get(g.key) : (!s || troubled || updates > 0);
+    const troubled = total > 0 && running < total || g.containers.some(ctTrouble);
+    const sj = key ? stackJob(key) : null;
+    const working = stackJobRunning(sj);
+    // A failed action, or one that left a container unwell, stays on the row until dismissed.
+    const result = sj && !working && (sj.phase === 'failed' || sj.warning) && !stackDismissed.has(sj.id) ? sj : null;
+    const open = expanded.has(g.key) ? expanded.get(g.key) : (!s || troubled || updates > 0 || working || !!result);
     const toggle = () => { expanded.set(g.key, !open); draw(); };
 
     let title, sub, status, actions = [];
@@ -264,19 +316,16 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       sub = s.file || s.dir || '';
       const cls = !total ? 'idle' : running === total ? 'good' : running ? 'warn' : 'crit';
       status = h('span.status', { class: cls }, !total ? 'Not started' : `${running}/${total} running`);
-      const act = (label, action, opts = {}) => async (btn) => {
+      const act = (action, opts = {}) => async () => {
+        const label = STACK_ACTION[action].label;
         if (opts.confirm && !await confirmAction(`${label}: ${s.name}`, opts.confirm, label, !!opts.danger)) return;
-        const run = () => api.post(`/docker/stacks/${encodeURIComponent(s.name)}/${action}`);
-        const r = btn ? await busy(btn, run, '') : await run().catch((e) => { toast(e.message, true); });
-        if (r) {
-          toast(`${s.name}: ${label.toLowerCase()} done.`);
-          if (opts.output) showOutput(`${label}: ${s.name}`, r.output);
-          if (action === 'recreate') refreshNodes?.();
-        }
-        load();
+        runStack(s.name, action);
       };
+      const busyWhy = working ? `${stackJobLine(sj)} Wait for it to finish.` : false;
       let primary = null;
-      if (updating || queued) {
+      if (working) {
+        primary = h('button.btn.small', { title: 'Show what is happening', onclick: () => showStackLog(api, s.name) }, 'Log');
+      } else if (updating || queued) {
         primary = null; // the badge says it
       } else if (updates && s.filesExist) {
         primary = h('button.btn.small.primary', { title: jr ? 'Another update is running' : `Update ${names.join(', ')}`, disabled: jr, onclick: async (e) => {
@@ -284,18 +333,20 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
           if (!await confirmAction(`Update: ${s.name}`, `Pull the newer images for ${names.join(', ')} and recreate ${updates > 1 ? 'them' : 'it'}? Containers that depend on ${updates > 1 ? 'them' : 'it'} (like ones sharing its network) may restart too. Data in volumes and bind mounts is kept.`, 'Update', false)) return;
           startUpdate(btn, `/docker/stacks/${encodeURIComponent(s.name)}/update`);
         } }, `Update ${updates}`);
-      } else if (running === 0 && s.filesExist) {
-        primary = h('button.btn.small', { onclick: (e) => act('Start', 'start')(e.currentTarget) }, 'Start');
+      } else if (active === 0 && s.filesExist) {
+        primary = h('button.btn.small', { class: result || !total ? 'primary' : '', onclick: act('start') }, 'Start');
       }
       actions = [primary, menu([
-        { label: 'Start', onclick: () => act('Start', 'start')(), hidden: running > 0 || !s.filesExist },
-        { label: 'Stop', onclick: () => act('Stop', 'stop')(), hidden: running === 0 },
-        { label: 'Restart', onclick: () => act('Restart', 'restart')(), hidden: running === 0 },
-        { label: 'Pull & recreate all', hidden: !s.filesExist, onclick: () => act('Pull & recreate', 'recreate', { output: true,
-          confirm: `Pull the newest images for every service in ${s.name} and recreate all its containers? Data in volumes and bind mounts is kept.` })() },
-        { label: 'Back up now', hidden: !s.inRoot, onclick: () => backupNow(api, [s.name], running > 0) },
-        { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: () => load() }) },
-        { label: 'Remove…', danger: true, hidden: !total && !s.inRoot, onclick: () => removeStack(s) },
+        { label: 'Start', onclick: act('start'), hidden: active > 0 || !s.filesExist, disabled: busyWhy },
+        { label: 'Start all', onclick: act('start'), hidden: active === 0 || active >= total || !s.filesExist, disabled: busyWhy },
+        { label: 'Stop', onclick: act('stop'), hidden: active === 0, disabled: busyWhy },
+        { label: 'Restart', onclick: act('restart'), hidden: active === 0, disabled: busyWhy },
+        { label: 'Pull & recreate all', hidden: !s.filesExist, disabled: busyWhy, onclick: act('recreate', {
+          confirm: `Pull the newest images for every service in ${s.name} and recreate all its containers? Data in volumes and bind mounts is kept.` }) },
+        { label: 'Show last log', hidden: !sj, onclick: () => showStackLog(api, s.name) },
+        { label: 'Back up now', hidden: !s.inRoot, disabled: busyWhy, onclick: () => backupNow(api, [s.name], running > 0) },
+        { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: onSaved }) },
+        { label: 'Remove…', danger: true, hidden: !total && !s.inRoot, disabled: busyWhy, onclick: () => removeStack(s) },
       ], `Actions for ${s.name}`)];
     } else {
       title = 'Standalone containers';
@@ -307,58 +358,83 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       h('button.chev', { class: open ? 'open' : '', 'aria-expanded': String(open), 'aria-label': `${open ? 'Collapse' : 'Expand'} ${title}`, onclick: toggle }, '›'),
       h('div.app-title',
         h('div.row', { style: { gap: '8px' } }, h('strong', title),
-          updating ? h('span.badge.updating', { title: jobLine(job) }, h('span.spinner.small', { 'aria-hidden': 'true' }), `Updating · ${PHASE[job.phase] || 'working'}…`)
+          working ? h('span.badge.updating', { title: sj.lastLine || '' }, h('span.spinner.small', { 'aria-hidden': 'true' }), stackJobLine(sj))
+          : updating ? h('span.badge.updating', { title: jobLine(job) }, h('span.spinner.small', { 'aria-hidden': 'true' }), `Updating · ${PHASE[job.phase] || 'working'}…`)
           : queued ? h('span.badge', { title: 'Updates after what is updating now' }, 'Queued')
           : updates ? h('span.badge.update', { title: `Updates for ${names.join(', ')}` }, `${updates > 1 ? 'Updates' : 'Update'}: ${shortList(names)}`) : null,
           s && !s.filesExist ? h('span.badge', 'managed elsewhere') : s && !s.inRoot ? h('span.badge', 'outside ~/docker') : null),
-        h('div.sub.mono', sub)),
+        working && sj.lastLine ? h('div.sub.mono.job-line', { title: sj.lastLine }, sj.lastLine) : h('div.sub.mono', sub)),
       h('div.app-status', status),
       h('div.app-ports', portLinks(s ? s.ports : [], host)),
       h('div.app-actions', actions));
-    return h('div.app-group', { class: `${open ? 'open' : ''}${updating ? ' updating' : ''}` }, head,
-      open ? h('div.app-body', g.containers.length
+    return h('div.app-group', { class: `${open ? 'open' : ''}${updating || working ? ' updating' : ''}` }, head,
+      open ? h('div.app-body', result ? resultEl(result, g.containers) : null, g.containers.length
         ? g.containers.sort((a, b) => cname(a).localeCompare(cname(b))).map((c) => containerEl(c, upd, updating))
-        : h('div.faint', { style: { padding: '10px 14px' } }, 'No containers. Start the stack to create them.')) : null);
+        : h('div.faint', { style: { padding: '10px 14px' } }, working ? `${stackJobLine(sj)} Its containers show up here once they are created.`
+          : 'No containers. Start the stack to create them.')) : null);
+  }
+
+  // How a stack's last action went wrong, with its log and the container's logs.
+  function resultEl(j, containers) {
+    const failed = j.phase === 'failed';
+    const ct = j.container && containers.find((c) => cname(c) === j.container);
+    return h('div.notice.update-result.stack-result', { class: failed ? 'failed' : 'warned', role: 'alert' },
+      h('span', { class: `status ${failed ? 'crit' : 'warn'}` }, stackJobResult(j)),
+      h('span.faint', `· ${when(j.finishedAt).replace(/^.*\((.*)\)$/, '$1')}`),
+      h('span.spacer'),
+      h('button.btn.small', { onclick: () => showStackLog(api, j.stack) }, 'Show log'),
+      ct ? h('button.btn.small', { onclick: () => showLogs(cname(ct), ct.Id) }, `Logs: ${cname(ct)}`) : null,
+      h('button.btn.small.ghost', { 'aria-label': 'Dismiss', title: 'Dismiss', onclick: () => { stackDismissed.add(j.id); draw(); } }, '✕'));
   }
 
   // stackUpdating: this container's stack is being updated right now.
   function containerEl(c, upd, stackUpdating) {
     const name = cname(c);
     const running = c.State === 'running';
+    const active = ctActive(c);
     const hasUpdate = upd.get(c.Image) === 'update';
     const job = data.updates?.job, jr = jobRunning(job);
     const updating = (stackUpdating && hasUpdate) || (jr && job.current === name);
     const queued = !updating && jr && !c.Labels?.[PROJECT] && job.pending?.includes(name);
+    const pending = pendingCt.get(c.Id);
+    const ING = { start: 'Starting', stop: 'Stopping', restart: 'Restarting', recreate: 'Pulling & recreating', remove: 'Removing' };
     const act = (label, action, confirmMsg) => async () => {
       if (confirmMsg && !await confirmAction(`${label}: ${name}`, confirmMsg, label, action === 'remove')) return;
+      pendingCt.set(c.Id, ING[action] || label);
+      draw();
       try {
         const r = await api.post(`/docker/containers/${c.Id}/${action}`);
         toast(`${name}: ${label.toLowerCase()} done.`);
         if (action === 'recreate') { showOutput(`Pull & recreate: ${name}`, r.output); refreshNodes?.(); }
-      } catch (e) { toast(e.message, true); }
+      } catch (e) { toast(`${label} ${name}: ${e.message}`, true); }
+      pendingCt.delete(c.Id);
       load();
     };
+    const trouble = ctTrouble(c);
     const recreateMsg = c.Labels?.[PROJECT]
       ? `Pulls the newest ${c.Image} and recreates ${name} through its stack; containers that depend on it are recreated too. Volumes and bind mounts are kept.`
       : `Pulls the newest ${c.Image} and recreates ${name} with the same ports, environment, volumes, networks and restart policy. Its data is kept.`;
     const updateBtn = hasUpdate && !updating && !queued ? h('button.btn.small.primary', { disabled: jr,
       title: jr ? 'Another update is running' : `Pull the newer ${c.Image} and recreate what uses it`,
       onclick: (e) => startUpdate(e.currentTarget, '/docker/updates/apply', { image: c.Image }) }, 'Update') : null;
-    const badge = updating ? h('span.badge.updating', { style: { marginLeft: '6px' } }, h('span.spinner.small', { 'aria-hidden': 'true' }), 'updating')
+    const badge = pending ? h('span.badge.updating', { style: { marginLeft: '6px' } }, h('span.spinner.small', { 'aria-hidden': 'true' }), `${pending.toLowerCase()}…`)
+      : updating ? h('span.badge.updating', { style: { marginLeft: '6px' } }, h('span.spinner.small', { 'aria-hidden': 'true' }), 'updating')
       : queued ? h('span.badge', { style: { marginLeft: '6px' } }, 'queued')
       : hasUpdate ? h('span.badge.update', { style: { marginLeft: '6px' } }, 'update') : null;
     return h('div.ct-row', { class: updating ? 'has-update updating' : hasUpdate ? 'has-update' : '' },
       h('div.ct-name', h('span.dot', { class: stateClass(c.State), 'aria-hidden': 'true' }),
         h('button.link-btn', { onclick: () => showLogs(name, c.Id), title: 'Show logs' }, name)),
       h('div.ct-image.mono', { title: c.Image }, c.Image, badge),
-      h('div.ct-state', h('span', { class: `status ${stateClass(c.State)}` }, c.State), h('span.faint', ` · ${c.Status}`)),
+      h('div.ct-state', h('span', { class: `status ${stateClass(c.State)}` }, c.State),
+        trouble ? null : h('span.faint', ` · ${c.Status}`),
+        trouble ? h('button.link-btn.ct-trouble', { title: `${c.Status}. Show its logs`, onclick: () => showLogs(name, c.Id) }, `${trouble} · logs`) : null),
       h('div.app-ports', portLinks(c.Ports, host)),
-      h('div.app-actions', updateBtn, menu([
+      h('div.app-actions', pending ? null : updateBtn, menu([
         { label: 'Logs', onclick: () => showLogs(name, c.Id) },
         { label: 'Stats', onclick: () => showStats(name, c.Id), hidden: !running },
-        { label: 'Start', onclick: act('Start', 'start'), hidden: running },
-        { label: 'Stop', onclick: act('Stop', 'stop'), hidden: !running },
-        { label: 'Restart', onclick: act('Restart', 'restart'), hidden: !running },
+        { label: 'Start', onclick: act('Start', 'start'), hidden: active },
+        { label: 'Stop', onclick: act('Stop', 'stop'), hidden: !active },
+        { label: 'Restart', onclick: act('Restart', 'restart'), hidden: !active },
         { label: 'Pull & recreate', onclick: act('Pull & recreate', 'recreate', recreateMsg) },
         { label: 'Remove', danger: true, onclick: act('Remove', 'remove', `Remove ${name}? Its volumes are kept.`) },
       ], `Actions for ${name}`)));
@@ -372,17 +448,10 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
       h('p.muted', { style: { margin: 0 } }, `Stops and removes ${s.name}'s containers and network. Named volumes are kept.`),
       s.inRoot ? h('label.check-row', del, h('span', 'Also delete the folder ', h('code', s.dir), ' and everything in it')) : null,
       warn);
-    const ok = await modal(`Remove ${s.name}`, bodyEl, [
+    await modal(`Remove ${s.name}`, bodyEl, [
       { label: 'Cancel', value: false },
-      { label: 'Remove', class: 'danger solid', onclick: async () => {
-        try {
-          const r = await api.post(`/docker/stacks/${encodeURIComponent(s.name)}/remove`, { deleteFolder: del.checked });
-          toast(del.checked ? `${s.name} removed and its folder deleted.` : `${s.name} removed; its folder is kept.`);
-          return r || true;
-        } catch (e) { toast(e.message, true); return false; }
-      } },
+      { label: 'Remove', class: 'danger solid', onclick: () => runStack(s.name, 'remove', { deleteFolder: del.checked }) },
     ]);
-    if (ok) load();
   }
 
   // ---- Images and Storage -------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { h, clear, modal, toast, codeArea } from '../ui.js';
+import { h, clear, modal, toast, codeArea, showLiveLog } from '../ui.js';
 import * as mainAPI from '../api.js';
 
 const BLANK = `services:
@@ -15,7 +15,50 @@ const BLANK = `services:
 // Same rule as docker compose for a folder's project name.
 export const projectName = (s) => s.toLowerCase().replace(/[^a-z0-9_-]/g, '').replace(/^[-_]+/, '');
 
+// ---- Background stack actions (POST …/{action} with background: true → job) -------------
+
+// Per action: while running, when done, and as a menu label.
+export const STACK_ACTION = {
+  start: { ing: 'Starting', done: 'started', label: 'Start' },
+  resume: { ing: 'Starting', done: 'started', label: 'Start' },
+  stop: { ing: 'Stopping', done: 'stopped', label: 'Stop' },
+  restart: { ing: 'Restarting', done: 'restarted', label: 'Restart' },
+  recreate: { ing: 'Pulling & recreating', done: 'pulled and recreated', label: 'Pull & recreate' },
+  remove: { ing: 'Removing', done: 'removed', label: 'Remove' },
+};
+const actionOf = (j) => STACK_ACTION[j.action] || { ing: 'Working', done: 'done', label: j.action };
+
+export const stackJobRunning = (j) => !!j && !j.finishedAt;
+
+// "Starting…" / "Checking containers…" while a job runs.
+export const stackJobLine = (j) => j.phase === 'checking' ? 'Checking containers…' : `${actionOf(j).ing}…`;
+
+// How a finished job ended, as one sentence.
+export function stackJobResult(j) {
+  const a = actionOf(j);
+  if (j.phase === 'failed') return `${a.label} failed: ${j.error}`;
+  if (j.warning) return `${a.label[0].toUpperCase() + a.done.slice(1)}, but ${j.warning}`;
+  return `${j.stack} ${a.done}.`;
+}
+
+// The status line for a job: a spinner while it runs, then how it ended.
+export function stackJobStatus(j) {
+  if (!j) return null;
+  if (stackJobRunning(j)) return h('span.status.warn.job-status', h('span.spinner.small', { 'aria-hidden': 'true' }), stackJobLine(j));
+  const cls = j.phase === 'failed' ? 'crit' : j.warning ? 'warn' : 'good';
+  return h('span', { class: `status ${cls}` }, stackJobResult(j));
+}
+
+// The live output of a stack's running or last action.
+export function showStackLog(api, name) {
+  return showLiveLog(`Log: ${name}`, async () => {
+    const r = await api.get(`/docker/stacks/${encodeURIComponent(name)}/log`);
+    return { text: r.text, running: stackJobRunning(r.job), status: stackJobStatus(r.job) };
+  }, { every: 1500, empty: 'Nothing has run on this stack yet.' });
+}
+
 // Create (no name) or edit a stack in ~/docker/<name>/. Resolves true when something was saved.
+// onDone(job) is called after each save; job is the started action for Save & start.
 export async function openStackEditor({ api, root, name, onDone }) {
   let create = !name;
   let files = { compose: BLANK, env: '' };
@@ -85,17 +128,33 @@ export async function openStackEditor({ api, root, name, onDone }) {
     err.classList.add('hidden');
     const stackName = create ? projectName(nameInput.value) : name;
     if (create && !stackName) { err.textContent = 'Enter a name.'; err.classList.remove('hidden'); return false; }
+    const wasCreate = create;
     try {
-      const r = await api.post(create ? '/docker/stacks' : `/docker/stacks/${encodeURIComponent(name)}`,
-        { name: stackName, compose: compose.value, env: env.value, start });
-      toast(start ? `${stackName}: saved and ${create ? 'started' : 'recreated'}.` : `${stackName}: saved.`);
+      const r = await api.post(wasCreate ? '/docker/stacks' : `/docker/stacks/${encodeURIComponent(name)}`,
+        { name: stackName, compose: compose.value, env: env.value, start, background: true });
       saved = { compose: compose.value, env: env.value };
-      // Saved once, a new stack is edited from here on.
-      if (create) { create = false; name = stackName; }
+      // Saved once, a new stack is edited from here on (also when starting it failed).
+      if (wasCreate) { create = false; name = stackName; }
+      if (r.job) {
+        // Started in the background: its progress shows on the stack's row and in the log.
+        toast(`${stackName}: saved. ${stackJobLine(r.job)}`);
+        onDone?.(r.job);
+        return { job: r.job };
+      }
+      if (r.startError) {
+        // The files were saved, but it couldn't start (for example something else is running on it).
+        err.textContent = `Saved, but couldn't ${wasCreate ? 'start' : 'recreate'} ${stackName}: ${r.startError}`;
+        err.classList.remove('hidden');
+        onDone?.();
+        return false;
+      }
+      // A node that runs it while answering (older versions).
+      toast(start ? `${stackName}: saved and ${wasCreate ? 'started' : 'recreated'}.` : `${stackName}: saved.`);
       if (start && r.output) modal(`Stack ${stackName}`, h('pre.output', r.output), [{ label: 'Close', value: true, class: 'primary' }]);
       onDone?.();
       return true;
     } catch (e) {
+      // Nothing was saved: a failed start after a good save comes back as startError.
       err.textContent = e.message;
       err.classList.remove('hidden');
       err.scrollIntoView({ block: 'nearest' });
@@ -109,9 +168,12 @@ export async function openStackEditor({ api, root, name, onDone }) {
     });
   }
 
-  return modal(create ? 'New stack' : `Edit ${name}`, body, [
+  const v = await modal(create ? 'New stack' : `Edit ${name}`, body, [
     { label: 'Cancel', value: false },
     { label: 'Save', onclick: save(false) },
     { label: create ? 'Save & start' : 'Save & recreate', class: 'primary', onclick: save(true) },
   ], { dirty });
+  // Follow what was started; the dialog can be closed and the row keeps showing it.
+  if (v?.job) showStackLog(api, v.job.stack);
+  return !!v;
 }

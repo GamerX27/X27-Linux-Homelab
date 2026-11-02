@@ -89,12 +89,13 @@ type Local struct {
 	Upgrader    *websocket.Upgrader
 	Fingerprint string // the dashboard's certificate, for Settings
 
-	sampler *system.Sampler
-	checker *osupdate.Checker
-	docker  *docker.Client
-	updater *docker.Updater
-	backups *backup.Manager
-	files   files.Runner
+	sampler   *system.Sampler
+	checker   *osupdate.Checker
+	docker    *docker.Client
+	updater   *docker.Updater
+	stackJobs *docker.StackJobs
+	backups   *backup.Manager
+	files     files.Runner
 
 	osMu     sync.Mutex
 	osCached osupdate.Status
@@ -113,7 +114,12 @@ func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	d := docker.New()
 	l := &Local{Version: version, Dev: dev, Upgrader: up,
 		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d),
-		backups: backup.New(d), files: files.Runner{Dev: dev}}
+		stackJobs: docker.NewStackJobs(d), backups: backup.New(d), files: files.Runner{Dev: dev}}
+	l.stackJobs.Done = func(j docker.StackJob) {
+		if j.Action == "recreate" && j.Phase == "done" {
+			l.updater.Check() // clear its "update available" badge
+		}
+	}
 	l.backups.Server = backup.ServerHooks{Dev: dev, Changed: l.dropAutoupdate}
 	if !dev {
 		// An import that changed the port or presets: after the UI saw the job end.
@@ -358,7 +364,12 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		cs, err := l.docker.Containers()
-		ok(w, map[string]any{"root": o.Root(), "stacks": docker.ListStacks(o, cs)}, err)
+		ok(w, map[string]any{"root": o.Root(), "stacks": docker.ListStacks(o, cs), "jobs": l.stackJobs.List()}, err)
+	})
+	// The running or last background action on a stack, with its output.
+	mux.HandleFunc("GET /docker/stacks/{name}/log", func(w http.ResponseWriter, r *http.Request) {
+		job, text := l.stackJobs.Job(r.PathValue("name"))
+		writeJSON(w, http.StatusOK, map[string]any{"job": job, "text": text})
 	})
 	mux.HandleFunc("GET /docker/stacks/{name}", func(w http.ResponseWriter, r *http.Request) {
 		o, err := l.owner(r)
@@ -377,6 +388,7 @@ func (l *Local) Handler() http.Handler {
 		var body struct {
 			Name, Compose, Env string
 			Start              bool // start (create) or pull & recreate (edit) after saving
+			Background         bool // start as a stack job and answer right away
 		}
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -391,18 +403,31 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		out, err := docker.SaveStack(o, name, body.Compose, body.Env, create)
-		if err == nil && body.Start {
-			action := "recreate"
-			if create {
-				action = "start"
-			}
-			var out2 string
-			out2, err = l.docker.StackAction(o, name, action)
-			out = strings.TrimSpace(out + "\n" + out2)
-		}
 		verb := "save"
 		if create {
 			verb = "create"
+		}
+		action := "recreate"
+		if create {
+			action = "start"
+		}
+		if err == nil && body.Start && body.Background {
+			log.Printf("%s: %s stack %s", userOf(r), verb, name)
+			job, jerr := l.stackJobs.Start(o, name, action, false)
+			if jerr != nil {
+				// Saved, but it couldn't start: say both, so the editor knows the files exist.
+				log.Printf("%s: stack %s %s failed: %v", userOf(r), action, name, jerr)
+				writeJSON(w, http.StatusOK, map[string]any{"output": out, "startError": jerr.Error()})
+				return
+			}
+			log.Printf("%s: stack %s %s started", userOf(r), action, name)
+			writeJSON(w, http.StatusAccepted, map[string]any{"output": out, "job": job})
+			return
+		}
+		if err == nil && body.Start {
+			var out2 string
+			out2, err = l.docker.StackAction(o, name, action)
+			out = strings.TrimSpace(out + "\n" + out2)
 		}
 		result(w, r, verb+" stack "+name, out, err)
 	}
@@ -419,9 +444,28 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		name, a := r.PathValue("name"), r.PathValue("action")
+		var body struct{ DeleteFolder, Background bool }
+		readJSON(r, &body) // an empty body: keep the folder, wait for the action
+		if body.Background && a != "update" {
+			job, err := l.stackJobs.Start(o, name, a, body.DeleteFolder)
+			what := "stack " + a + " " + name
+			if a == "remove" && body.DeleteFolder {
+				what += " and delete its folder"
+			}
+			if err != nil {
+				log.Printf("%s: %s failed: %v", userOf(r), what, err)
+				code := http.StatusBadRequest
+				if errors.Is(err, docker.ErrStackBusy) {
+					code = http.StatusConflict
+				}
+				writeErr(w, code, err)
+				return
+			}
+			log.Printf("%s: %s started", userOf(r), what)
+			writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+			return
+		}
 		if a == "remove" {
-			var body struct{ DeleteFolder bool }
-			readJSON(r, &body) // an empty body means keep the folder
 			out, err := l.docker.RemoveStack(o, name, body.DeleteFolder)
 			what := "remove stack " + name
 			if body.DeleteFolder {

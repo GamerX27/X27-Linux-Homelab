@@ -124,6 +124,30 @@ export function confirmAction(title, message, label = 'Continue', danger = true)
   ]);
 }
 
+// A dialog with output that refreshes while something runs. fetch resolves to
+// { text, running, status } (status: an element or text shown above the output).
+export async function showLiveLog(title, fetch, { every = 2000, empty = 'No output.' } = {}) {
+  const pre = h('pre.output', { style: { maxHeight: '60vh' } }, 'Loading…');
+  const head = h('div.live-status');
+  let t, open = true, first = true;
+  const tick = async () => {
+    let running = false;
+    try {
+      const r = await fetch();
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+      pre.textContent = r.text || (r.running ? 'Waiting for output…' : empty);
+      if (atBottom || first) pre.scrollTop = pre.scrollHeight;
+      first = false;
+      clear(head, r.status || null);
+      running = r.running;
+    } catch (e) { pre.textContent = e.message; }
+    if (open && running) t = setTimeout(tick, every);
+  };
+  tick();
+  await modal(title, h('div.stack', { 'data-wide': '1' }, head, pre), [{ label: 'Close', value: true, class: 'primary' }]);
+  open = false; clearTimeout(t);
+}
+
 // Runs an async action on a button with a spinner, toasting the result.
 export async function busy(btn, fn, okMsg) {
   btn.disabled = true; btn.classList.add('busy');
