@@ -92,6 +92,37 @@ func (s *Store) List() []Node {
 	return append([]Node(nil), s.nodes...)
 }
 
+// Import adds nodes from an export (Backup → Export & import). One whose id or address is
+// already paired is skipped, so the entry in use wins; it returns how many were added.
+func (s *Store) Import(list []Node) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	added := 0
+	for _, n := range list {
+		if n.ID == "" || n.Token == "" || n.Fingerprint == "" {
+			continue
+		}
+		addr, err := NormalizeAddress(n.Address)
+		if err != nil {
+			continue
+		}
+		known := false
+		for _, o := range s.nodes {
+			known = known || o.ID == n.ID || o.Address == addr
+		}
+		if known {
+			continue
+		}
+		n.Address = addr
+		s.nodes = append(s.nodes, n)
+		added++
+	}
+	if added == 0 {
+		return 0, nil
+	}
+	return added, s.saveLocked()
+}
+
 func (s *Store) Get(id string) (Node, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

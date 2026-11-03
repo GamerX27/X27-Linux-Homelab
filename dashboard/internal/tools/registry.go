@@ -329,6 +329,9 @@ var All = []Tool{
 	{Name: "list_backups", Scope: Read, Params: with(nil),
 		Description: "App backups on a node: the schedule, which apps are included, the archives kept, and the last backup run.",
 		Run:         func(c Call) (any, error) { return passthrough(c.nodeGet("/docker/backups")) }},
+	{Name: "list_mounts", Scope: Read, Params: with(nil),
+		Description: "NFS and SMB shares mounted on a node: server and share, mount point (/var/mnt/<name>), state (mounted, waiting for first access, failed, off), mounted at boot or not, whether Docker waits for it at boot, and space used. Never includes passwords.",
+		Run:         func(c Call) (any, error) { return passthrough(c.nodeGet("/storage/mounts")) }},
 	{Name: "rollout_status", Scope: Read,
 		Description: "The multi-node OS update the main node runs or ran last: each node's step (downloading, rebooting, done, failed).",
 		Run:         func(c Call) (any, error) { return passthrough(c.get("/api/rollout")) }},
@@ -467,6 +470,13 @@ var All = []Tool{
 				return output(c.nodePost("/netbird/service", map[string]any{"enabled": c.boolean("enabled")}))
 			}
 			return output(c.nodePost("/features/services/"+seg(id), map[string]any{"enabled": c.boolean("enabled")}))
+		}},
+	{Name: "mount_action", Scope: Admin,
+		Params:      with(map[string]any{"mount": str("Mount name from list_mounts."), "action": enum("mount · unmount (fails while containers use it).", "mount", "unmount")}),
+		Required:    []string{"mount", "action"},
+		Description: "Mount or unmount one of a node's NFS/SMB shares. Adding, changing and removing mounts is only possible in the dashboard.",
+		Run: func(c Call) (any, error) {
+			return output(c.nodePost("/storage/mounts/"+seg(c.str("mount"))+"/"+c.str("action"), nil))
 		}},
 	{Name: "prune_docker", Scope: Admin,
 		Params:      with(map[string]any{"what": enum("images: unused images · containers: stopped containers · networks: unused networks.", "images", "containers", "networks")}),

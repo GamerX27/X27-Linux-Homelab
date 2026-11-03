@@ -95,3 +95,18 @@ func TestSaveStackKeepsEnv(t *testing.T) {
 		t.Fatal(last)
 	}
 }
+
+func TestMountActionOnlyMountsAndUnmounts(t *testing.T) {
+	var reqs []string
+	tl, _ := Find("mount_action")
+	if _, err := tl.Exec(Call{Do: fake(&reqs, `{}`), Args: map[string]any{"mount": "nas", "action": "remove"}}); err == nil {
+		t.Error("remove accepted")
+	}
+	reqs = nil
+	if _, err := tl.Exec(Call{Do: fake(&reqs, `{"output":""}`), Args: map[string]any{"mount": "nas-media", "action": "unmount"}}); err != nil {
+		t.Fatal(err)
+	}
+	if reqs[len(reqs)-1] != "POST /api/n/local/storage/mounts/nas-media/unmount {}" {
+		t.Fatal(reqs)
+	}
+}

@@ -293,36 +293,50 @@ func (c *Client) stackProject(o Owner, name string, needsFiles bool) (Project, e
 	return p, nil
 }
 
-// StackAction runs start/stop/resume/restart/recreate/remove on a stack.
+// stackSteps is the compose commands (after the project's own flags) an action runs, in order.
+func stackSteps(action string) ([][]string, error) {
+	switch action {
+	case "start":
+		return [][]string{{"up", "-d"}}, nil
+	case "stop":
+		return [][]string{{"stop"}}, nil
+	case "resume": // start the stopped containers as they are, without recreating them
+		return [][]string{{"start"}}, nil
+	case "restart":
+		return [][]string{{"restart"}}, nil
+	case "remove":
+		return [][]string{{"down"}}, nil
+	case "recreate":
+		return [][]string{{"pull"}, {"up", "-d", "--force-recreate", "--remove-orphans"}}, nil
+	}
+	return nil, errors.New("unknown stack action")
+}
+
+// actionNeedsFiles: projects from files that aren't on this host can only be
+// stopped/restarted/removed.
+func actionNeedsFiles(action string) bool {
+	return action == "start" || action == "recreate" || action == "resume"
+}
+
+// StackAction runs start/stop/resume/restart/recreate/remove on a stack and waits for it.
 func (c *Client) StackAction(o Owner, name, action string) (string, error) {
-	// Projects from files that aren't on this host can only be stopped/restarted/removed.
-	p, err := c.stackProject(o, name, action == "start" || action == "recreate" || action == "resume")
+	steps, err := stackSteps(action)
 	if err != nil {
 		return "", err
 	}
-	dc := func(args ...string) (string, error) {
-		return run.Cmd(15*time.Minute, "docker", composeArgs(p, args...)...)
+	p, err := c.stackProject(o, name, actionNeedsFiles(action))
+	if err != nil {
+		return "", err
 	}
-	switch action {
-	case "start":
-		return dc("up", "-d")
-	case "stop":
-		return dc("stop")
-	case "resume": // start the stopped containers as they are, without recreating them
-		return dc("start")
-	case "restart":
-		return dc("restart")
-	case "remove":
-		return dc("down")
-	case "recreate":
-		out, err := dc("pull")
+	var outs []string
+	for _, st := range steps {
+		out, err := run.Cmd(15*time.Minute, "docker", composeArgs(p, st...)...)
+		outs = append(outs, out)
 		if err != nil {
-			return out, err
+			return strings.TrimSpace(strings.Join(outs, "\n")), err
 		}
-		out2, err := dc("up", "-d", "--force-recreate", "--remove-orphans")
-		return strings.TrimSpace(out + "\n" + out2), err
 	}
-	return "", errors.New("unknown stack action")
+	return strings.TrimSpace(strings.Join(outs, "\n")), nil
 }
 
 // RemoveStack runs `docker compose down` and, when asked, deletes the stack's folder in

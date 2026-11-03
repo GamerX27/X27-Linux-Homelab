@@ -3,9 +3,12 @@
 package run
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -52,4 +55,64 @@ func ExitCode(timeout time.Duration, name string, args ...string) (string, int) 
 	default:
 		return strings.TrimSpace(string(out)) + err.Error(), -1
 	}
+}
+
+// Stream is Cmd that also hands each line of output (stdout and stderr together, split on
+// \n or \r) to onLine as it arrives, for progress shown while a long command runs.
+func Stream(timeout time.Duration, onLine func(string), name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	pr, pw := io.Pipe()
+	cmd.Stdout, cmd.Stderr = pw, pw
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); pw.Close() }()
+	var lines []string
+	sc := bufio.NewScanner(pr)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	sc.Split(scanLines)
+	for sc.Scan() {
+		l := strings.TrimRight(sc.Text(), " \t")
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		lines = append(lines, l)
+		if onLine != nil {
+			onLine(l)
+		}
+	}
+	io.Copy(io.Discard, pr) // a line too long for the scanner: drain so the command can finish
+	err := <-done
+	s := strings.TrimSpace(strings.Join(lines, "\n"))
+	if ctx.Err() == context.DeadlineExceeded {
+		return s, fmt.Errorf("%s timed out after %s", name, timeout)
+	}
+	if err != nil {
+		if s == "" {
+			return s, fmt.Errorf("%s: %w", name, err)
+		}
+		return s, errors.New(s)
+	}
+	return s, nil
+}
+
+// scanLines splits on \n, \r\n or a lone \r (progress lines that redraw themselves).
+func scanLines(data []byte, atEOF bool) (int, []byte, error) {
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		j := i + 1
+		if data[i] == '\r' && j < len(data) && data[j] == '\n' {
+			j++
+		} else if data[i] == '\r' && j == len(data) && !atEOF {
+			return 0, nil, nil // a \n may follow
+		}
+		return j, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }

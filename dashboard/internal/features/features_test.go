@@ -27,3 +27,25 @@ func TestScheduleArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCalendar(t *testing.T) {
+	for _, tc := range []struct{ cal, freq, wd, day, clock string }{
+		{"*-*-* 03:30:00", "daily", "", "", "03:30"},
+		{"Sun *-*-* 04:00:00", "weekly", "sun", "", "04:00"},
+		{"*-*-07 23:15:00", "monthly", "", "7", "23:15"},
+		{"*-*-15 01:00:00", "monthly", "", "15", "01:00"},
+	} {
+		f, wd, day, clock, ok := ParseCalendar(tc.cal)
+		if !ok || f != tc.freq || wd != tc.wd || day != tc.day || clock != tc.clock {
+			t.Errorf("%q: %s %s %s %s %v", tc.cal, f, wd, day, clock, ok)
+		}
+		if _, err := ScheduleArgs(f, wd, day, clock); err != nil {
+			t.Errorf("%q: parsed schedule rejected: %v", tc.cal, err)
+		}
+	}
+	for _, bad := range []string{"", "hourly", "Mon..Fri *-*-* 03:00:00", "Sun *-*-07 03:00:00"} {
+		if _, _, _, _, ok := ParseCalendar(bad); ok {
+			t.Errorf("%q parsed", bad)
+		}
+	}
+}

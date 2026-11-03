@@ -5,3 +5,7 @@ iso-out/
 *.iso.sha256sum
 /.bluebuild-scripts_*
 .bluebuild-scripts_*/
+
+# Written by .github/workflows/build-image.yml before the image build
+/build-number
+/dashboard/build-number

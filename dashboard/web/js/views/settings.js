@@ -3,12 +3,14 @@ import * as mainApi from '../api.js';
 
 export function renderSettings(el, { api, node, refreshNodes }) {
   const content = h('div.stack', h('div.card.empty', 'Loading…'));
+  let netTimer, stopped = false;
   clear(el, content);
 
   async function load() {
     try {
-      const [s, zones, d] = await Promise.all([api.get('/settings'), api.get('/settings/timezones'), api.get('/dashboard').catch(() => null)]);
-      draw(s, zones || [], d);
+      const [s, zones, d, n] = await Promise.all([api.get('/settings'), api.get('/settings/timezones'),
+        api.get('/dashboard').catch(() => null), api.get('/settings/network').catch(() => null)]);
+      if (!stopped) draw(s, zones || [], d, n);
     } catch (e) {
       clear(content, h('div.notice.warn', e.message));
     }
@@ -65,7 +67,96 @@ export function renderSettings(el, { api, node, refreshNodes }) {
         ' on the node. Pairing and turning the dashboard off are done there.'));
   }
 
-  function draw(s, zones, d) {
+  // IPv4 per connection. A change is reverted by the node unless it's kept in time, so a
+  // wrong address can't lock it out; the main node keeps a paired node's change itself
+  // once it answers on the new address.
+  function networkCard(n) {
+    if (!n) return null;
+    clearInterval(netTimer);
+    const ip = (a) => a.split('/')[0];
+    const list = (v) => v.split(/[\s,]+/).filter(Boolean);
+    const moveNote = h('div');
+    let pendingNote = null;
+    if (n.pending) {
+      const left = h('strong');
+      const tick = () => {
+        const sec = n.pending.deadline - Math.floor(Date.now() / 1000);
+        if (sec <= 0) { clearInterval(netTimer); load(); return; }
+        left.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+      };
+      tick();
+      // A paired node's change is kept by the main node, so look for that every 5 s.
+      let ticks = 0;
+      netTimer = setInterval(() => { tick(); if (!node.local && ++ticks % 5 === 0) load(); }, 1000);
+      const keep = h('button.btn.primary', { onclick: async () => {
+        if (await busy(keep, () => api.post('/settings/network/keep'), 'Network settings kept.')) load();
+      } }, 'Keep');
+      const revert = h('button.btn', { onclick: async () => {
+        if (await busy(revert, () => api.post('/settings/network/revert'), 'Network settings reverted.')) setTimeout(load, 2000);
+      } }, 'Revert now');
+      pendingNote = h('div.notice.warn', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } },
+        h('span', { style: { flex: '1' } }, `The change to ${n.pending.name} goes back in `, left, ' unless you keep it.'),
+        keep, revert);
+    }
+
+    const conn = (c) => {
+      const mode = h('select', h('option', { value: 'auto' }, 'DHCP'), h('option', { value: 'manual' }, 'Static'));
+      mode.value = c.method === 'manual' ? 'manual' : 'auto';
+      const lease = c.method === 'manual' ? null : c.current;
+      const addr = h('input', { type: 'text', spellcheck: false, autocapitalize: 'off', placeholder: '192.168.1.10/24',
+        value: (c.method === 'manual' ? c.addresses : lease.addresses).join(', ') });
+      const gw = h('input', { type: 'text', spellcheck: false, autocapitalize: 'off', placeholder: '192.168.1.1',
+        value: c.method === 'manual' ? c.gateway : lease.gateway });
+      const dns = h('input', { type: 'text', spellcheck: false, autocapitalize: 'off', value: c.dns.join(', '),
+        placeholder: c.method === 'manual' ? '1.1.1.1, 9.9.9.9' : 'From DHCP' });
+      const staticFields = [h('label.field', 'Address / prefix', addr), h('label.field', 'Gateway', gw)];
+      const show = () => staticFields.forEach((f) => { f.style.display = mode.value === 'manual' ? '' : 'none'; });
+      mode.onchange = show;
+      show();
+
+      const save = h('button.btn.primary', { disabled: !!n.pending, onclick: async () => {
+        const body = { method: mode.value, addresses: mode.value === 'manual' ? list(addr.value) : [],
+          gateway: mode.value === 'manual' ? gw.value.trim() : '', dns: list(dns.value) };
+        const here = node.local && c.current.addresses.some((a) => ip(a) === location.hostname);
+        const moving = here && body.method === 'manual' && body.addresses.length && !body.addresses.some((a) => ip(a) === location.hostname);
+        const lost = here && body.method === 'auto' && c.method === 'manual';
+        if (!await confirmAction('Change network', `${c.device} on ${node.name} is reconfigured. If you don't keep the change within `
+          + `${Math.round(n.revertAfter / 60)} minutes, it goes back to how it is now.`
+          + (moving ? ` This page loses the node; open it on the new address to keep the change.` : '')
+          + (lost ? ' DHCP may give the node another address; if this page loses it, the change goes back by itself.' : ''), 'Apply', false)) return;
+        const r = await busy(save, () => node.local ? api.post(`/settings/network/${encodeURIComponent(c.uuid)}`, body)
+          : mainApi.post(`/api/nodes/${encodeURIComponent(node.id)}/network/${encodeURIComponent(c.uuid)}`, body));
+        if (!r) return;
+        if (moving) {
+          const url = `${location.protocol}//${ip(body.addresses[0])}${location.port ? `:${location.port}` : ''}/${location.hash}`;
+          clear(moveNote, h('div.notice.warn', { style: { marginTop: '12px' } }, 'Applying… Open ',
+            h('a', { href: url }, url), ', log in and press Keep on this page there.'));
+        } else if (r.movedTo) {
+          clear(moveNote, h('div.notice', { style: { marginTop: '12px' } },
+            `The main node follows ${node.name} to ${r.movedTo} and keeps the change once it answers there.`));
+          setTimeout(() => refreshNodes?.(), 8000);
+        }
+        setTimeout(load, 3000);
+      } }, 'Apply');
+
+      const cur = c.current;
+      return h('div.stack', { style: { gap: '10px', paddingTop: '12px', borderTop: '1px solid var(--border)' } },
+        h('div', h('strong.mono', c.device), h('span.faint', ` ${c.name}`)),
+        h('dl.kv',
+          h('dt', 'Address'), h('dd.mono', cur.addresses.join(', ') || '—'),
+          h('dt', 'Gateway'), h('dd.mono', cur.gateway || '—'),
+          h('dt', 'DNS'), h('dd.mono', cur.dns.join(', ') || '—')),
+        h('div.form-grid', h('label.field', 'IPv4', mode), ...staticFields, h('label.field', 'DNS servers', dns), h('div.row', save)));
+    };
+
+    return h('div.card', h('h2', 'Network'), pendingNote,
+      n.connections.length ? n.connections.map(conn) : h('div.faint', 'No network connections found.'),
+      moveNote,
+      h('p.faint', { style: { marginBottom: 0 } }, 'IPv4 through NetworkManager. DNS servers are separated by commas; '
+        + 'with DHCP they replace the ones the network hands out. Leave them empty to use those.'));
+  }
+
+  function draw(s, zones, d, n) {
     const hostname = h('input', { type: 'text', value: s.hostname, spellcheck: false });
     const saveHost = h('button.btn.primary', { onclick: async () => {
       if (await busy(saveHost, () => api.post('/settings/hostname', { hostname: hostname.value.trim() }), 'Hostname changed.')) {
@@ -111,9 +202,10 @@ export function renderSettings(el, { api, node, refreshNodes }) {
         h('div.row',
           power('Reboot', 'reboot', `Reboot ${node.name} now?`),
           power('Shut down', 'poweroff', `Shut ${node.name} down? You'll need physical or hypervisor access to turn it back on.`))),
+      networkCard(n),
       dashboardCard(d));
   }
 
   load();
-  return () => {};
+  return () => { stopped = true; clearInterval(netTimer); };
 }

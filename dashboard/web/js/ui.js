@@ -49,6 +49,7 @@ export function icon(name, size = 18) {
     logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
     refresh: 'M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5',
     download: 'M12 3v12M7 10l5 5 5-5M5 21h14',
+    upload: 'M12 21V9M7 14l5-5 5 5M5 3h14',
     plug: 'M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5',
   };
   const s = svg('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
@@ -63,10 +64,30 @@ export function toast(msg, error = false) {
   setTimeout(() => t.remove(), error ? 9000 : 4500);
 }
 
-export function modal(title, body, actions = []) {
+// With `dirty` (a function, true while there are unsaved changes) the backdrop doesn't close the
+// dialog, and Escape or a dismiss button asks before discarding the changes.
+export function modal(title, body, actions = [], { dirty } = {}) {
   return new Promise((resolve) => {
-    const close = (v) => { back.remove(); document.removeEventListener('keydown', onKey); resolve(v); };
-    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    const close = (v) => {
+      back.remove();
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('beforeunload', onUnload);
+      resolve(v);
+    };
+    let asking = false;
+    const dismiss = async (v) => {
+      if (dirty?.()) {
+        if (asking) return;
+        asking = true;
+        const discard = await confirmAction('Discard changes?', "Your changes haven't been saved.", 'Discard');
+        asking = false;
+        if (!discard) return;
+      }
+      close(v);
+    };
+    const top = () => [...document.querySelectorAll('.modal-back')].at(-1) === back;
+    const onKey = (e) => { if (e.key === 'Escape' && top()) dismiss(null); };
+    const onUnload = (e) => { if (dirty?.()) e.preventDefault(); };
     const box = h('div.modal', { role: 'dialog', 'aria-modal': 'true' },
       h('h2', title), body,
       actions.length ? h('div.actions', actions.map((a) =>
@@ -78,11 +99,19 @@ export function modal(title, body, actions = []) {
               const v = await a.onclick();
               if (v !== false) close(v === undefined ? a.value : v);
             } finally { btn.disabled = false; btn.classList.remove('busy'); }
-          } else close(a.value);
+          } else if (a.value == null || a.value === false) dismiss(a.value);
+          else close(a.value);
         } }, a.label))) : null);
     if (body?.dataset?.wide) box.classList.add('wide');
-    const back = h('div.modal-back', { onclick: (e) => { if (e.target === back) close(null); } }, box);
+    // Only a click that starts and ends on the backdrop closes the dialog, so a text selection
+    // dragged out of it doesn't.
+    let downOnBack = false;
+    const back = h('div.modal-back', {
+      onpointerdown: (e) => { downOnBack = e.target === back; },
+      onclick: (e) => { if (e.target === back && downOnBack && !dirty) close(null); },
+    }, box);
     document.addEventListener('keydown', onKey);
+    if (dirty) window.addEventListener('beforeunload', onUnload);
     document.body.append(back);
     (box.querySelector('input, select') || box.querySelector('.btn.primary, .btn'))?.focus();
   });
@@ -93,6 +122,30 @@ export function confirmAction(title, message, label = 'Continue', danger = true)
     { label: 'Cancel', value: false },
     { label, value: true, class: danger ? 'danger solid' : 'primary' },
   ]);
+}
+
+// A dialog with output that refreshes while something runs. fetch resolves to
+// { text, running, status } (status: an element or text shown above the output).
+export async function showLiveLog(title, fetch, { every = 2000, empty = 'No output.' } = {}) {
+  const pre = h('pre.output', { style: { maxHeight: '60vh' } }, 'Loading…');
+  const head = h('div.live-status');
+  let t, open = true, first = true;
+  const tick = async () => {
+    let running = false;
+    try {
+      const r = await fetch();
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+      pre.textContent = r.text || (r.running ? 'Waiting for output…' : empty);
+      if (atBottom || first) pre.scrollTop = pre.scrollHeight;
+      first = false;
+      clear(head, r.status || null);
+      running = r.running;
+    } catch (e) { pre.textContent = e.message; }
+    if (open && running) t = setTimeout(tick, every);
+  };
+  tick();
+  await modal(title, h('div.stack', { 'data-wide': '1' }, head, pre), [{ label: 'Close', value: true, class: 'primary' }]);
+  open = false; clearTimeout(t);
 }
 
 // Runs an async action on a button with a spinner, toasting the result.
@@ -216,8 +269,11 @@ export function menu(items, label = 'More actions') {
     if (openMenu?.btn === btn) { closeMenu(); return; }
     closeMenu();
     const list = items.filter((i) => i && !i.hidden);
+    // A disabled item stays in the list, grayed out, with its reason (`disabled`, if a string)
+    // as the tooltip.
     const pop = h('div.menu', { role: 'menu' }, list.map((i) =>
-      h('button.menu-item', { type: 'button', role: 'menuitem', class: i.danger ? 'danger' : '',
+      h('button.menu-item', { type: 'button', role: 'menuitem', class: i.danger ? 'danger' : '', disabled: !!i.disabled,
+        title: typeof i.disabled === 'string' ? i.disabled : null,
         onclick: (ev) => { ev.stopPropagation(); closeMenu(); i.onclick(); } }, i.label)));
     document.body.append(pop);
     const r = btn.getBoundingClientRect();
@@ -226,7 +282,7 @@ export function menu(items, label = 'More actions') {
     pop.style.top = (r.bottom + ht + 8 > innerHeight ? r.top - ht - 4 : r.bottom + 4) + 'px';
     const outside = (ev) => { if (!pop.contains(ev.target) && ev.target !== btn) closeMenu(); };
     const keys = (ev) => {
-      const els = [...pop.querySelectorAll('.menu-item')];
+      const els = [...pop.querySelectorAll('.menu-item:not(:disabled)')];
       const i = els.indexOf(document.activeElement);
       if (ev.key === 'Escape') { ev.preventDefault(); closeMenu(); btn.focus(); }
       else if (ev.key === 'ArrowDown') { ev.preventDefault(); els[(i + 1) % els.length]?.focus(); }
@@ -238,7 +294,7 @@ export function menu(items, label = 'More actions') {
     document.addEventListener('mousedown', outside, true);
     document.addEventListener('keydown', keys, true);
     window.addEventListener('scroll', closeMenu, true);
-    pop.querySelector('.menu-item')?.focus();
+    pop.querySelector('.menu-item:not(:disabled)')?.focus();
   });
   return btn;
 }

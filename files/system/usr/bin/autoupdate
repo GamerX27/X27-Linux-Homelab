@@ -158,6 +158,7 @@ status() {
     case "$phase" in
       done) echo "Last update:       ${to:-installed}, checked after the reboot ($(fmt_unix "$at"))" ;;
       failed) echo "Last update:       failed ($(fmt_unix "$at")): ${err}" ;;
+      cancelled) echo "Last update:       cancelled ($(fmt_unix "$at"))" ;;
       staged) echo "Last update:       ${to} downloaded, waiting for a reboot" ;;
       uptodate) echo "Last update:       none needed, already up to date ($(fmt_unix "$at"))" ;;
       "") ;;

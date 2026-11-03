@@ -49,16 +49,19 @@ type Config struct {
 
 func (c Config) scheduled() bool { return c.Freq != "" && c.Freq != "off" }
 
-// Job is one backup run in the background, polled by the UI like a container update.
+// Job is one backup or import run in the background, polled by the UI like a container update.
 type Job struct {
 	ID         int64    `json:"id"`
-	Kind       string   `json:"kind"`  // manual, scheduled
-	Phase      string   `json:"phase"` // starting, stopping, archiving, starting-again, done, failed
+	Kind       string   `json:"kind"`  // manual, scheduled, import
+	Phase      string   `json:"phase"` // starting, stopping, archiving, starting-again, done, failed; import: apps, starting-app, updates, shares, dashboard, network
 	Current    string   `json:"current,omitempty"`
 	Pending    []string `json:"pending,omitempty"`
 	Done       int      `json:"done"`
 	Failed     int      `json:"failed"`
 	Error      string   `json:"error,omitempty"`
+	Summary    string   `json:"summary,omitempty"` // import: what was imported
+	Waiting    bool     `json:"waiting,omitempty"` // import: a network change waits to be kept
+	Port       int      `json:"port,omitempty"`    // import: the port the dashboard moves to
 	StartedAt  int64    `json:"startedAt"`
 	FinishedAt int64    `json:"finishedAt,omitempty"`
 }
@@ -87,7 +90,10 @@ type Manager struct {
 	cfg     Config
 	job     *Job
 	log     []string
-	running sync.Mutex // one backup run at a time
+	running sync.Mutex // one backup, export or import at a time
+	imp     *pendingImport
+
+	Server ServerHooks // set once before serving
 }
 
 // New loads the saved settings and starts the scheduler.
@@ -98,6 +104,7 @@ func New(dk *docker.Client) *Manager {
 			log.Printf("backups: reading %s: %v", m.path, err)
 		}
 	}
+	os.RemoveAll(importDir()) // uploads waiting before a restart are gone
 	go func() {
 		for {
 			time.Sleep(time.Minute)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/run"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/systemd"
 )
 
 const (
@@ -62,20 +63,7 @@ var services = []Service{
 		Warning: "Turning Docker off stops every container."},
 }
 
-func show(unit string, props ...string) map[string]string {
-	args := []string{"show", unit, "--timestamp=unix"}
-	for _, p := range props {
-		args = append(args, "-p", p)
-	}
-	out, _ := run.Cmd(5*time.Second, "systemctl", args...)
-	m := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if k, v, ok := strings.Cut(line, "="); ok {
-			m[k] = v
-		}
-	}
-	return m
-}
+var show = systemd.Show
 
 func unixTS(v string) int64 {
 	var n int64
@@ -169,6 +157,26 @@ func ScheduleArgs(freq, weekday, day, clock string) ([]string, error) {
 		return []string{"on", "monthly", day, clock}, nil
 	}
 	return nil, errors.New("choose daily, weekly or monthly")
+}
+
+var calendarRe = regexp.MustCompile(`^(?:([A-Za-z]{3}) )?\*-\*-(\*|\d{2}) (\d{2}:\d{2}):00$`)
+
+// ParseCalendar reads back the OnCalendar= value autoupdate writes ("Sun *-*-* 03:30:00")
+// as the schedule SetAutoupdate takes, so an exported schedule can be set again.
+func ParseCalendar(cal string) (freq, weekday, day, clock string, ok bool) {
+	m := calendarRe.FindStringSubmatch(strings.TrimSpace(cal))
+	if m == nil {
+		return "", "", "", "", false
+	}
+	switch {
+	case m[1] != "" && m[2] == "*":
+		return "weekly", strings.ToLower(m[1]), "", m[3], true
+	case m[1] == "" && m[2] == "*":
+		return "daily", "", "", m[3], true
+	case m[1] == "":
+		return "monthly", "", strings.TrimLeft(m[2], "0"), m[3], true
+	}
+	return "", "", "", "", false
 }
 
 func autoupdate(args ...string) (string, error) {

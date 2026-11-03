@@ -42,6 +42,7 @@ const (
 	PhaseVerifying   = "verifying"
 	PhaseDone        = "done"
 	PhaseFailed      = "failed"
+	PhaseCancelled   = "cancelled"
 	PhaseUpToDate    = "uptodate"
 )
 
@@ -452,6 +453,22 @@ func Apply() error {
 		return fakeApply()
 	}
 	return startUnit("autoupdate-apply.service")
+}
+
+// Cancel stops an update that's still checking or downloading. Stopping the unit makes
+// autoupdate-run cancel its rpm-ostree transaction and record the update as cancelled.
+func Cancel() error {
+	if Fake {
+		return fakeCancel()
+	}
+	if !Supported() {
+		return errors.New("not an rpm-ostree system")
+	}
+	if j := ReadJob(BootID(), true); j == nil || (j.Phase != PhaseChecking && j.Phase != PhaseDownloading) {
+		return errors.New("no update is downloading")
+	}
+	_, err := run.Cmd(2*time.Minute, "systemctl", "stop", "autoupdate.service", "autoupdate-stage.service")
+	return err
 }
 
 // Rollback makes the previous deployment the default and reboots into it.

@@ -110,8 +110,9 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-2); text-transform: up
 .tab {
   padding: 8px 14px; border: 0; background: none; cursor: pointer;
   color: var(--text-2); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+  text-decoration: none;
 }
-.tab:hover { color: var(--text); }
+.tab:hover { color: var(--text); border-bottom-color: var(--border); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 550; }
 
 /* Cards & grid */
@@ -308,6 +309,7 @@ textarea.code {
 }
 textarea.code:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 details > summary { cursor: pointer; font-size: 13px; margin-bottom: 6px; }
+.mounts-table .phone-share { display: none; }
 pre.error-output { background: color-mix(in srgb, var(--critical) 14%, var(--surface)); color: var(--text); max-height: 220px; }
 
 /* Published ports */
@@ -336,6 +338,7 @@ a.port::after { content: " ↗"; font-size: 10px; }
 .menu-item { border: 0; background: none; text-align: left; padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 13.5px; color: var(--text); }
 .menu-item:hover, .menu-item:focus { background: var(--surface-2); outline: none; }
 .menu-item.danger { color: var(--critical-ink); }
+.menu-item:disabled { color: var(--text-3); cursor: not-allowed; background: none; }
 .link-btn { border: 0; background: none; padding: 0; cursor: pointer; color: var(--text); font: inherit; text-align: left; }
 .link-btn:hover { color: var(--accent); text-decoration: underline; }
 .check-row { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
@@ -369,6 +372,12 @@ a.port::after { content: " ↗"; font-size: 10px; }
 .update-result { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 8px 8px 14px; }
 .update-result.failed { background: color-mix(in srgb, var(--critical) 10%, transparent); }
 .update-result.done { background: color-mix(in srgb, var(--good) 10%, transparent); }
+.update-result.warned { background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.stack-result { margin: 4px 8px; }
+.app-title .sub.job-line { color: var(--text-2); }
+.ct-trouble { display: block; color: var(--warning-ink); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.ct-trouble:hover { color: var(--warning-ink); }
+.live-status:empty { display: none; }
 .spinner.small { width: 12px; height: 12px; border-width: 2px; }
 .badge.updating { background: var(--accent-soft); color: var(--text); }
 .badge.updating .spinner { border-color: var(--accent); border-right-color: transparent; }
@@ -579,6 +588,12 @@ pre.rollout-log { margin-top: 10px; max-height: 320px; overflow: auto; }
   .form-grid { grid-template-columns: 1fr; }
   .feature-row { gap: 12px; }
 
+  /* Storage: name, status, boot switch and menu fit; the share moves under the name */
+  .mounts-table .col-usage, .mounts-table .col-share, .mounts-table .mount-point { display: none; }
+  .mounts-table .phone-share { display: block; }
+  .mounts-table th, .mounts-table td { padding-left: 6px; padding-right: 6px; }
+  .mounts-table td .sub { overflow-wrap: anywhere; }
+
   /* Files */
   .files-table .col-mod, .files-table .col-perm { display: none; }
   .files-table { table-layout: fixed; }
@@ -615,3 +630,17 @@ pre.rollout-log { margin-top: 10px; max-height: 320px; overflow: auto; }
   pre.output { font-size: 11.5px; }
   .login .card { padding: 22px 18px; }
 }
+
+/* Files: Home or a network share */
+select.places { width: auto; max-width: 180px; }
+.crumbs .copy-path, .crumbs .ro-badge { margin-left: 10px; font-size: 12.5px; }
+.crumbs .copy-path { color: var(--text-3); }
+a.share-name { font-weight: 600; color: var(--text); text-decoration: none; }
+a.share-name:hover { color: var(--accent); text-decoration: underline; }
+
+/* Integrations: numbered setup steps */
+.setup-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 14px; }
+.setup-steps > li > strong { display: block; margin-bottom: 6px; }
+.setup-steps > li > * + * { margin-top: 6px; }
+.setup-trouble { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+.setup-head { margin: 8px 0 0; }

@@ -26,6 +26,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/features"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/osupdate"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/run"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/system"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/terminal"
 )
@@ -88,12 +89,13 @@ type Local struct {
 	Upgrader    *websocket.Upgrader
 	Fingerprint string // the dashboard's certificate, for Settings
 
-	sampler *system.Sampler
-	checker *osupdate.Checker
-	docker  *docker.Client
-	updater *docker.Updater
-	backups *backup.Manager
-	files   files.Runner
+	sampler   *system.Sampler
+	checker   *osupdate.Checker
+	docker    *docker.Client
+	updater   *docker.Updater
+	stackJobs *docker.StackJobs
+	backups   *backup.Manager
+	files     files.Runner
 
 	osMu     sync.Mutex
 	osCached osupdate.Status
@@ -112,7 +114,22 @@ func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	d := docker.New()
 	l := &Local{Version: version, Dev: dev, Upgrader: up,
 		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d),
-		backups: backup.New(d), files: files.Runner{Dev: dev}}
+		stackJobs: docker.NewStackJobs(d), backups: backup.New(d), files: files.Runner{Dev: dev}}
+	l.stackJobs.Done = func(j docker.StackJob) {
+		if j.Action == "recreate" && j.Phase == "done" {
+			l.updater.Check() // clear its "update available" badge
+		}
+	}
+	l.backups.Server = backup.ServerHooks{Dev: dev, Changed: l.dropAutoupdate}
+	if !dev {
+		// An import that changed the port or presets: after the UI saw the job end.
+		l.backups.Server.Restart = func() {
+			go func() {
+				time.Sleep(6 * time.Second)
+				run.Cmd(30*time.Second, "systemctl", "restart", "dashboard.service")
+			}()
+		}
+	}
 	go func() {
 		time.Sleep(time.Minute)
 		for {
@@ -256,6 +273,9 @@ func (l *Local) Handler() http.Handler {
 	mux.HandleFunc("POST /os/apply", func(w http.ResponseWriter, r *http.Request) {
 		result(w, r, "reboot into OS update", "Rebooting into the update…", l.osAction(osupdate.Apply))
 	})
+	mux.HandleFunc("POST /os/cancel", func(w http.ResponseWriter, r *http.Request) {
+		result(w, r, "cancel OS update", "Update cancelled.", l.osAction(osupdate.Cancel))
+	})
 	mux.HandleFunc("GET /os/log", func(w http.ResponseWriter, r *http.Request) {
 		off, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
 		text, next := osupdate.ReadLog(off)
@@ -344,7 +364,12 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		cs, err := l.docker.Containers()
-		ok(w, map[string]any{"root": o.Root(), "stacks": docker.ListStacks(o, cs)}, err)
+		ok(w, map[string]any{"root": o.Root(), "stacks": docker.ListStacks(o, cs), "jobs": l.stackJobs.List()}, err)
+	})
+	// The running or last background action on a stack, with its output.
+	mux.HandleFunc("GET /docker/stacks/{name}/log", func(w http.ResponseWriter, r *http.Request) {
+		job, text := l.stackJobs.Job(r.PathValue("name"))
+		writeJSON(w, http.StatusOK, map[string]any{"job": job, "text": text})
 	})
 	mux.HandleFunc("GET /docker/stacks/{name}", func(w http.ResponseWriter, r *http.Request) {
 		o, err := l.owner(r)
@@ -363,6 +388,7 @@ func (l *Local) Handler() http.Handler {
 		var body struct {
 			Name, Compose, Env string
 			Start              bool // start (create) or pull & recreate (edit) after saving
+			Background         bool // start as a stack job and answer right away
 		}
 		if err := readJSON(r, &body); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -377,18 +403,31 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		out, err := docker.SaveStack(o, name, body.Compose, body.Env, create)
-		if err == nil && body.Start {
-			action := "recreate"
-			if create {
-				action = "start"
-			}
-			var out2 string
-			out2, err = l.docker.StackAction(o, name, action)
-			out = strings.TrimSpace(out + "\n" + out2)
-		}
 		verb := "save"
 		if create {
 			verb = "create"
+		}
+		action := "recreate"
+		if create {
+			action = "start"
+		}
+		if err == nil && body.Start && body.Background {
+			log.Printf("%s: %s stack %s", userOf(r), verb, name)
+			job, jerr := l.stackJobs.Start(o, name, action, false)
+			if jerr != nil {
+				// Saved, but it couldn't start: say both, so the editor knows the files exist.
+				log.Printf("%s: stack %s %s failed: %v", userOf(r), action, name, jerr)
+				writeJSON(w, http.StatusOK, map[string]any{"output": out, "startError": jerr.Error()})
+				return
+			}
+			log.Printf("%s: stack %s %s started", userOf(r), action, name)
+			writeJSON(w, http.StatusAccepted, map[string]any{"output": out, "job": job})
+			return
+		}
+		if err == nil && body.Start {
+			var out2 string
+			out2, err = l.docker.StackAction(o, name, action)
+			out = strings.TrimSpace(out + "\n" + out2)
 		}
 		result(w, r, verb+" stack "+name, out, err)
 	}
@@ -405,9 +444,28 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		name, a := r.PathValue("name"), r.PathValue("action")
+		var body struct{ DeleteFolder, Background bool }
+		readJSON(r, &body) // an empty body: keep the folder, wait for the action
+		if body.Background && a != "update" {
+			job, err := l.stackJobs.Start(o, name, a, body.DeleteFolder)
+			what := "stack " + a + " " + name
+			if a == "remove" && body.DeleteFolder {
+				what += " and delete its folder"
+			}
+			if err != nil {
+				log.Printf("%s: %s failed: %v", userOf(r), what, err)
+				code := http.StatusBadRequest
+				if errors.Is(err, docker.ErrStackBusy) {
+					code = http.StatusConflict
+				}
+				writeErr(w, code, err)
+				return
+			}
+			log.Printf("%s: %s started", userOf(r), what)
+			writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+			return
+		}
 		if a == "remove" {
-			var body struct{ DeleteFolder bool }
-			readJSON(r, &body) // an empty body means keep the folder
 			out, err := l.docker.RemoveStack(o, name, body.DeleteFolder)
 			what := "remove stack " + name
 			if body.DeleteFolder {
@@ -467,6 +525,85 @@ func (l *Local) Handler() http.Handler {
 		}
 		ok(w, map[string]any{"backups": l.backups.Status(o), "apps": apps}, err)
 	})
+	// Export & import: every stack's compose file and .env, the data of the apps picked, and
+	// the server's own settings in server.json. Its progress shows through /docker/backups.
+	mux.HandleFunc("GET /docker/backups/data-apps", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		cs, err := l.docker.Containers()
+		ok(w, map[string]any{"apps": backup.DataApps(o, cs)}, err)
+	})
+	mux.HandleFunc("GET /backup/export", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		data := q["data"]
+		parts, err := backup.ParseParts(q["parts"])
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		what := "export (data: none; parts: " + parts.String() + ")"
+		if len(data) > 0 {
+			what = "export (data: " + strings.Join(data, ", ") + "; parts: " + parts.String() + ")"
+		}
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": backup.ExportName(time.Now())}))
+		log.Printf("%s: %s", userOf(r), what)
+		sw := &sentWriter{w: w}
+		if err := l.backups.Export(r.Context(), sw, o, data, q.Get("stop") == "1", parts); err != nil {
+			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			if !sw.sent {
+				w.Header().Del("Content-Disposition")
+				status := http.StatusBadRequest
+				if errors.Is(err, backup.ErrRunning) {
+					status = http.StatusConflict
+				}
+				writeErr(w, status, err)
+			}
+		}
+	})
+	mux.HandleFunc("POST /backup/import", func(w http.ResponseWriter, r *http.Request) {
+		o, err := l.owner(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		pv, err := l.backups.Upload(o, http.MaxBytesReader(w, r.Body, files.MaxUpload))
+		if err != nil {
+			log.Printf("%s: import upload failed: %v", userOf(r), err)
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		log.Printf("%s: import upload: export of %s with %d app(s)", userOf(r), pv.Host, len(pv.Apps))
+		writeJSON(w, http.StatusOK, pv)
+	})
+	mux.HandleFunc("POST /backup/import/apply", func(w http.ResponseWriter, r *http.Request) {
+		var body backup.ImportRequest
+		if err := readJSON(r, &body); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		o, err := l.owner(r)
+		var job backup.Job
+		if err == nil {
+			job, err = l.backups.StartImport(o, body)
+		}
+		what := "import (apps: " + strings.Join(body.Apps, ", ") + "; parts: " + strings.Join(body.Parts, ", ") + ")"
+		if err != nil {
+			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		log.Printf("%s: %s started", userOf(r), what)
+		writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+	})
 	mux.HandleFunc("POST /docker/backups/config", func(w http.ResponseWriter, r *http.Request) {
 		var body backup.Config
 		if err := readJSON(r, &body); err != nil {
@@ -516,15 +653,24 @@ func (l *Local) Handler() http.Handler {
 	})
 
 	// Files: the acting user's home folder, with that user's permissions (see internal/files).
+	// ?root=<share> on any of them works in that network share's folder instead.
 	fsUser := func(r *http.Request) string { return userOf(r) }
+	fsRoot := func(r *http.Request) string { return r.URL.Query().Get("root") }
+	// fsWhere is how the log names a path: ~/... or /var/mnt/<share>/...
+	fsWhere := func(r *http.Request, p string) string {
+		if s := fsRoot(r); s != "" {
+			return path.Join(files.ShareRoot, s, p)
+		}
+		return "~/" + p
+	}
 	mux.HandleFunc("GET /files/list", func(w http.ResponseWriter, r *http.Request) {
 		var out json.RawMessage
-		err := l.files.Run(fsUser(r), "list", files.Args{Path: r.URL.Query().Get("path")}, nil, &out)
+		err := l.files.Run(fsUser(r), "list", files.Args{Root: fsRoot(r), Path: r.URL.Query().Get("path")}, nil, &out)
 		ok(w, out, err)
 	})
 	mux.HandleFunc("GET /files/read", func(w http.ResponseWriter, r *http.Request) {
 		var out json.RawMessage
-		err := l.files.Run(fsUser(r), "read", files.Args{Path: r.URL.Query().Get("path")}, nil, &out)
+		err := l.files.Run(fsUser(r), "read", files.Args{Root: fsRoot(r), Path: r.URL.Query().Get("path")}, nil, &out)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -548,15 +694,19 @@ func (l *Local) Handler() http.Handler {
 			if op == "write" {
 				stdin = strings.NewReader(body.Content)
 			}
-			a := files.Args{Path: body.Path, Paths: body.Paths, To: body.To, Mode: body.Mode, Create: body.Create, Recursive: body.Recursive}
+			a := files.Args{Root: fsRoot(r), Path: body.Path, Paths: body.Paths, To: body.To, Mode: body.Mode, Create: body.Create, Recursive: body.Recursive}
 			var out struct{ Path string }
 			err := l.files.Run(fsUser(r), op, a, stdin, &out)
-			what := "files " + op + " ~/" + body.Path
+			what := "files " + op + " " + fsWhere(r, body.Path)
 			if len(body.Paths) > 0 {
-				what = "files " + op + " ~/" + strings.Join(body.Paths, ", ~/")
+				ps := make([]string, len(body.Paths))
+				for i, p := range body.Paths {
+					ps[i] = fsWhere(r, p)
+				}
+				what = "files " + op + " " + strings.Join(ps, ", ")
 			}
 			if body.To != "" || (op == "move" || op == "copy") && len(body.Paths) > 0 {
-				what += " -> ~/" + body.To
+				what += " -> " + fsWhere(r, body.To)
 			}
 			if body.Mode != "" {
 				what += " " + body.Mode
@@ -574,25 +724,28 @@ func (l *Local) Handler() http.Handler {
 	mux.HandleFunc("POST /files/compress", fileOp("compress"))
 	mux.HandleFunc("POST /files/upload", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		a := files.Args{Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1", Parents: q.Get("parents") == "1"}
+		a := files.Args{Root: fsRoot(r), Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1", Parents: q.Get("parents") == "1"}
 		var out struct{ Size int64 }
 		err := l.files.Run(fsUser(r), "upload", a, http.MaxBytesReader(w, r.Body, files.MaxUpload+1), &out)
-		result(w, r, "files upload ~/"+path.Join(a.Path, a.Name), "", err)
+		result(w, r, "files upload "+fsWhere(r, path.Join(a.Path, a.Name)), "", err)
 	})
 	// Download: one file as is, a folder as .tar.gz, several entries (?path=a&path=b) as
 	// .zip. inline=1 shows media and PDFs in the browser instead (see previewType).
 	mux.HandleFunc("GET /files/download", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		paths := q["path"]
-		op, a, what := "download", files.Args{Path: q.Get("path")}, "~/"+q.Get("path")
+		op, a, what := "download", files.Args{Root: fsRoot(r), Path: q.Get("path")}, fsWhere(r, q.Get("path"))
 		var name, ctype string
 		if len(paths) > 1 {
 			dir := path.Dir(strings.Trim(paths[0], "/"))
 			name = path.Base(dir)
 			if dir == "." {
 				name = userOf(r)
+				if s := fsRoot(r); s != "" {
+					name = s
+				}
 			}
-			op, a, what = "zip", files.Args{Paths: paths}, "~/"+strings.Join(paths, ", ~/")
+			op, a, what = "zip", files.Args{Root: fsRoot(r), Paths: paths}, fsWhere(r, strings.Join(paths, ", "))
 			name, ctype = name+".zip", "application/zip"
 		} else {
 			var st files.Stat
@@ -731,6 +884,8 @@ func (l *Local) Handler() http.Handler {
 		result(w, r, "ntp "+strconv.FormatBool(body.Enabled), "", system.SetNTP(body.Enabled))
 	})
 	l.adminRoutes(mux)
+	l.storageRoutes(mux)
+	l.networkRoutes(mux)
 	return mux
 }
 

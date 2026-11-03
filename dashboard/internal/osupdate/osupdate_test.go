@@ -52,6 +52,7 @@ func TestAdjustJob(t *testing.T) {
 		{PhaseRebooting, "b1", false, PhaseRebooting},
 		{PhaseRebooting, "b2", false, PhaseVerifying}, // rebooted, verify hasn't run yet
 		{PhaseDone, "b2", false, PhaseDone},
+		{PhaseCancelled, "b1", false, PhaseCancelled}, // stays cancelled, not "the run died"
 	}
 	for _, c := range cases {
 		j := adjustJob(&Job{Phase: c.phase, BootID: "b1"}, c.boot, c.active)

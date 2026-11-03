@@ -157,6 +157,18 @@ func fakeStage(apply bool) error {
 	return nil
 }
 
+func fakeCancel() error {
+	fake.Lock()
+	defer fake.Unlock()
+	fakeAdvance()
+	if fake.job == nil || (fake.job.Phase != PhaseChecking && fake.job.Phase != PhaseDownloading) {
+		return errors.New("no update is downloading")
+	}
+	fake.job.Phase, fake.job.Error, fake.job.FinishedAt = PhaseCancelled, "The update was cancelled before it was staged.", time.Now().Unix()
+	fakeLogf("Stopped; cancelling the rpm-ostree transaction.\n%s", fake.job.Error)
+	return nil
+}
+
 func fakeApply() error {
 	fake.Lock()
 	defer fake.Unlock()

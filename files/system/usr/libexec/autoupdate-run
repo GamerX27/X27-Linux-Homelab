@@ -8,7 +8,9 @@
 # Every step is written to /var/lib/autoupdate/state.json and the output to last.log; the
 # dashboard follows an update through both, reboot included. Gotify gets a message before
 # the reboot, after it (updated, or came back on the old image) and when an update fails.
-# "Already up to date" sends nothing.
+# "Already up to date" sends nothing, and neither does a cancelled update: stopping the unit
+# (the dashboard's Cancel) or `rpm-ostree cancel` ends it as "cancelled", and the next run
+# starts over.
 set -euo pipefail
 
 NOTIFY=/usr/libexec/autoupdate-notify
@@ -57,6 +59,67 @@ $3}"
 
 status_json() {
   rpm-ostree status --json 2>/dev/null || echo '{}'
+}
+
+# Is an rpm-ostree transaction running (ours or anyone's)?
+transaction_running() {
+  status_json | jq -e '.transaction != null' >/dev/null 2>&1
+}
+
+# Waits up to 5 minutes for another rpm-ostree transaction to end, then cancels it: one left
+# behind by a client that went away would otherwise block every update.
+clear_transaction() {
+  local i
+  for ((i = 0; i < 60; i++)); do
+    transaction_running || return 0
+    ((i > 0)) || echo "Waiting for the rpm-ostree transaction that's running to finish." | tee -a "$LOG"
+    sleep 5
+  done
+  echo "Still running after 5 minutes; cancelling it." | tee -a "$LOG"
+  rpm-ostree cancel 2>&1 | tee -a "$LOG" || true
+  sleep 2
+}
+
+# cancelled <message>: records the update as cancelled and ends the run. No Gotify message:
+# someone cancelled it on purpose.
+cancelled() {
+  trap - TERM INT
+  set_state cancelled error "$1" finishedAt "$(date +%s)"
+  echo "$1" | tee -a "$LOG"
+  exit 0
+}
+
+# The unit stopped while it checks or downloads: cancel the transaction too, so the daemon
+# doesn't keep pulling the image with no one waiting for it.
+on_stop() {
+  echo "Stopped; cancelling the rpm-ostree transaction." | tee -a "$LOG"
+  rpm-ostree cancel 2>&1 | tee -a "$LOG" || true
+  cancelled "The update was cancelled before it was staged."
+}
+
+# ostree <what> <rpm-ostree args>: runs rpm-ostree with its output in the log, and sets $out
+# (the output) and $rc. A transaction that's already running is waited for (clear_transaction)
+# and the command tried again, up to 3 times; a cancelled one ends the run as cancelled; any
+# other error fails it with "<what> failed".
+ostree() {
+  local what="$1" try tmp="$DIR/rpm-ostree.out"
+  shift
+  for try in 1 2 3; do
+    rc=0
+    : >"$tmp"
+    rpm-ostree "$@" 2>&1 | tee -a "$LOG" "$tmp" || rc=${PIPESTATUS[0]}
+    out="$(cat "$tmp")"
+    case "$rc" in 0 | 77) return 0 ;; esac
+    if grep -qi 'transaction in progress' <<<"$out" && ((try < 3)); then
+      clear_transaction
+      echo "Trying again." | tee -a "$LOG"
+      continue
+    fi
+    if grep -qiE 'cancell?ed' <<<"$out"; then
+      cancelled "The update was cancelled (rpm-ostree cancel) before it was staged."
+    fi
+    fail "${what} failed (rpm-ostree exited with ${rc})." "$rc" "$(tail -n 15 "$LOG")"
+  done
 }
 
 # deployment <booted|staged> <jq expression>: a field of that deployment in $status.
@@ -130,9 +193,9 @@ stage() {
     '{id: $id, phase: "checking", bootId: $boot, startedAt: $now, updatedAt: $now, from: $from, fromName: $fromName}' >"$STATE.tmp"
   mv "$STATE.tmp" "$STATE"
   : >"$LOG"
+  trap on_stop TERM INT
 
-  out="$(rpm-ostree upgrade --check --unchanged-exit-77 2>&1)" || rc=$?
-  echo "$out" | tee -a "$LOG"
+  ostree "Checking for an update" upgrade --check --unchanged-exit-77
   case "$rc" in
     0) ;;
     77)
@@ -144,21 +207,17 @@ stage() {
         echo "No update available." | tee -a "$LOG"
         set_state uptodate
       fi
+      trap - TERM INT
       return 0
       ;;
-    *) fail "Checking for an update failed (rpm-ostree exited with ${rc})." "$rc" "$(tail -n 15 "$LOG")" ;;
   esac
 
   version="$(awk '/AvailableUpdate/ { in_ = 1; next } in_ && $1 == "Version:" { print $2; exit }' <<<"$out")"
   digest="$(awk '/AvailableUpdate/ { in_ = 1; next } in_ && $1 == "Digest:" { print $2; exit }' <<<"$out")"
   set_state downloading to "$version" targetDigest "$digest"
 
-  rc=0
-  rpm-ostree upgrade --unchanged-exit-77 2>&1 | tee -a "$LOG" || rc=${PIPESTATUS[0]}
-  case "$rc" in
-    0 | 77) ;;
-    *) fail "Installing the update failed (rpm-ostree exited with ${rc})." "$rc" "$(tail -n 15 "$LOG")" ;;
-  esac
+  ostree "Installing the update" upgrade --unchanged-exit-77
+  trap - TERM INT
 
   status="$(status_json)"
   if [[ -z "$(deployment staged .checksum)" ]]; then
