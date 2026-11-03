@@ -1,0 +1,8 @@
+# Where to find the cosign signatures that policy.json requires for our images. BlueBuild's
+# signing module writes its own file, but with the owner as GitHub spells it (GamerX27), and
+# this lookup is case-sensitive: it didn't match the lowercase name the nodes pull, so update
+# checks failed with "A signature was required, but no signature exists". The prefix covers
+# every image we publish (-vm, -testing, -alma-testing).
+docker:
+  ghcr.io/gamerx27:
+    use-sigstore-attachments: true
