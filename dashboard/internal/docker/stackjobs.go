@@ -189,7 +189,7 @@ func (s *StackJobs) Start(o Owner, name, action string, deleteFolder bool) (Stac
 				return "", err
 			}
 		}
-		if action == "start" || action == "recreate" || action == "restart" || action == "resume" {
+		if action == "start" || action == "recreate" || action == "apply" || action == "restart" || action == "resume" {
 			s.phase(name, "checking")
 			s.logLine(name, "Checking that the containers stay up…")
 			return s.watch(name), nil

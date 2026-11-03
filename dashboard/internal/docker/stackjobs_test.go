@@ -109,6 +109,10 @@ func TestStackSteps(t *testing.T) {
 	if err != nil || len(st) != 2 || st[0][0] != "pull" || strings.Join(st[1], " ") != "up -d --force-recreate --remove-orphans" {
 		t.Fatalf("recreate: %v %v", st, err)
 	}
+	st, err = stackSteps("apply")
+	if err != nil || len(st) != 1 || strings.Join(st[0], " ") != "up -d --force-recreate --remove-orphans" {
+		t.Fatalf("apply: %v %v", st, err)
+	}
 	for _, a := range []string{"start", "stop", "resume", "restart", "remove"} {
 		if _, err := stackSteps(a); err != nil {
 			t.Error(a, err)

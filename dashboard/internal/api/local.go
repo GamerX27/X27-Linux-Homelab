@@ -387,7 +387,7 @@ func (l *Local) Handler() http.Handler {
 	saveStack := func(w http.ResponseWriter, r *http.Request, name string, create bool) {
 		var body struct {
 			Name, Compose, Env string
-			Start              bool // start (create) or pull & recreate (edit) after saving
+			Start              bool // start (create) or recreate without pulling (edit) after saving
 			Background         bool // start as a stack job and answer right away
 		}
 		if err := readJSON(r, &body); err != nil {
@@ -407,7 +407,8 @@ func (l *Local) Handler() http.Handler {
 		if create {
 			verb = "create"
 		}
-		action := "recreate"
+		// Recreate from the saved file, without pulling: updating images is Pull & recreate.
+		action := "apply"
 		if create {
 			action = "start"
 		}
