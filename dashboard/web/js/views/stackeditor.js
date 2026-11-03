@@ -24,6 +24,7 @@ export const STACK_ACTION = {
   stop: { ing: 'Stopping', done: 'stopped', label: 'Stop' },
   restart: { ing: 'Restarting', done: 'restarted', label: 'Restart' },
   recreate: { ing: 'Pulling & recreating', done: 'pulled and recreated', label: 'Pull & recreate' },
+  apply: { ing: 'Recreating', done: 'recreated', label: 'Recreate' },
   remove: { ing: 'Removing', done: 'removed', label: 'Remove' },
 };
 const actionOf = (j) => STACK_ACTION[j.action] || { ing: 'Working', done: 'done', label: j.action };
@@ -120,7 +121,7 @@ export async function openStackEditor({ api, root, name, onDone }) {
     envBox,
     h('p.faint', { style: { margin: 0, fontSize: '12.5px' } },
       'Checked with ', h('code', 'docker compose config'), ' before saving. Relative paths like ',
-      h('code', './data'), ' are inside the stack folder.' + (create ? '' : ' The previous version is kept as .bak.'),
+      h('code', './data'), ' are inside the stack folder.' + (create ? '' : ' The previous version is kept as .bak. Save & recreate uses the images already on the node; Pull & recreate gets newer ones.'),
       ' Ctrl+S saves without closing.'),
     err);
 

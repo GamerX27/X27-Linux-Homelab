@@ -308,6 +308,8 @@ func stackSteps(action string) ([][]string, error) {
 		return [][]string{{"down"}}, nil
 	case "recreate":
 		return [][]string{{"pull"}, {"up", "-d", "--force-recreate", "--remove-orphans"}}, nil
+	case "apply": // after saving the compose file: recreate from the images already here, no pull
+		return [][]string{{"up", "-d", "--force-recreate", "--remove-orphans"}}, nil
 	}
 	return nil, errors.New("unknown stack action")
 }
@@ -315,7 +317,7 @@ func stackSteps(action string) ([][]string, error) {
 // actionNeedsFiles: projects from files that aren't on this host can only be
 // stopped/restarted/removed.
 func actionNeedsFiles(action string) bool {
-	return action == "start" || action == "recreate" || action == "resume"
+	return action == "start" || action == "recreate" || action == "apply" || action == "resume"
 }
 
 // StackAction runs start/stop/resume/restart/recreate/remove on a stack and waits for it.
