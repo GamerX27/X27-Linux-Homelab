@@ -240,6 +240,10 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const osManual = osCandidates.length - osAuto.length;
   const firstAuto = Math.min(...osAuto.map((n) => n.summary.autoUpdateNext || Infinity));
   const running = job?.state === 'running';
+  // On an end-of-life tag of their channel (stable on Fedora 44 after it moved to 45): no more
+  // updates until they move. Once the move is staged they're ordinary update candidates, and
+  // Update… reboots them one at a time.
+  const osEol = osImage.filter((n) => n.summary.channelOutdated && !n.summary.updateStaged && !n.summary.updating);
 
   const osCheck = h('button.btn.small', { disabled: progress.busy.os, onclick: async () => {
     progress.busy.os = true; progress.os.clear();
@@ -252,6 +256,7 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
         const c = st?.check || {};
         if (c.error) set('os', n.id, 'crit', 'Check failed', c.error);
         else if (c.available) set('os', n.id, 'warn', `${release(c.version) || 'Newer image'} available`);
+        else if (n.summary.channelOutdated) set('os', n.id, 'crit', 'End of life: no more updates until it moves');
         else set('os', n.id, 'good', 'Up to date');
       } catch (e) { set('os', n.id, 'crit', e.message); }
     }));
@@ -264,10 +269,31 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const osStart = !running && osCandidates.length ? h('button.btn.small', { class: osManual ? 'primary' : '', onclick: () => updateDialog(osCandidates) },
     osManual ? `Update… (${osCandidates.length})` : 'Update now…') : null;
 
+  const osMove = !running && osEol.length ? h('button.btn.small.primary', { disabled: progress.busy.os, onclick: async () => {
+    if (!await confirmAction(`Move ${osEol.length} node${osEol.length > 1 ? 's' : ''} to the current release`,
+      `${osEol.map((n) => n.name).join(', ')} run${osEol.length > 1 ? '' : 's'} an end-of-life OS version. ${osEol.length > 1 ? 'Each downloads its' : 'It downloads its'} channel's current image now; `
+      + `nothing reboots yet. Then Update… reboots ${osEol.length > 1 ? 'them one at a time (the main node last)' : 'it'}. Data, containers and settings stay.`,
+      'Download now', false)) return;
+    progress.busy.os = true; progress.os.clear();
+    await Promise.all(osEol.map(async (n) => {
+      set('os', n.id, 'idle', 'Downloading the current release…');
+      try {
+        await api.post(`/api/n/${n.id}/os/channel`, { channel: n.summary.channel });
+        await pollUntil(async () => !(await api.get(`/api/n/${n.id}/os/channel`)).switching, 3000, 30 * 60000);
+        const c = await api.get(`/api/n/${n.id}/os/channel`);
+        if (c.staged && c.staged !== c.booted) set('os', n.id, 'good', 'Ready, applies at the next reboot');
+        else set('os', n.id, 'crit', 'Download failed, see its Updates tab', (await api.get(`/api/n/${n.id}/os/channel/log`).catch(() => ({}))).text);
+      } catch (e) { set('os', n.id, 'crit', e.message); }
+    }));
+    progress.busy.os = false;
+    refreshNodes();
+  } }, `Move to current release… (${osEol.length})`) : null;
+
   const done = (job?.nodes || []).filter((n) => ['done', 'uptodate', 'failed'].includes(n.step)).length;
   const osSummary = running ? h('span.status.warn', `Updating: ${done} of ${job.nodes.length} node${job.nodes.length > 1 ? 's' : ''} finished`)
     : !osImage.length ? h('span.status.idle', 'No image-based nodes online')
     : osUpdating.length ? h('span.status.warn', `Updating ${osUpdating.map((n) => n.name).join(', ')}…`)
+    : osEol.length ? h('span.status.crit', `${osEol.length} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} ${osEol.length > 1 ? 'run' : 'runs'} an end-of-life OS version and get${osEol.length > 1 ? '' : 's'} no more updates`)
     : osManual ? h('span.status.warn', `${osManual} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} ${osManual > 1 ? 'have' : 'has'} an update`,
       osAuto.length ? h('span.muted', ` · ${osAuto.length} node${osAuto.length > 1 ? 's' : ''} update${osAuto.length > 1 ? '' : 's'} on schedule`) : null)
     : osAuto.length ? h('span.status.good', `${osAuto.length === osImage.length ? 'All' : `${osAuto.length} of ${osImage.length}`} node${osAuto.length > 1 ? 's' : ''} `
@@ -354,7 +380,7 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
 
   return h('div.grid.two.update-cards',
     h('div.card.update-card',
-      h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osUpdate, osStart, osChannel)),
+      h('div.card-head', h('h2', 'OS updates'), h('div.row', osCheck, osUpdate, osMove, osStart, osChannel)),
       osSummary,
       h('p.faint', { style: { margin: '6px 0 0', fontSize: '12.5px' } }, 'Downloads on all nodes at once, then reboots them one at a time. The main node goes last.',
         channels.length ? ` Channel${channels.length > 1 ? 's' : ''}: ${channels.join(', ')}.` : ''),
