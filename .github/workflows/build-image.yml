@@ -62,7 +62,8 @@ jobs:
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           src="ghcr.io/${owner}/${name}:br-${GITHUB_REF_NAME//\//_}-${version}"
           echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          for tag in "$version" latest "$(date -u +%Y%m%d)-${version}"; do
+          # fedora-44-eol: the last :44 build, with the end-of-life notice. :latest stays on 45.
+          for tag in "$version" "$(date -u +%Y%m%d)-${version}"; do
             echo "${src} -> :${tag}"
             skopeo copy --all --preserve-digests "docker://${src}" "docker://ghcr.io/${owner}/${name}:${tag}"
           done
