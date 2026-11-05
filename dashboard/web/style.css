@@ -187,6 +187,7 @@ td .sub { font-size: 12px; color: var(--text-3); }
 .badge.update::before { content: "↑"; font-weight: 700; color: var(--accent); }
 .badge.warn { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning-ink); }
 .badge.good { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good-ink); }
+.badge.crit { background: color-mix(in srgb, var(--critical) 16%, transparent); color: var(--critical-ink); }
 
 /* Buttons & forms */
 .btn {
@@ -276,6 +277,7 @@ pre.output {
 .empty { padding: 28px; text-align: center; color: var(--text-2); }
 .notice { padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 13px; color: var(--text-2); }
 .notice.warn { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--text); }
+.notice.crit { background: color-mix(in srgb, var(--critical) 12%, transparent); color: var(--text); }
 .menu-btn { display: none; }
 .nav-scrim { display: none; }
 

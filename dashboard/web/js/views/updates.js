@@ -133,14 +133,18 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
       clear(chCard, head, h('div.notice', c.error || 'Not available on this node.'));
       return;
     }
-    head.append(c.current ? h('span.badge.good', c.current) : h('span.badge', 'unknown image'));
+    head.append(c.current ? h(c.outdated ? 'span.badge.crit' : 'span.badge.good', c.current) : h('span.badge', 'unknown image'));
+    // On an old tag of its channel (stable on Fedora 44 after stable moved to 45): no more
+    // updates until it moves. A switch to its own channel is that move.
+    const moving = c.outdated && c.stagedChannel === c.current && c.staged && c.staged !== c.booted;
+    const newName = (ch) => (ch?.about || '').split(',')[0];
     let pick = c.current;
     const rows = (c.channels || []).map((ch) => {
       const input = h('input', { type: 'radio', name: 'channel', value: ch.name, checked: ch.name === c.current,
         disabled: c.switching, onchange: () => { pick = ch.name; sync(); } });
       return h('label.channel-row', input,
         h('div.text', h('div.row', h('strong', ch.name),
-          ch.name === c.current ? h('span.badge.good', 'running') : null,
+          ch.name === c.current ? h(c.outdated ? 'span.badge.crit' : 'span.badge.good', c.outdated ? `running ${c.bootedAbout || ':' + c.bootedTag}, end of life` : 'running') : null,
           ch.name === c.stagedChannel && ch.name !== c.current ? h('span.badge.warn', 'after reboot') : null,
           /may break/.test(ch.about) ? h('span.badge.warn', 'may break') : null),
         h('div.desc', ch.about), h('div.sub.mono', ch.image.replace(/^.*docker:\/\//, ''))));
@@ -152,7 +156,14 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
         `Switch to ${pick}`, /may break/.test(ch.about))) return;
       if (await busy(switchBtn, () => api.post('/os/channel', { channel: pick }))) loadChannel();
     } }, 'Switch');
-    const sync = () => { switchBtn.disabled = c.switching || pick === (c.stagedChannel || c.current); };
+    const sync = () => { switchBtn.disabled = c.switching || (pick === (c.stagedChannel || c.current) && !(c.outdated && !moving && pick === c.current)); };
+    const curCh = (c.channels || []).find((x) => x.name === c.current);
+    const moveBtn = c.outdated && !moving && !c.switching ? h('button.btn.primary', { onclick: async () => {
+      if (!await confirmAction(`Move to ${newName(curCh)}`, `${node.name} downloads the ${c.current} image (${curCh?.about}). It applies after a reboot; `
+        + 'your data, containers and settings stay. Until the next update, Roll back on this page goes back to the image you run now.',
+        `Move to ${newName(curCh)}`, false)) return;
+      if (await busy(moveBtn, () => api.post('/os/channel', { channel: c.current }))) loadChannel();
+    } }, `Move to ${newName(curCh)}`) : null;
     sync();
     const log = h('pre.output.rollout-log.hidden');
     if (c.switching || c.stagedChannel) {
@@ -169,6 +180,13 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
       c.switching ? h('div.notice.warn', { style: { marginBottom: '12px' } }, 'Downloading the new channel\'s image…') : null,
       c.stagedChannel && c.stagedChannel !== c.current && !c.switching
         ? h('div.notice.warn', { style: { marginBottom: '12px' } }, `Switch to ${c.stagedChannel} is ready. Reboot ${node.name} to apply it.`) : null,
+      c.outdated && !moving && !c.switching
+        ? h('div.notice.crit', { style: { marginBottom: '12px' } },
+          h('div', `${node.name} runs ${c.bootedAbout || 'tag :' + c.bootedTag}, which is end of life: it gets no more OS updates. `
+            + `The ${c.current} channel is now ${newName(curCh)}.`),
+          h('div.row', { style: { marginTop: '8px' } }, moveBtn)) : null,
+      moving && !c.switching
+        ? h('div.notice.warn', { style: { marginBottom: '12px' } }, `The move to ${newName(curCh)} is ready. Reboot ${node.name} to apply it.`) : null,
       h('div.stack', { style: { gap: '0' } }, rows),
       h('div.row', { style: { marginTop: '12px' } }, switchBtn),
       log);

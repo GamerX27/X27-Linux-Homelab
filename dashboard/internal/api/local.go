@@ -196,7 +196,8 @@ type Summary struct {
 	Running            int         `json:"running"`
 	Containers         int         `json:"containers"`
 	DashboardVersion   string      `json:"dashboardVersion"`
-	Channel            string      `json:"channel"` // release channel, "" if unknown
+	Channel            string      `json:"channel"`         // release channel, "" if unknown
+	ChannelOutdated    bool        `json:"channelOutdated"` // on an end-of-life tag of its channel
 
 	// The images behind ContainerUpdates, with the stacks and containers that use them.
 	ContainerUpdateImages []docker.ImageUpdate `json:"containerUpdateImages,omitempty"`
@@ -217,7 +218,8 @@ func (l *Local) summary() Summary {
 	if os.Job != nil {
 		s.UpdatePhase = os.Job.Phase
 	}
-	s.Channel = l.channelStatus(false).Current
+	ch := l.channelStatus(false)
+	s.Channel, s.ChannelOutdated = ch.Current, ch.Outdated
 	au := l.autoupdate()
 	s.AutoUpdate, s.AutoUpdateNext = au.Enabled, au.NextRun
 	ct := l.updater.Status()

@@ -28,15 +28,20 @@ type Channel struct {
 }
 
 type Status struct {
-	Available     bool      `json:"available"`
-	Current       string    `json:"current"` // "" when the image isn't one of ours
-	Booted        string    `json:"booted"`
-	Staged        string    `json:"staged"`
-	StagedChannel string    `json:"stagedChannel"`
-	VM            bool      `json:"vm"`
-	Channels      []Channel `json:"channels"`
-	Switching     bool      `json:"switching"` // a switch is downloading right now
-	Error         string    `json:"error,omitempty"`
+	Available     bool   `json:"available"`
+	Current       string `json:"current"` // "" when the image isn't one of ours
+	Booted        string `json:"booted"`
+	Staged        string `json:"staged"`
+	StagedChannel string `json:"stagedChannel"`
+	VM            bool   `json:"vm"`
+	BootedTag     string `json:"bootedTag"`
+	// On its channel's image but a tag nothing builds any more (stable on :44 after stable
+	// moved to :45): no more updates. Switching to Current moves it to the channel's tag.
+	Outdated    bool      `json:"outdated"`
+	BootedAbout string    `json:"bootedAbout"` // what the old tag runs, e.g. "Fedora 44"
+	Channels    []Channel `json:"channels"`
+	Switching   bool      `json:"switching"` // a switch is downloading right now
+	Error       string    `json:"error,omitempty"`
 }
 
 // Parse reads `channel --json`.
@@ -113,15 +118,17 @@ func Log() string {
 
 // ---- Fake (dashboard serve --dev with DASHBOARD_FAKE_OS) --------------------------------
 
+// The fake node starts on stable's old Fedora 44 tag, so dev mode shows the end-of-life notice.
 var fake = struct {
 	sync.Mutex
 	current, target string
+	outdated        bool
 	started         time.Time
-}{current: "stable"}
+}{current: "stable", outdated: true}
 
 func fakeChannels() []Channel {
 	return []Channel{
-		{Name: "stable", About: "Fedora 44, production", Image: "ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:44"},
+		{Name: "stable", About: "Fedora 45, production", Image: "ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:45"},
 		{Name: "testing", About: "Fedora 45, may break", Image: "ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-testing:45"},
 		{Name: "testing-alma", About: "AlmaLinux 10, may break", Image: "ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab-alma-testing:10"},
 	}
@@ -134,6 +141,10 @@ func fakeGet() Status {
 	for _, c := range s.Channels {
 		if c.Name == fake.current {
 			s.Booted = c.Image
+			if fake.outdated {
+				s.Booted = strings.TrimSuffix(c.Image, ":45") + ":44"
+				s.Outdated, s.BootedTag, s.BootedAbout = true, "44", "Fedora 44"
+			}
 		}
 		if c.Name == fake.target {
 			s.StagedChannel = fake.target
@@ -152,7 +163,7 @@ func fakeSwitch(name string) error {
 	defer fake.Unlock()
 	for _, c := range fakeChannels() {
 		if c.Name == name {
-			if name == fake.current {
+			if name == fake.current && !fake.outdated {
 				fake.target = ""
 				return nil
 			}
