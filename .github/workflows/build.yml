@@ -39,8 +39,8 @@ on:
         type: boolean
 
 # Both images build from the same frozen base image, so they run in parallel.
-# main is production (Fedora 44). The testing branch builds separate *-testing images on
-# Fedora 45, so it never touches the production images.
+# main is production (Fedora 45). The testing branch builds separate *-testing images (also
+# Fedora 45 for now), so it never touches the production images.
 # Every job is gated on github.server_url so the Forgejo mirror (git.xlabsx27.com), whose
 # Actions also read .github/workflows, skips them (through plan); they only run on GitHub.
 #
@@ -48,13 +48,24 @@ on:
 # (ghcr.io/gamerx27/x27-base-*), which upstream rebuilds daily. refresh-base copies the newest
 # ones on the 1st of the month, and the build then runs a full dnf upgrade. Every other build
 # that month uses the same base plus `dnf upgrade --security` (see common.yml).
+#
+# BASES is upstream=mirror for every frozen base. Moving to a new Fedora: change it here and
+# in the recipes; plan sees the new mirror tag is missing and refreshes before that build.
+env:
+  BASES: >-
+    quay.io/fedora/fedora-bootc:45=x27-base-fedora-bootc:45
+    quay.io/almalinuxorg/almalinux-bootc:10=x27-base-almalinux-bootc:10
+
 jobs:
   # The schedule fires daily but only builds on Sundays (security updates) and on the 1st
   # (base refresh and full upgrade). One cron instead of two, so a 1st that falls on a
-  # Sunday builds once. Pushes, pull requests and dispatches always build.
+  # Sunday builds once. Pushes, pull requests and dispatches always build, and refresh first
+  # when a mirror in BASES doesn't exist yet.
   plan:
     if: github.server_url == 'https://github.com'
     runs-on: ubuntu-24.04
+    permissions:
+      packages: read
     outputs:
       build: ${{ steps.plan.outputs.build }}
       refresh: ${{ steps.plan.outputs.refresh }}
@@ -63,12 +74,24 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           REFRESH: ${{ inputs.refresh_base }}
+          TOKEN: ${{ github.token }}
         run: |
           build=true refresh="${REFRESH:-false}" sunday=false
           if [[ "$EVENT" == schedule ]]; then
             if [[ "$(date -u +%u)" == 7 ]]; then sunday=true; fi
             if [[ "$(date -u +%d)" == 01 ]]; then refresh=true; fi
             if [[ "$sunday" == false && "$refresh" == false ]]; then build=false; fi
+          fi
+          if [[ "$build" == true && "$refresh" == false ]]; then
+            owner="${GITHUB_REPOSITORY_OWNER,,}"
+            echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            for pair in $BASES; do
+              dest="ghcr.io/${owner}/${pair#*=}"
+              if ! skopeo inspect --raw "docker://${dest}" >/dev/null 2>&1; then
+                echo "${dest} doesn't exist yet"
+                refresh=true
+              fi
+            done
           fi
           echo "build=${build} refresh=${refresh}"
           {
@@ -90,9 +113,7 @@ jobs:
           set -eu
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          for pair in \
-            quay.io/fedora/fedora-bootc:44=x27-base-fedora-bootc:44 \
-            quay.io/almalinuxorg/almalinux-bootc:10=x27-base-almalinux-bootc:10; do
+          for pair in $BASES; do
             src="${pair%%=*}"
             dest="ghcr.io/${owner}/${pair#*=}"
             echo "${src} -> ${dest}"
@@ -147,7 +168,7 @@ jobs:
   # A GitHub Release per build (main only), with what changed (scripts/release-notes.sh). The weekly
   # scheduled build is vYYYY.MM.DD; pushes and dispatches are minor releases vYYYY.MM.DD.N.
   # Runs when no image build failed; a single-recipe dispatch skips the other image, which
-  # the notes then take from its last published :44.
+  # the notes then take from its last published :45.
   release:
     needs: [bare-metal, vm]
     if: >-

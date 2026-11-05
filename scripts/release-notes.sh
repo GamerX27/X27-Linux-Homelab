@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REGISTRY="ghcr.io/gamerx27"
-FEDORA=44
+FEDORA=45
 EVENT="${EVENT:-push}"
 REPO="${GITHUB_REPOSITORY:-GamerX27/X27-Linux-Homelab}"
 SHA="${GITHUB_SHA:-$(git rev-parse HEAD)}"
@@ -47,7 +47,7 @@ mkdir -p "${WORK}/new"
 for entry in "${IMAGES[@]}"; do
   name="${entry%%:*}"
   image="${entry#*:}"
-  # This commit's build; falls back to :44 when the image was skipped (single-recipe dispatch).
+  # This commit's build; falls back to :45 when the image was skipped (single-recipe dispatch).
   ref="${REGISTRY}/${image}:${SHA::7}-${FEDORA}"
   docker pull -q "$ref" >/dev/null 2>&1 || ref="${REGISTRY}/${image}:${FEDORA}"
   docker run --rm --entrypoint rpm "$ref" -qa --qf '%{NAME} %{EVR}\n' \

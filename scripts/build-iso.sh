@@ -12,8 +12,8 @@ usage() {
   echo "  bare-metal  x27-linux-homelab (default)"
   echo "  vm          x27-linux-homelab-vm"
   echo "  --usb       write the ISO to a USB drive after building"
-  echo "  --tag TAG   image tag to install and follow: 44, latest, or a dated tag like"
-  echo "              20260924-44. Asks if not given; 44 without a terminal."
+  echo "  --tag TAG   image tag to install and follow: 45, latest, or a dated tag like"
+  echo "              20261108-45. Asks if not given; 45 without a terminal."
 }
 
 TARGET=""
@@ -140,11 +140,11 @@ esac
 if [ -z "$TAG" ]; then
   if [ -t 0 ]; then
     echo "Image tag for ${IMAGE}:"
-    echo "  1) 44      follows Fedora 44 (default)"
+    echo "  1) 45      follows Fedora 45 (default)"
     echo "  2) latest  newest build, whatever Fedora version that is"
     read -rp "Choose [1-2]: " choice
     case "${choice:-1}" in
-      1|44) TAG=44 ;;
+      1|45) TAG=45 ;;
       2|latest) TAG=latest ;;
       *)
         echo "Invalid choice: $choice" >&2
@@ -152,7 +152,7 @@ if [ -z "$TAG" ]; then
         ;;
     esac
   else
-    TAG=44
+    TAG=45
   fi
 fi
 if ! [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -213,7 +213,7 @@ sudo docker run --rm --privileged --network host \
   "IMAGE_NAME=${IMAGE}" \
   "IMAGE_REPO=${REGISTRY}" \
   "IMAGE_TAG=${TAG}" \
-  VERSION=44
+  VERSION=45
 cd "$OUT_DIR"
 sudo chown "$(id -un):$(id -gn)" "$ISO_NAME"
 sudo rm -f "${ISO_NAME}-CHECKSUM"

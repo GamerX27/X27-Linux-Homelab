@@ -4,9 +4,9 @@
 name: x27-linux-homelab
 description: X27-Linux Homelab (bare metal) - minimal headless Fedora bootc with Docker CE and SSH
 base-image: ghcr.io/gamerx27/x27-base-fedora-bootc
-image-version: 44
+image-version: 45
 
-# Builds from a frozen copy of quay.io/fedora/fedora-bootc:44, refreshed monthly (see
+# Builds from a frozen copy of quay.io/fedora/fedora-bootc:45, refreshed monthly (see
 # .github/workflows/build.yml).
 #
 # Compiles the dashboard (dashboard/, Go) on the same Fedora release as the image, so the
@@ -14,7 +14,7 @@ image-version: 44
 # fails the image build. common.yml copies the binary in.
 stages:
   - name: dashboard
-    from: quay.io/fedora/fedora:44
+    from: quay.io/fedora/fedora:45
     modules:
       - type: containerfile
         snippets:
