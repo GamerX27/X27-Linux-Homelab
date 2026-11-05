@@ -144,6 +144,8 @@ h3 { font-size: 13px; font-weight: 600; color: var(--text-2); text-transform: up
 .meter > span { display: block; height: 100%; border-radius: 4px; background: var(--accent); transition: width .4s; }
 .meter.warn > span { background: var(--warning); }
 .meter.crit > span { background: var(--critical); }
+.meter.progress { margin-top: 6px; }
+.channel-switch { margin-top: 10px; font-size: 12.5px; color: var(--text-2); }
 .meter-row { display: grid; grid-template-columns: minmax(80px, 1fr) 2fr auto; gap: 12px; align-items: center; padding: 6px 0; font-variant-numeric: tabular-nums; }
 .meter-row .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meter-row .num { font-size: 12.5px; color: var(--text-2); text-align: right; min-width: 120px; }

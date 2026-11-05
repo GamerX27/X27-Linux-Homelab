@@ -1,4 +1,4 @@
-import { h, clear, icon, meter, modal, confirmAction, toast, duration, bytes, pct, menu, menuOpen, autoPending, nextRun, release } from '../ui.js';
+import { h, clear, icon, meter, modal, confirmAction, toast, duration, bytes, pct, menu, menuOpen, autoPending, nextRun, release, switchProgress, progressBar } from '../ui.js';
 import * as api from '../api.js';
 import { startUpdate } from './rollout.js';
 import { jobRunning, jobLine, jobSummary } from './docker.js';
@@ -77,6 +77,7 @@ function nodeCard(n, refreshNodes) {
 
   const status = !n.online ? h('span.status.crit', 'Offline')
     : s?.updating ? h('span.status.warn', 'Updating OS…')
+    : s?.channelSwitch ? h('span.status.warn', `Downloading ${switchProgress(s.channelSwitch).name}…`)
     : s?.updateStaged ? h('span.status.warn', 'Update downloaded, reboot to apply')
     : autoPending(s) ? h('span.status.good', { title: `${release(s.updateVersion) || 'A newer image'} installs on schedule` }, `Update installs ${nextRun(s.autoUpdateNext)}`)
     : s?.updateAvailable ? h('span.status.warn', 'OS update available')
@@ -98,6 +99,13 @@ function nodeCard(n, refreshNodes) {
           `${s.running}/${s.containers}`), 'running'),
         fact('Uptime', duration(s.uptimeSec)),
         fact('OS image', h('span.mono', { title: s.version || null }, release(s.version) || '—'), s.version ? null : 'package-based install')),
+      s.channelSwitch ? (() => {
+        const p = switchProgress(s.channelSwitch);
+        return h('a.channel-switch', { href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates'), style: { display: 'block', color: 'inherit', textDecoration: 'none' } },
+          h('div.row', { style: { justifyContent: 'space-between' } }, h('span', p.text),
+            s.channelSwitch.total && s.channelSwitch.step === 'downloading' ? h('span.faint', `${s.channelSwitch.done} of ${s.channelSwitch.total}`) : null),
+          progressBar(p.pct, p.text));
+      })() : null,
       (s.updateAvailable || s.updateStaged || s.containerUpdates || s.containersUpdating) ? h('div.row', { style: { gap: '6px' } },
         s.updateAvailable ? h('a.badge', { class: autoPending(s) ? '' : 'update', href: `#/n/${n.id}/updates`, onclick: go(n.id, 'updates'),
           title: autoPending(s) ? `Installs on schedule, ${nextRun(s.autoUpdateNext)}` : null }, s.updateVersion ? `Update ${release(s.updateVersion)}` : 'OS update') : null,
@@ -243,7 +251,8 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   // On an end-of-life tag of their channel (stable on Fedora 44 after it moved to 45): no more
   // updates until they move. Once the move is staged they're ordinary update candidates, and
   // Update… reboots them one at a time.
-  const osEol = osImage.filter((n) => n.summary.channelOutdated && !n.summary.updateStaged && !n.summary.updating);
+  const osSwitching = osImage.filter((n) => n.summary.channelSwitch);
+  const osEol = osImage.filter((n) => n.summary.channelOutdated && !n.summary.updateStaged && !n.summary.updating && !n.summary.channelSwitch);
 
   const osCheck = h('button.btn.small', { disabled: progress.busy.os, onclick: async () => {
     progress.busy.os = true; progress.os.clear();
@@ -293,6 +302,8 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const osSummary = running ? h('span.status.warn', `Updating: ${done} of ${job.nodes.length} node${job.nodes.length > 1 ? 's' : ''} finished`)
     : !osImage.length ? h('span.status.idle', 'No image-based nodes online')
     : osUpdating.length ? h('span.status.warn', `Updating ${osUpdating.map((n) => n.name).join(', ')}…`)
+    : osSwitching.length ? h('span.status.warn', `Downloading ${switchProgress(osSwitching[0].summary.channelSwitch).name} on `
+      + `${osSwitching.map((n) => `${n.name} (${Math.round(switchProgress(n.summary.channelSwitch).pct)}%)`).join(', ')}`)
     : osEol.length ? h('span.status.crit', `${osEol.length} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} ${osEol.length > 1 ? 'run' : 'runs'} an end-of-life OS version and get${osEol.length > 1 ? '' : 's'} no more updates`)
     : osManual ? h('span.status.warn', `${osManual} of ${osImage.length} node${osImage.length > 1 ? 's' : ''} ${osManual > 1 ? 'have' : 'has'} an update`,
       osAuto.length ? h('span.muted', ` · ${osAuto.length} node${osAuto.length > 1 ? 's' : ''} update${osAuto.length > 1 ? '' : 's'} on schedule`) : null)
@@ -375,7 +386,8 @@ function updatesPanel(nodes, job, refreshNodes, redraw) {
   const ctSummary = ctTotal ? h('span.status.warn', `${ctTotal} image update${ctTotal > 1 ? 's' : ''} on ${ctNodes.length} of ${online.length} node${online.length > 1 ? 's' : ''}`)
     : h('span.status.good', 'All containers up to date');
 
-  const osChannel = osImage.length ? h('button.btn.small', { disabled: running, onclick: () => channelDialog(osImage, refreshNodes) }, 'Switch channel…') : null;
+  const osChannel = osImage.length ? h('button.btn.small', { disabled: running, onclick: () => channelDialog(osImage.filter((n) => !n.summary.channelSwitch), refreshNodes) },
+    osSwitching.length ? `Switching (${osSwitching.length})…` : 'Switch channel…') : null;
   const channels = [...new Set(osImage.map((n) => n.summary.channel).filter(Boolean))];
 
   return h('div.grid.two.update-cards',
