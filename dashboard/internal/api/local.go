@@ -198,6 +198,8 @@ type Summary struct {
 	DashboardVersion   string      `json:"dashboardVersion"`
 	Channel            string      `json:"channel"`         // release channel, "" if unknown
 	ChannelOutdated    bool        `json:"channelOutdated"` // on an end-of-life tag of its channel
+	// A channel switch downloading right now, and how far it is.
+	ChannelSwitch *channel.Progress `json:"channelSwitch,omitempty"`
 
 	// The images behind ContainerUpdates, with the stacks and containers that use them.
 	ContainerUpdateImages []docker.ImageUpdate `json:"containerUpdateImages,omitempty"`
@@ -220,6 +222,12 @@ func (l *Local) summary() Summary {
 	}
 	ch := l.channelStatus(false)
 	s.Channel, s.ChannelOutdated = ch.Current, ch.Outdated
+	if ch.Switching {
+		s.ChannelSwitch = ch.Progress
+		if s.ChannelSwitch == nil {
+			s.ChannelSwitch = &channel.Progress{Step: "starting"}
+		}
+	}
 	au := l.autoupdate()
 	s.AutoUpdate, s.AutoUpdateNext = au.Enabled, au.NextRun
 	ct := l.updater.Status()

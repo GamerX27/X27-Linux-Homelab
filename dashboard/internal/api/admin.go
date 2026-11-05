@@ -16,11 +16,16 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/users"
 )
 
-// channelStatus caches `channel --json` (it runs rpm-ostree status) for the node summaries.
+// channelStatus caches `channel --json` (it runs rpm-ostree status) for the node summaries:
+// two minutes, or 10 s while a switch runs, so its progress and end show up soon.
 func (l *Local) channelStatus(fresh bool) channel.Status {
 	l.chMu.Lock()
 	defer l.chMu.Unlock()
-	if fresh || time.Since(l.chAt) > 2*time.Minute {
+	ttl := 2 * time.Minute
+	if l.chCached.Switching {
+		ttl = 10 * time.Second
+	}
+	if fresh || time.Since(l.chAt) > ttl {
 		l.chCached, l.chAt = channel.Get(), time.Now()
 	}
 	return l.chCached

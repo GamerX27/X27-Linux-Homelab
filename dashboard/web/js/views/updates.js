@@ -1,4 +1,4 @@
-import { h, clear, when, busy, confirmAction, icon, modal, toast, release } from '../ui.js';
+import { h, clear, when, busy, confirmAction, icon, modal, toast, release, switchProgress, progressBar } from '../ui.js';
 import * as mainApi from '../api.js';
 import { startUpdate } from './rollout.js';
 
@@ -177,7 +177,14 @@ export function renderUpdates(el, { api, node, refreshNodes }) {
     clear(chCard, head,
       h('p.muted', { style: { marginTop: 0 } }, 'Which image this node follows. Updates only come from its channel. ',
         'On the node itself, ', h('code', 'channel'), ' does the same.'),
-      c.switching ? h('div.notice.warn', { style: { marginBottom: '12px' } }, 'Downloading the new channel\'s image…') : null,
+      c.switching ? (() => {
+        const p = switchProgress(c.progress);
+        return h('div.notice.warn', { style: { marginBottom: '12px' } },
+          h('div.row', { style: { justifyContent: 'space-between' } }, h('span', p.text),
+            c.progress?.total && c.progress.step === 'downloading' ? h('span.faint', `${c.progress.done} of ${c.progress.total} layers`) : null),
+          progressBar(p.pct, p.text),
+          h('div.faint', { style: { marginTop: '6px', fontSize: '12.5px' } }, 'Runs in the background; you can leave this page. Nothing reboots until you say so.'));
+      })() : null,
       c.stagedChannel && c.stagedChannel !== c.current && !c.switching
         ? h('div.notice.warn', { style: { marginBottom: '12px' } }, `Switch to ${c.stagedChannel} is ready. Reboot ${node.name} to apply it.`) : null,
       c.outdated && !moving && !c.switching

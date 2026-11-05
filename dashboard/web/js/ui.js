@@ -177,6 +177,24 @@ export function meter(pct, label) {
     h('span', { style: { width: p + '%' } }));
 }
 
+// A running channel switch (a summary's channelSwitch, or a channel status's progress) as a
+// line of text and a percentage: rpm-ostree fetches the image's layers, then stages it.
+export function switchProgress(p) {
+  const name = (p?.about || '').split(',')[0] || p?.channel || 'the new image';
+  const pct = p?.step === 'staging' ? 100 : p?.total ? p.done / p.total * 100 : 0;
+  const text = p?.step === 'staging' ? `Getting ${name} ready…`
+    : p?.total ? `Downloading ${name} · ${Math.round(pct)}%`
+    : `Starting the download of ${name}…`;
+  return { name, pct, text };
+}
+
+// A progress bar (the meter's look, without its warn/crit colours).
+export function progressBar(pct, label) {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  return h('div.meter.progress', { role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100,
+    'aria-valuenow': Math.round(p), 'aria-label': label }, h('span', { style: { width: p + '%' } }));
+}
+
 // Single-series sparkline; the tile's title names it, so no legend.
 export function sparkline(values, max = 100) {
   const w = 200, hgt = 36, n = 60;

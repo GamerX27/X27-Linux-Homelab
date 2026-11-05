@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,8 +42,45 @@ type Status struct {
 	Outdated    bool      `json:"outdated"`
 	BootedAbout string    `json:"bootedAbout"` // what the old tag runs, e.g. "Fedora 44"
 	Channels    []Channel `json:"channels"`
-	Switching   bool      `json:"switching"` // a switch is downloading right now
+	Switching   bool      `json:"switching"`          // a switch is downloading right now
+	Progress    *Progress `json:"progress,omitempty"` // how far that switch is, while Switching
 	Error       string    `json:"error,omitempty"`
+}
+
+// Progress of a running switch, read from its log: rpm-ostree prints "[12/73] Fetching
+// ostree chunk …" per layer, then "Staging deployment…".
+type Progress struct {
+	Channel string `json:"channel"` // the channel it switches to
+	About   string `json:"about"`   // e.g. "Fedora 45, production"
+	Step    string `json:"step"`    // "starting", "downloading" or "staging"
+	Done    int    `json:"done"`    // layers fetched
+	Total   int    `json:"total"`
+}
+
+var (
+	switchLine = regexp.MustCompile(`Switching to (\S+) \(([^)]*)\)`)
+	chunkLine  = regexp.MustCompile(`\[(\d+)/(\d+)\] Fetching`)
+)
+
+// ParseProgress reads the latest switch in log (a unit's journal can hold earlier ones).
+func ParseProgress(log string) *Progress {
+	if i := strings.LastIndex(log, "Switching to "); i >= 0 {
+		log = log[i:]
+	}
+	p := &Progress{Step: "starting"}
+	if m := switchLine.FindStringSubmatch(log); m != nil {
+		p.Channel, p.About = m[1], m[2]
+	}
+	if all := chunkLine.FindAllStringSubmatch(log, -1); len(all) > 0 {
+		last := all[len(all)-1]
+		p.Done, _ = strconv.Atoi(last[1])
+		p.Total, _ = strconv.Atoi(last[2])
+		p.Step = "downloading"
+	}
+	if strings.Contains(log, "Staging deployment") {
+		p.Step = "staging"
+	}
+	return p
 }
 
 // Parse reads `channel --json`.
@@ -75,6 +114,9 @@ func Get() Status {
 		return Status{Error: "channel --json: " + err.Error()}
 	}
 	s.Switching = running()
+	if s.Switching {
+		s.Progress = ParseProgress(Log())
+	}
 	return s
 }
 
@@ -151,9 +193,10 @@ func fakeGet() Status {
 			s.Staged = c.Image
 		}
 	}
-	s.Switching = fake.target != "" && time.Since(fake.started) < 8*time.Second
+	s.Switching = fake.target != "" && time.Since(fake.started) < fakeSwitchTime
 	if s.Switching {
 		s.Staged, s.StagedChannel = "", ""
+		s.Progress = ParseProgress(fakeLogLocked())
 	}
 	return s
 }
@@ -174,14 +217,35 @@ func fakeSwitch(name string) error {
 	return errors.New("unknown channel: " + name)
 }
 
+const fakeSwitchTime = 40 * time.Second
+
 func fakeLog() string {
 	fake.Lock()
 	defer fake.Unlock()
+	return fakeLogLocked()
+}
+
+// fakeLogLocked fetches 20 "layers" over most of fakeSwitchTime, then stages.
+func fakeLogLocked() string {
 	if fake.target == "" {
 		return ""
 	}
-	lines := []string{"Switching to " + fake.target + ":", "Pulling manifest…"}
-	if time.Since(fake.started) > 8*time.Second {
+	about := fake.target
+	for _, c := range fakeChannels() {
+		if c.Name == fake.target {
+			about = c.About
+		}
+	}
+	lines := []string{"Switching to " + fake.target + " (" + about + "):", "Pulling manifest…"}
+	el := time.Since(fake.started)
+	n := min(20, int(el*20/(fakeSwitchTime-5*time.Second)))
+	for i := 1; i <= n; i++ {
+		lines = append(lines, "["+strconv.Itoa(i)+"/20] Fetching ostree chunk 0123abcd (5.0 MB)...done")
+	}
+	if n == 20 {
+		lines = append(lines, "Staging deployment...")
+	}
+	if el > fakeSwitchTime {
 		lines = append(lines, "Staging deployment... done", "", "Switched to "+fake.target+". It takes effect after a reboot.")
 	}
 	return strings.Join(lines, "\n")

@@ -37,3 +37,22 @@ func TestFakeSwitch(t *testing.T) {
 		t.Fatalf("%v %q", err, fake.target)
 	}
 }
+
+func TestParseProgress(t *testing.T) {
+	log := `Switching to testing (Fedora 45, may break):
+[3/9] Fetching ostree chunk aaa (1 MB)...done
+Switched to testing. It takes effect after a reboot.
+Switching to stable (Fedora 45, production):
+  ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:45
+Pulling manifest: ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:45`
+	if p := ParseProgress(log); p.Channel != "stable" || p.About != "Fedora 45, production" || p.Step != "starting" || p.Total != 0 {
+		t.Fatalf("%+v", p)
+	}
+	log += "\n[1/73] Fetching ostree chunk bbb (5.7 MB)...done\n[41/73] Fetching ostree chunk ccc (27.8 MB)...done"
+	if p := ParseProgress(log); p.Step != "downloading" || p.Done != 41 || p.Total != 73 {
+		t.Fatalf("%+v", p)
+	}
+	if p := ParseProgress(log + "\nStaging deployment..."); p.Step != "staging" || p.Done != 41 {
+		t.Fatalf("%+v", p)
+	}
+}
