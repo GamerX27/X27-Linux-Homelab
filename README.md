@@ -48,10 +48,10 @@ dashboard.
 Rebase onto the image, reboot, then rebase again to switch to signed (verified) pulls:
 
 ```sh
-sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/gamerx27/x27-linux-homelab:44
+sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/gamerx27/x27-linux-homelab:45
 systemctl reboot
 
-sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:44
+sudo rpm-ostree rebase ostree-image-signed:docker://ghcr.io/gamerx27/x27-linux-homelab:45
 systemctl reboot
 ```
 
@@ -65,8 +65,8 @@ Each machine follows one channel and only gets updates from it.
 
 | Channel | Base | Use it for |
 |---|---|---|
-| `stable` | Fedora 44 | Everyday use. The default. |
-| `testing` | Fedora 45 | Trying the next Fedora. May break. |
+| `stable` | Fedora 45 | Everyday use. The default. |
+| `testing` | Fedora 45 | Trying changes before they reach `stable`, and the next Fedora once it moves on. May break. |
 | `testing-alma` | AlmaLinux 10 | Trying AlmaLinux. May break. Older kernel (6.12 with backports), so very new hardware may not work. |
 
 Switch with `channel`:
@@ -82,6 +82,11 @@ The dashboard does the same on a node's **Updates** page, or for several nodes a
 settings stay; only the OS changes. To undo it, roll back (`sudo rpm-ostree rollback` or **Roll back** in the dashboard)
 before the next update.
 
+**Fedora 44 is end of life.** `stable` moved to Fedora 45, and the `:44` images get no more
+updates. A machine still on 44 says so in `channel` and on its **Updates** page (and gets an
+**end of life** badge on **All nodes**). Move it with `channel stable` or **Move to Fedora 45**,
+then reboot.
+
 <details>
 <summary>Image names and tags</summary>
 
@@ -89,14 +94,14 @@ All images are at `ghcr.io/gamerx27/`, signed, and rebuilt every Sunday at 02:00
 
 | Channel | Bare metal | VM | Branch |
 |---|---|---|---|
-| `stable` | `x27-linux-homelab:44` | `x27-linux-homelab-vm:44` | `main` |
+| `stable` | `x27-linux-homelab:45` | `x27-linux-homelab-vm:45` | `main` |
 | `testing` | `x27-linux-homelab-testing:45` | `x27-linux-homelab-vm-testing:45` | `testing` |
 | `testing-alma` | `x27-linux-homelab-alma-testing:10` | `x27-linux-homelab-vm-alma-testing:10` | `testing-alma` |
 
 Every image has three tags (shown for `stable`):
 
-- `:44` follows the channel. This is what `channel` uses.
-- `:<date>-44` (e.g. `:20260924-44`) is one fixed build, for pinning or rolling back.
+- `:45` follows the channel. This is what `channel` uses.
+- `:<date>-45` (e.g. `:20261108-45`) is one fixed build, for pinning or rolling back.
 - `:latest` is the newest build, whatever its version.
 
 Only `stable` gets [releases](#releases).
@@ -150,13 +155,13 @@ the same.
 <summary>Example update message</summary>
 
 ```
-X27-Linux Homelab 44 (2026-09-24) → X27-Linux Homelab 44 (2026-09-30)
-Image: ghcr.io/gamerx27/x27-linux-homelab:44
+X27-Linux Homelab 45 (2026-11-08) → X27-Linux Homelab 45 (2026-11-15)
+Image: ghcr.io/gamerx27/x27-linux-homelab:45
 Digest: sha256:5f2e…
 Packages: 12 upgraded, 1 removed, 1 added
 
 Upgraded (12):
-  kernel 6.16.3-200.fc44.x86_64 -> 6.16.5-200.fc44.x86_64
+  kernel 6.17.3-300.fc45.x86_64 -> 6.17.5-300.fc45.x86_64
   ...
 
 Rebooting now.
@@ -491,7 +496,7 @@ Settings go in `/etc/sysconfig/netbird`, state is in `/var/lib/netbird`, logs wi
 | **DNS-ready** | Port 53 is free for AdGuard Home or Pi-hole, with larger UDP buffers for DNS-over-QUIC |
 | **Quiet console** | Only kernel errors on screen; the rest is in `journalctl -k` |
 
-`/etc/os-release` names the build, e.g. `X27-Linux Homelab 44 (2026-09-24)`.
+`/etc/os-release` names the build, e.g. `X27-Linux Homelab 45 (2026-11-08)`.
 
 ---
 

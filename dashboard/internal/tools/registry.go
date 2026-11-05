@@ -29,6 +29,7 @@ var All = []Tool{
 				UptimeSec        float64 `json:"uptimeSec"`
 				Version          string  `json:"version"`
 				Channel          string  `json:"channel"`
+				ChannelOutdated  bool    `json:"channelOutdated"`
 				UpdateAvailable  bool    `json:"updateAvailable"`
 				UpdateVersion    string  `json:"updateVersion"`
 				UpdateStaged     bool    `json:"updateStaged"`
@@ -65,6 +66,9 @@ var All = []Tool{
 					m["os"] = s.Info.PrettyName
 					m["imageVersion"] = s.Version
 					m["channel"] = s.Channel
+					if s.ChannelOutdated {
+						m["channelEndOfLife"] = true
+					}
 					m["cpuPercent"] = int(s.CPUPercent)
 					if s.MemTotal > 0 {
 						m["memoryPercent"] = int(float64(s.MemUsed) / float64(s.MemTotal) * 100)
@@ -142,7 +146,7 @@ var All = []Tool{
 			return st, nil
 		}},
 	{Name: "get_channel", Scope: Read, Params: with(nil),
-		Description: "The node's release channel (stable, testing, testing-alma), the channels it can switch to, and a switch waiting for a reboot.",
+		Description: "The node's release channel (stable, testing, testing-alma), the channels it can switch to, and a switch waiting for a reboot. outdated means it runs an end-of-life tag of its channel (e.g. Fedora 44 after stable moved to 45) and gets no more updates; switching to its own channel moves it.",
 		Run:         func(c Call) (any, error) { return passthrough(c.nodeGet("/os/channel")) }},
 	{Name: "list_stacks", Scope: Read, Params: with(nil),
 		Description: "The Docker apps (compose stacks) on a node: name, folder, containers running out of total, published ports. Apps in ~/docker can be edited.",

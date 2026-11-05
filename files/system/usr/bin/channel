@@ -9,9 +9,12 @@ TRANSPORT=ostree-image-signed:docker://
 
 # channel -> image name suffix and tag. The VM images add "-vm" after x27-linux-homelab.
 declare -A SUFFIX=([stable]="" [testing]="-testing" [testing-alma]="-alma-testing")
-declare -A TAG=([stable]=44 [testing]=45 [testing-alma]=10)
-declare -A ABOUT=([stable]="Fedora 44, production" [testing]="Fedora 45, may break" [testing-alma]="AlmaLinux 10, may break")
+declare -A TAG=([stable]=45 [testing]=45 [testing-alma]=10)
+declare -A ABOUT=([stable]="Fedora 45, production" [testing]="Fedora 45, may break" [testing-alma]="AlmaLinux 10, may break")
 CHANNELS=(stable testing testing-alma)
+# What each channel's Fedora (or AlmaLinux) was called on the tags it moved away from, so
+# a machine left on an old tag is told what it runs. Anything else reads as the tag.
+declare -A OLD=([stable:44]="Fedora 44")
 
 usage() {
   cat <<'EOF'
@@ -63,6 +66,24 @@ channel_of() {
   return 0
 }
 
+# The tag of an image reference: ...:44 -> 44.
+tag_of() {
+  local name="${1##*/}"
+  [[ "$name" == *:* ]] && echo "${name##*:}"
+  return 0
+}
+
+# A machine on its channel's image but an old tag (e.g. stable on :44 after stable moved to
+# :45) gets no more updates: nothing builds that tag any more. "channel <name>" moves it.
+outdated() {
+  local cur="$1" tag="$2"
+  [[ -n "$cur" && -n "$tag" && "$tag" != "${TAG[$cur]}" ]]
+}
+
+old_name() {
+  echo "${OLD[$1:$2]:-:$2}"
+}
+
 image_for() {
   local vm=""
   [[ "$2" == *x27-linux-homelab-vm* ]] && vm="-vm"
@@ -85,22 +106,31 @@ show() {
     printf '%s %-14s %s\n' "$mark" "$c" "${ABOUT[$c]}"
   done
   echo
+  if outdated "$cur" "$(tag_of "$ref")"; then
+    echo "This node runs $(old_name "$cur" "$(tag_of "$ref")"), which is end of life and gets no more updates."
+    echo "Move it to ${ABOUT[$cur]%%,*} with: channel ${cur}"
+    echo
+  fi
   echo "Switch with: channel <name>"
 }
 
 # The same as show, for the dashboard. jq builds it so the strings are always escaped.
 show_json() {
-  local ref cur staged c list=()
+  local ref cur staged c tag old=false list=()
   ref="$(booted_ref)"
   cur="$(channel_of "$ref")"
   staged="$(staged_ref)"
+  tag="$(tag_of "$ref")"
+  outdated "$cur" "$tag" && old=true
   for c in "${CHANNELS[@]}"; do
     list+=("$(jq -nc --arg n "$c" --arg a "${ABOUT[$c]}" --arg i "$(image_for "$c" "$ref")" \
       '{name: $n, about: $a, image: $i}')")
   done
   jq -n --arg cur "$cur" --arg ref "$ref" --arg staged "$staged" \
-    --arg stagedch "$(channel_of "$staged")" --argjson vm "$([[ "$ref" == *x27-linux-homelab-vm* ]] && echo true || echo false)" \
+    --arg stagedch "$(channel_of "$staged")" --arg tag "$tag" --argjson outdated "$old" \
+    --arg bootedabout "$([[ "$old" == true ]] && old_name "$cur" "$tag")" --argjson vm "$([[ "$ref" == *x27-linux-homelab-vm* ]] && echo true || echo false)" \
     '{current: $cur, booted: $ref, staged: $staged, stagedChannel: $stagedch, vm: $vm,
+      bootedTag: $tag, outdated: $outdated, bootedAbout: $bootedabout,
       channels: [$ARGS.positional[] | fromjson]}' --args "${list[@]}"
 }
 

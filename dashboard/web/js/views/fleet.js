@@ -116,7 +116,8 @@ function nodeCard(n, refreshNodes) {
   h('div.top',
     h('div', { style: { flex: 1, minWidth: 0 } },
       h('div.row', { style: { gap: '8px' } }, h('span.title', n.name), n.local ? h('span.badge', 'main') : null,
-        s?.channel && s.channel !== 'stable' ? h('span.badge.warn', { title: 'Release channel' }, s.channel) : null),
+        s?.channel && s.channel !== 'stable' ? h('span.badge.warn', { title: 'Release channel' }, s.channel) : null,
+        s?.channelOutdated ? h('span.badge.crit', { title: 'Runs an end-of-life OS version that gets no more updates. Move it on its Updates page.' }, 'end of life') : null),
       h('div.addr', n.local ? 'this node' : n.address)),
     status, actions),
   content);
