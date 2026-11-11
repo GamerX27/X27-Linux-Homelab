@@ -391,7 +391,14 @@ func test(m Mount, password, uid, gid string) (string, error) {
 		}
 		defer os.Remove(cred)
 	}
-	if out, err := run.Cmd(45*time.Second, "mount", "-t", fsType(m), "-o", fsOptions(m, uid, gid, cred), source(m), dir); err != nil {
+	opts := fsOptions(m, uid, gid, cred)
+	if m.Type != "smb" {
+		// The kernel shares one superblock per NFS server and export. If this export is
+		// already mounted (the mount being edited, or another one) with other options,
+		// the test mount fails with "sharecache fail" unless it gets its own.
+		opts += ",nosharecache"
+	}
+	if out, err := run.Cmd(45*time.Second, "mount", "-t", fsType(m), "-o", opts, source(m), dir); err != nil {
 		if out == "" {
 			out = err.Error()
 		}
