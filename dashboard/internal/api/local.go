@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/activity"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/backup"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/channel"
@@ -42,6 +44,36 @@ func userOf(r *http.Request) string {
 	return u
 }
 
+type viaKey struct{}
+
+// withVia says how a request reached this node, for the activity log: web (the dashboard),
+// token:<name> (an API token), or main node (something the main node does on its own).
+func withVia(r *http.Request, via string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), viaKey{}, via))
+}
+
+func viaOf(r *http.Request) string {
+	v, _ := r.Context().Value(viaKey{}).(string)
+	return v
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// act logs an action (err nil: it worked) and records it in the activity log.
+func act(r *http.Request, what string, err error) {
+	if err != nil {
+		log.Printf("%s: %s failed: %v", userOf(r), what, err)
+	} else {
+		log.Printf("%s: %s", userOf(r), what)
+	}
+	activity.Add(activity.Entry{User: userOf(r), Via: viaOf(r), Action: what, OK: err == nil, Error: errText(err)})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -62,12 +94,11 @@ func readJSON(r *http.Request, v any) error {
 
 // result answers an action: its output on success, or the error (with output) on failure.
 func result(w http.ResponseWriter, r *http.Request, what, out string, err error) {
+	act(r, what, err)
 	if err != nil {
-		log.Printf("%s: %s failed: %v", userOf(r), what, err)
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	log.Printf("%s: %s", userOf(r), what)
 	writeJSON(w, http.StatusOK, map[string]string{"output": out})
 }
 
@@ -75,11 +106,11 @@ func result(w http.ResponseWriter, r *http.Request, what, out string, err error)
 // job, which the UI then follows through GET /docker/updates.
 func startedJob(w http.ResponseWriter, r *http.Request, what string, job docker.UpdateJob, err error) {
 	if err != nil {
-		log.Printf("%s: %s failed: %v", userOf(r), what, err)
+		act(r, what, err)
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	log.Printf("%s: %s started", userOf(r), what)
+	act(r, what+" started", nil)
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
 
@@ -119,14 +150,18 @@ func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	l.fileJobs = files.NewJobs(l.files)
 	l.fileJobs.OnDone = func(user string, j files.Job) {
 		what := "files " + j.Kind + " " + j.Name
+		e := activity.Entry{User: user, Action: what, OK: j.Phase != "failed", Error: j.Error}
 		switch j.Phase {
 		case "failed":
 			log.Printf("%s: %s failed: %s", user, what, j.Error)
 		case "cancelled":
-			log.Printf("%s: %s cancelled", user, what)
+			e.Action += " cancelled"
+			log.Printf("%s: %s", user, e.Action)
 		default:
-			log.Printf("%s: %s -> %s", user, what, j.Output)
+			e.Action += " -> " + j.Output
+			log.Printf("%s: %s", user, e.Action)
 		}
+		activity.Add(e)
 	}
 	l.stackJobs.Done = func(j docker.StackJob) {
 		if j.Action == "recreate" && j.Phase == "done" {
@@ -267,6 +302,11 @@ func (l *Local) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, v)
 	}
 
+	// Who changed what on this node (see internal/activity).
+	mux.HandleFunc("GET /activity", func(w http.ResponseWriter, r *http.Request) {
+		es, err := activity.Read(activityQuery(r))
+		ok(w, map[string]any{"entries": es}, err)
+	})
 	mux.HandleFunc("GET /summary", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, l.summary())
 	})
@@ -339,12 +379,47 @@ func (l *Local) Handler() http.Handler {
 			writeErr(w, http.StatusBadRequest, errors.New("bad container id"))
 			return
 		}
+		if r.URL.Query().Get("format") == "entries" {
+			q, err := logQuery(r)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			res, err := l.docker.MergedLogs([]string{id}, q)
+			ok(w, res, err)
+			return
+		}
 		tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
 		if tail <= 0 || tail > 5000 {
 			tail = 300
 		}
 		logs, err := l.docker.Logs(id, tail)
 		ok(w, map[string]string{"logs": logs}, err)
+	})
+	// Every container of a stack, merged by time, for the stack's Logs dialog.
+	mux.HandleFunc("GET /docker/stacks/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if !docker.ValidStackName(name) {
+			writeErr(w, http.StatusBadRequest, errors.New("bad stack name"))
+			return
+		}
+		q, err := logQuery(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		cs, err := l.docker.Containers()
+		if err != nil {
+			ok(w, nil, err)
+			return
+		}
+		ids := docker.StackContainers(cs, name)
+		if len(ids) == 0 {
+			writeJSON(w, http.StatusOK, docker.LogResult{Entries: []docker.LogEntry{}})
+			return
+		}
+		res, err := l.docker.MergedLogs(ids, q)
+		ok(w, res, err)
 	})
 	mux.HandleFunc("GET /docker/containers/{id}/stats", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -436,15 +511,15 @@ func (l *Local) Handler() http.Handler {
 			action = "start"
 		}
 		if err == nil && body.Start && body.Background {
-			log.Printf("%s: %s stack %s", userOf(r), verb, name)
+			act(r, verb+" stack "+name, nil)
 			job, jerr := l.stackJobs.Start(o, name, action, false)
 			if jerr != nil {
 				// Saved, but it couldn't start: say both, so the editor knows the files exist.
-				log.Printf("%s: stack %s %s failed: %v", userOf(r), action, name, jerr)
+				act(r, "stack "+action+" "+name, jerr)
 				writeJSON(w, http.StatusOK, map[string]any{"output": out, "startError": jerr.Error()})
 				return
 			}
-			log.Printf("%s: stack %s %s started", userOf(r), action, name)
+			act(r, "stack "+action+" "+name+" started", nil)
 			writeJSON(w, http.StatusAccepted, map[string]any{"output": out, "job": job})
 			return
 		}
@@ -477,7 +552,7 @@ func (l *Local) Handler() http.Handler {
 				what += " and delete its folder"
 			}
 			if err != nil {
-				log.Printf("%s: %s failed: %v", userOf(r), what, err)
+				act(r, what, err)
 				code := http.StatusBadRequest
 				if errors.Is(err, docker.ErrStackBusy) {
 					code = http.StatusConflict
@@ -485,7 +560,7 @@ func (l *Local) Handler() http.Handler {
 				writeErr(w, code, err)
 				return
 			}
-			log.Printf("%s: %s started", userOf(r), what)
+			act(r, what+" started", nil)
 			writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 			return
 		}
@@ -579,10 +654,10 @@ func (l *Local) Handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": backup.ExportName(time.Now())}))
-		log.Printf("%s: %s", userOf(r), what)
+		act(r, what, nil)
 		sw := &sentWriter{w: w}
 		if err := l.backups.Export(r.Context(), sw, o, data, q.Get("stop") == "1", parts); err != nil {
-			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			act(r, what, err)
 			if !sw.sent {
 				w.Header().Del("Content-Disposition")
 				status := http.StatusBadRequest
@@ -601,11 +676,11 @@ func (l *Local) Handler() http.Handler {
 		}
 		pv, err := l.backups.Upload(o, http.MaxBytesReader(w, r.Body, files.MaxUpload))
 		if err != nil {
-			log.Printf("%s: import upload failed: %v", userOf(r), err)
+			act(r, "import upload", err)
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		log.Printf("%s: import upload: export of %s with %d app(s)", userOf(r), pv.Host, len(pv.Apps))
+		act(r, fmt.Sprintf("import upload: export of %s with %d app(s)", pv.Host, len(pv.Apps)), nil)
 		writeJSON(w, http.StatusOK, pv)
 	})
 	mux.HandleFunc("POST /backup/import/apply", func(w http.ResponseWriter, r *http.Request) {
@@ -621,11 +696,11 @@ func (l *Local) Handler() http.Handler {
 		}
 		what := "import (apps: " + strings.Join(body.Apps, ", ") + "; parts: " + strings.Join(body.Parts, ", ") + ")"
 		if err != nil {
-			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			act(r, what, err)
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
-		log.Printf("%s: %s started", userOf(r), what)
+		act(r, what+" started", nil)
 		writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 	})
 	mux.HandleFunc("POST /docker/backups/config", func(w http.ResponseWriter, r *http.Request) {
@@ -653,11 +728,11 @@ func (l *Local) Handler() http.Handler {
 			what = "back up the selected apps"
 		}
 		if err != nil {
-			log.Printf("%s: %s failed: %v", userOf(r), what, err)
+			act(r, what, err)
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
-		log.Printf("%s: %s started", userOf(r), what)
+		act(r, what+" started", nil)
 		writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 	})
 	mux.HandleFunc("GET /docker/backups/log", func(w http.ResponseWriter, r *http.Request) {
@@ -771,22 +846,22 @@ func (l *Local) Handler() http.Handler {
 			if body.Background {
 				job, err := l.fileJobs.Start(fsUser(r), op, a, what)
 				if err != nil {
-					log.Printf("%s: files %s %s failed: %v", userOf(r), op, what, err)
+					act(r, "files "+op+" "+what, err)
 					writeErr(w, http.StatusConflict, err)
 					return
 				}
-				log.Printf("%s: files %s %s started", userOf(r), op, what)
+				act(r, "files "+op+" "+what+" started", nil)
 				writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 				return
 			}
 			var out files.ExtractResult
 			err := l.files.Run(fsUser(r), op, a, nil, &out)
 			if err != nil {
-				log.Printf("%s: files %s %s failed: %v", userOf(r), op, what, err)
+				act(r, "files "+op+" "+what, err)
 				writeErr(w, http.StatusBadRequest, err)
 				return
 			}
-			log.Printf("%s: files %s %s", userOf(r), op, what)
+			act(r, "files "+op+" "+what, nil)
 			writeJSON(w, http.StatusOK, map[string]any{"output": out.Path, "skipped": out.Skipped, "renamed": out.Renamed, "replaced": out.Replaced})
 		}
 	}
@@ -862,11 +937,11 @@ func (l *Local) Handler() http.Handler {
 		w.Header().Set("Content-Type", ctype)
 		w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 		if disposition == "attachment" {
-			log.Printf("%s: files download %s", userOf(r), what)
+			act(r, "files download "+what, nil)
 		}
 		sw := &sentWriter{w: w}
 		if err := l.files.Stream(r.Context(), fsUser(r), op, a, sw); err != nil {
-			log.Printf("%s: download %s failed: %v", userOf(r), what, err)
+			act(r, "files download "+what, err)
 			if !sw.sent {
 				w.Header().Del("Content-Disposition")
 				w.Header().Del("Content-Length")
@@ -922,7 +997,7 @@ func (l *Local) Handler() http.Handler {
 			writeErr(w, http.StatusNotFound, err)
 			return
 		}
-		log.Printf("%s: gotify token shown", userOf(r))
+		act(r, "gotify token shown", nil)
 		writeJSON(w, http.StatusOK, map[string]string{"token": token})
 	})
 	mux.HandleFunc("POST /features/gotify/test", func(w http.ResponseWriter, r *http.Request) {
@@ -1042,4 +1117,49 @@ func (s *sentWriter) Write(b []byte) (int, error) {
 		s.sent = true
 	}
 	return s.w.Write(b)
+}
+
+// logQuery reads a container log request: tail (lines per container, default 500), since
+// (15m, 1h, 24h, 7d, or a cursor from an earlier answer), until (a time) and stream.
+func logQuery(r *http.Request) (docker.LogQuery, error) {
+	v := r.URL.Query()
+	q := docker.LogQuery{Stream: v.Get("stream")}
+	switch q.Stream {
+	case "", "stdout", "stderr":
+	default:
+		return q, errors.New("stream must be stdout or stderr")
+	}
+	q.Tail, _ = strconv.Atoi(v.Get("tail"))
+	if q.Tail <= 0 || q.Tail > docker.MaxLogLines {
+		q.Tail = 500
+	}
+	if c := v.Get("cursor"); c != "" {
+		t, err := docker.ParseCursor(c)
+		if err != nil {
+			return q, err
+		}
+		q.Since, q.Tail = t, 0 // everything after the cursor
+	} else if s := v.Get("since"); s != "" {
+		d, ok := map[string]time.Duration{"15m": 15 * time.Minute, "1h": time.Hour, "24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour}[s]
+		if !ok {
+			return q, errors.New("since must be 15m, 1h, 24h or 7d")
+		}
+		q.Since = time.Now().Add(-d)
+	}
+	if u := v.Get("until"); u != "" {
+		t, err := docker.ParseCursor(u)
+		if err != nil {
+			return q, err
+		}
+		q.Until = t
+	}
+	return q, nil
+}
+
+// activityQuery reads ?user=&q=&failed=1&before=&limit= for the activity log.
+func activityQuery(r *http.Request) activity.Query {
+	v := r.URL.Query()
+	before, _ := strconv.ParseInt(v.Get("before"), 10, 64)
+	limit, _ := strconv.Atoi(v.Get("limit"))
+	return activity.Query{User: v.Get("user"), Text: v.Get("q"), Failed: v.Get("failed") == "1", Before: before, Limit: limit}
 }

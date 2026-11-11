@@ -30,6 +30,9 @@ import (
 // UserHeader tells a node who is acting, so its terminal runs as that person.
 const UserHeader = "X-Dashboard-User"
 
+// ViaHeader tells a node how the person acted (web, or token:<name>), for its activity log.
+const ViaHeader = "X-Dashboard-Via"
+
 type Node struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -342,7 +345,7 @@ func (s *Store) do(n Node, method, path, user string, body io.Reader, timeout ti
 // Proxy forwards a browser request (path already stripped to the node API path) to
 // the node. The browser's cookie and CSRF header stay on the main node; the node gets
 // the bearer token and the acting user instead. Websocket upgrades pass through.
-func (s *Store) Proxy(n Node, user string) http.Handler {
+func (s *Store) Proxy(n Node, user, via string) http.Handler {
 	target := &url.URL{Scheme: "https", Host: n.Address}
 	return &httputil.ReverseProxy{
 		Transport: s.client(n).Transport,
@@ -356,6 +359,7 @@ func (s *Store) Proxy(n Node, user string) http.Handler {
 			pr.Out.Header.Del("X-CSRF-Token")
 			pr.Out.Header.Set("Authorization", "Bearer "+n.Token)
 			pr.Out.Header.Set(UserHeader, user)
+			pr.Out.Header.Set(ViaHeader, via)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			w.Header().Set("Content-Type", "application/json")

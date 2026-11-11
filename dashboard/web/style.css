@@ -538,12 +538,27 @@ div.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; co
 .log-line.p5 .msg { color: #fff; font-weight: 550; }
 .log-line.p7 .msg { color: #a9a8a0; }
 @media (max-width: 860px) { .log-line { grid-template-columns: 1fr; gap: 0; padding: 3px 12px; } }
+.log-view.no-src .log-line { grid-template-columns: max-content 1fr; }
+.log-view.short { height: 62vh; height: 62dvh; min-height: 300px; }
+.log-view.nowrap .log-line .msg { white-space: pre; word-break: normal; }
+.log-view.nowrap { overflow-x: auto; }
+.log-line { border-left: 2px solid transparent; }
+.log-line.stderr { border-left-color: #b36b6b; }
+.log-line mark { background: #f2d16b; color: #1a1a18; border-radius: 2px; padding: 0 1px; }
+.log-wrap { position: relative; }
+.log-jump { position: absolute; right: 18px; bottom: 14px; box-shadow: var(--shadow); }
+.log-count { font-size: 12.5px; white-space: nowrap; }
+.activity-table td { vertical-align: top; }
+.activity-table .nowrap { white-space: nowrap; }
+.activity-action .mono { font-size: 12.5px; overflow-wrap: anywhere; }
+.activity-action .error-text { font-size: 12.5px; margin-top: 2px; }
+.activity-table tr.failed td { background: color-mix(in srgb, var(--critical) 6%, transparent); }
 
 /* Integrations */
 .badge.update-plain { background: var(--accent-soft); color: var(--text); }
 
 /* Logs toolbar */
-.log-tools { margin-bottom: 12px; }
+.log-tools { margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
 .log-source { width: auto; max-width: 260px; }
 .log-select { width: auto; }
 

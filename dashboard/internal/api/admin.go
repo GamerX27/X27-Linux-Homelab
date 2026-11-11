@@ -164,7 +164,7 @@ func (l *Local) adminRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("POST /users/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Group, Shell, Password string
+			Group, Shell, Password   string
 			Member, Lock, RemoveHome bool
 		}
 		if err := readJSON(r, &body); err != nil {

@@ -1,6 +1,7 @@
 import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct, when, menu, menuOpen, modalOpen, showLiveLog } from '../ui.js';
 import { openStackEditor, showStackLog, STACK_ACTION, stackJobRunning, stackJobLine, stackJobResult } from './stackeditor.js';
 import { backupNow } from './backup.js';
+import { logView, guessLevel } from '../logview.js';
 
 const SECTIONS = ['Apps', 'Images', 'Storage'];
 const PROJECT = 'com.docker.compose.project';
@@ -343,6 +344,7 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         { label: 'Restart', onclick: act('restart'), hidden: active === 0, disabled: busyWhy },
         { label: 'Pull & recreate all', hidden: !s.filesExist, disabled: busyWhy, onclick: act('recreate', {
           confirm: `Pull the newest images for every service in ${s.name} and recreate all its containers? Data in volumes and bind mounts is kept.` }) },
+        { label: 'Logs (all containers)', hidden: !total, onclick: () => showStackLogs(s.name, g.containers.map(cname)) },
         { label: 'Show last log', hidden: !sj, onclick: () => showStackLog(api, s.name) },
         { label: 'Back up now', hidden: !s.inRoot, disabled: busyWhy, onclick: () => backupNow(api, [s.name], running > 0) },
         { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: onSaved }) },
@@ -506,24 +508,57 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
 
   // ---- Logs and stats -------------------------------------------------------------------
 
-  async function showLogs(name, id) {
-    const pre = h('pre.output', { style: { maxHeight: '60vh' } }, 'Loading…');
-    const follow = h('input', { type: 'checkbox', checked: true });
-    let t, open = true;
-    const fetchLogs = async () => {
-      try {
-        const r = await api.get(`/docker/containers/${id}/logs?tail=500`);
-        const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-        pre.textContent = r.logs || '(no output)';
-        if (atBottom || pre.dataset.first !== '1') { pre.scrollTop = pre.scrollHeight; pre.dataset.first = '1'; }
-      } catch (e) { pre.textContent = e.message; }
-      if (open && follow.checked) t = setTimeout(fetchLogs, 3000);
-    };
-    follow.addEventListener('change', () => { if (follow.checked) fetchLogs(); else clearTimeout(t); });
-    fetchLogs();
-    await modal(`Logs: ${name}`, h('div.stack', { 'data-wide': '1' }, h('label.row.muted', follow, 'Refresh every 3 seconds'), pre),
-      [{ label: 'Close', value: true, class: 'primary' }]);
-    open = false; clearTimeout(t);
+  // A container's output, or every container of a stack merged by time, in the log viewer.
+  function showLogs(name, id) {
+    return openLogs(`Logs: ${name}`, `/docker/containers/${encodeURIComponent(id)}/logs`, { file: name });
+  }
+
+  function showStackLogs(stack, names) {
+    return openLogs(`Logs: ${stack}`, `/docker/stacks/${encodeURIComponent(stack)}/logs`, { file: stack, containers: names.sort() });
+  }
+
+  // Container names get steady colours, readable on the dark log background.
+  const SRC_COLORS = ['#8fb8ee', '#9ad48b', '#e6b673', '#d9a0e8', '#7fd6cf', '#f0a3a3', '#c6c08a', '#a7b4f5'];
+  const srcColor = (n) => SRC_COLORS[[...n].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7) % SRC_COLORS.length];
+
+  async function openLogs(title, path, { file, containers }) {
+    const range = h('select.log-select', { 'aria-label': 'How much' },
+      [['500', 'Last 500 lines'], ['2000', 'Last 2000 lines'], ['5000', 'Last 5000 lines'], ['15m', 'Last 15 min'], ['1h', 'Last hour'], ['24h', 'Last 24 h'], ['7d', 'Last 7 days']]
+        .map(([v, l]) => h('option', { value: v }, l)));
+    const stream = h('select.log-select', { 'aria-label': 'Output' },
+      h('option', { value: '' }, 'stdout and stderr'), h('option', { value: 'stdout' }, 'stdout only'), h('option', { value: 'stderr' }, 'stderr only'));
+    const level = h('select.log-select', { 'aria-label': 'Level' },
+      h('option', { value: '7' }, 'All lines'), h('option', { value: '4' }, 'Warnings and errors'), h('option', { value: '3' }, 'Errors only'));
+    const multi = containers?.length > 1;
+    const ctSel = multi ? h('select.log-select', { 'aria-label': 'Container' },
+      h('option', { value: '' }, 'All containers'), containers.map((n) => h('option', { value: n }, n))) : null;
+    const view = logView({
+      tools: [range, stream, level, ctSel].filter(Boolean),
+      source: multi,
+      tall: false,
+      every: 3000,
+      follow: true,
+      empty: 'No output.',
+      fileName: () => file,
+      fetch: async ({ cursor }) => {
+        const p = new URLSearchParams({ format: 'entries' });
+        if (/^\d+$/.test(range.value)) p.set('tail', range.value);
+        else { p.set('since', range.value); p.set('tail', '5000'); }
+        if (stream.value) p.set('stream', stream.value);
+        if (cursor) p.set('cursor', cursor);
+        const r = await api.get(`${path}?${p}`);
+        const max = Number(level.value);
+        const entries = (r.entries || []).map((e) => ({
+          time: e.time, src: e.container, color: srcColor(e.container || ''), stream: e.stream, message: e.message,
+          level: guessLevel(e.message), title: e.stream === 'stderr' ? 'stderr' : null,
+        })).filter((e) => e.level <= max && (!ctSel?.value || e.src === ctSel.value));
+        return { entries, cursor: r.cursor };
+      },
+    });
+    for (const c of [range, stream, level, ctSel].filter(Boolean)) c.addEventListener('change', view.reload);
+    view.reload();
+    await modal(title, h('div.stack', { 'data-wide': '1' }, view.el), [{ label: 'Close', value: true, class: 'primary' }]);
+    view.stop();
   }
 
   async function showStats(name, id) {

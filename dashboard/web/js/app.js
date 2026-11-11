@@ -12,6 +12,7 @@ import { renderSettings } from './views/settings.js';
 import { renderRollout } from './views/rollout.js';
 import { renderUsers } from './views/users.js';
 import { renderLogs } from './views/logs.js';
+import { renderActivity } from './views/activity.js';
 import { renderIntegrations } from './views/integrations.js';
 import { renderBackups, renderExport } from './views/backup.js';
 import { renderGroup } from './views/group.js';
@@ -24,11 +25,11 @@ const TABS = [
   ['backup', 'Backup', renderGroup([['backups', 'Backups', renderBackups], ['export', 'Export & import', renderExport]])],
   ['terminal', 'Terminal', renderTerminal],
   ['system', 'System', renderGroup([['settings', 'Settings', renderSettings], ['users', 'Users', renderUsers],
-    ['features', 'Features', renderFeatures], ['logs', 'Logs', renderLogs]])],
+    ['features', 'Features', renderFeatures], ['logs', 'Logs', renderLogs], ['activity', 'Activity', renderActivity]])],
 ];
 
 // Tabs that became sub-tabs, so old links and bookmarks still land in the right place.
-const ALIASES = { storage: 'files/shares', logs: 'system/logs', users: 'system/users', features: 'system/features', settings: 'system/settings' };
+const ALIASES = { storage: 'files/shares', logs: 'system/logs', activity: 'system/activity', users: 'system/users', features: 'system/features', settings: 'system/settings' };
 
 const root = document.getElementById('root');
 const state = { me: null, nodes: [], rollout: null, cleanup: null, nodesTimer: null };

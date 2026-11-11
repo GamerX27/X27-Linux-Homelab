@@ -3,12 +3,14 @@ package api
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/activity"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/network"
@@ -84,10 +87,12 @@ func NewMain(o Options) (http.Handler, error) {
 		s, err := sessions.Login(w, r, body.Username, body.Password)
 		if err != nil {
 			log.Printf("failed login for %q from %s", body.Username, r.RemoteAddr)
+			activity.Add(activity.Entry{User: body.Username, Via: "web", Action: "log in from " + r.RemoteAddr, Error: "wrong user name or password, or not allowed"})
 			writeErr(w, http.StatusUnauthorized, err)
 			return
 		}
 		log.Printf("%s logged in from %s", s.User, r.RemoteAddr)
+		activity.Add(activity.Entry{User: s.User, Via: "web", Action: "log in from " + r.RemoteAddr, OK: true})
 		writeJSON(w, http.StatusOK, map[string]string{"user": s.User, "csrf": s.CSRF})
 	})
 	mux.HandleFunc("POST /auth/logout", func(w http.ResponseWriter, r *http.Request) {
@@ -147,11 +152,11 @@ func NewMain(o Options) (http.Handler, error) {
 		}
 		n, err := store.Pair(body.Address, body.Password, body.Name)
 		if err != nil {
-			log.Printf("%s: pairing %s failed: %v", userOf(r), body.Address, err)
+			act(r, "pair node "+body.Address, err)
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		log.Printf("%s: paired node %s (%s)", userOf(r), n.Name, n.Address)
+		act(r, fmt.Sprintf("pair node %s (%s)", n.Name, n.Address), nil)
 		writeJSON(w, http.StatusOK, n.Public())
 	})
 	api.HandleFunc("POST /api/nodes/{id}/rename", func(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +225,7 @@ func NewMain(o Options) (http.Handler, error) {
 		if moved != "" {
 			go followNode(store, n, moved)
 		}
-		log.Printf("%s: network change on node %s", userOf(r), n.Name)
+		act(r, "network change on node "+n.Name, nil)
 		writeJSON(w, http.StatusOK, map[string]any{"pending": out.Pending, "movedTo": moved})
 	})
 	api.HandleFunc("DELETE /api/nodes/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +272,59 @@ func NewMain(o Options) (http.Handler, error) {
 		}
 		writeJSON(w, http.StatusOK, f)
 	})
+	// The activity of every node (or ?node=<id>), merged newest first.
+	api.HandleFunc("GET /api/activity", func(w http.ResponseWriter, r *http.Request) {
+		q := activityQuery(r)
+		if q.Limit <= 0 {
+			q.Limit = activity.DefaultLimit
+		}
+		q.Limit = min(q.Limit, activity.MaxLimit)
+		host, _ := os.Hostname()
+		want := r.URL.Query().Get("node")
+		var mu sync.Mutex
+		var all []activity.Entry
+		var failed []string
+		if want == "" || want == "local" {
+			es, _ := activity.Read(q)
+			for i := range es {
+				es[i].Node = host
+			}
+			all = append(all, es...)
+		}
+		var wg sync.WaitGroup
+		for _, n := range store.List() {
+			if want != "" && want != n.ID {
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var res struct{ Entries []activity.Entry }
+				if err := store.GetJSON(n, "/activity?"+r.URL.Query().Encode(), 8*time.Second, &res); err != nil {
+					mu.Lock()
+					failed = append(failed, n.Name)
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				for _, e := range res.Entries {
+					e.Node = n.Name
+					all = append(all, e)
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		sort.SliceStable(all, func(a, b int) bool { return all[a].Time > all[b].Time })
+		more := len(all) > q.Limit
+		if more {
+			all = all[:q.Limit]
+		}
+		if all == nil {
+			all = []activity.Entry{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"entries": all, "unreachable": failed, "more": more || len(all) == q.Limit})
+	})
 	rolloutRoutes(api, local, store)
 	tokens, _, err := aiRoutes(mux, api, o)
 	if err != nil {
@@ -286,7 +344,7 @@ func NewMain(o Options) (http.Handler, error) {
 			writeErr(w, http.StatusNotFound, errors.New("no such node"))
 			return
 		}
-		http.StripPrefix(prefix, store.Proxy(n, userOf(r))).ServeHTTP(w, r)
+		http.StripPrefix(prefix, store.Proxy(n, userOf(r), viaOf(r))).ServeHTTP(w, r)
 	})
 
 	mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -299,7 +357,7 @@ func NewMain(o Options) (http.Handler, error) {
 			writeErr(w, http.StatusForbidden, errors.New("missing or wrong CSRF token, reload the page"))
 			return
 		}
-		api.ServeHTTP(w, withUser(r, s.User))
+		api.ServeHTTP(w, withVia(withUser(r, s.User), "web"))
 	}))
 	return securityHeaders(fakeReboot(mux)), nil
 }
@@ -343,6 +401,7 @@ func NewNode(o Options) http.Handler {
 				pairFails, pairLockUntil = 0, time.Now().Add(time.Minute)
 			}
 			log.Printf("wrong pairing password from %s", r.RemoteAddr)
+			activity.Add(activity.Entry{Via: "main node", Action: "pair with a main node at " + r.RemoteAddr, Error: "wrong pairing password"})
 			writeErr(w, http.StatusForbidden, errors.New("wrong pairing password"))
 			return
 		}
@@ -355,6 +414,7 @@ func NewNode(o Options) http.Handler {
 		pairFails = 0
 		host, _ := os.Hostname()
 		log.Printf("paired with main node at %s", r.RemoteAddr)
+		activity.Add(activity.Entry{Via: "main node", Action: "pair with the main node at " + r.RemoteAddr, OK: true})
 		writeJSON(w, http.StatusOK, map[string]string{"token": token, "hostname": host, "fingerprint": fingerprint})
 	})
 
@@ -378,6 +438,7 @@ func NewNode(o Options) http.Handler {
 			err = cfg.Save()
 		}
 		log.Printf("main node at %s unpaired this node", r.RemoteAddr)
+		activity.Add(activity.Entry{Via: "main node", Action: "unpaired by the main node at " + r.RemoteAddr, OK: true})
 		result(w, r, "unpair", "", err)
 	})
 
@@ -386,7 +447,11 @@ func NewNode(o Options) http.Handler {
 			writeErr(w, http.StatusUnauthorized, errors.New("unauthorized"))
 			return
 		}
-		http.StripPrefix("/api/v1", localAPI).ServeHTTP(w, withUser(r, r.Header.Get(nodes.UserHeader)))
+		via := r.Header.Get(nodes.ViaHeader)
+		if via == "" {
+			via = "main node"
+		}
+		http.StripPrefix("/api/v1", localAPI).ServeHTTP(w, withVia(withUser(r, r.Header.Get(nodes.UserHeader)), via))
 	}))
 	return securityHeaders(mux)
 }

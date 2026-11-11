@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/activity"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/api"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
@@ -321,6 +322,7 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatalf("certificate: %v", err)
 	}
+	activity.Init(filepath.Join(config.StateDir, "activity.jsonl"))
 	fakeOS := os.Getenv("DASHBOARD_FAKE_OS")
 	osupdate.Fake = *dev && (fakeOS == "1" || fakeOS == "fail")
 	osupdate.FakeFail = osupdate.Fake && fakeOS == "fail"

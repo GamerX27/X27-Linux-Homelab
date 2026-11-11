@@ -246,11 +246,11 @@ several nodes at once, switch their channel, and update containers on all nodes.
 |---|---|
 | Overview | CPU, memory, disks, network, temperatures, uptime, OS version |
 | Updates | Current OS image, available update, last update and its log; update, reboot or roll back. The release channel, and switching it |
-| Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, logs, remove. Plus images, volumes and networks for cleanup |
+| Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, remove. Logs per container or for a whole stack merged by time: search, follow, stdout/stderr, errors and warnings highlighted, download. Plus images, volumes and networks for cleanup |
 | Files | **Files:** your home folder: browse, edit, upload, download, rename, delete, with the same permissions as over SSH; compress to zip, tar.gz or tar.zst and extract (see what's inside first, then pick where it goes and what happens to files that already exist), in the background with progress and Cancel. **Network shares:** NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
 | Backup | **Backups:** apps archived on a schedule or now, kept per app. **Export & import:** every app's config plus the server's own settings in one file, and restoring it here or on a new server |
 | Terminal | A shell in the browser, as your user |
-| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint. **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download |
+| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint. **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download. **Activity:** who changed what and when, on this node or every node: dashboard actions, API token (MCP) actions, logins and pairings, and whether each worked |
 
 Each sub-tab has its own address, like `#/n/<node>/system/logs`, so a reload stays on it.
 
@@ -392,8 +392,9 @@ services, NetBird, users, backups and network shares. Depending on the token's a
 stop and update apps, and install OS updates or reboot.
 
 There are no tools for files, the terminal or secrets: Gotify tokens, `.env` values and
-passwords never reach a model. Changes go through the same checks as the dashboard, and the
-journal (`journalctl -u dashboard`) logs each one with the token's name.
+passwords never reach a model. Changes go through the same checks as the dashboard, and
+**System → Activity** (and the journal, `journalctl -u dashboard`) records each one with the
+token's name.
 
 | Access | Can |
 |---|---|

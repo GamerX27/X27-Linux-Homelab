@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -39,7 +40,7 @@ func (l *Local) networkRoutes(mux *http.ServeMux) {
 			result(w, r, "network change "+c.UUID, "", err)
 			return
 		}
-		log.Printf("%s: network change %s: %s %v gateway %q dns %v", userOf(r), p.Name, c.Method, c.Addresses, c.Gateway, c.DNS)
+		act(r, fmt.Sprintf("network change %s: %s %v gateway %q dns %v", p.Name, c.Method, c.Addresses, c.Gateway, c.DNS), nil)
 		writeJSON(w, http.StatusOK, map[string]any{"pending": p})
 	})
 }

@@ -2,7 +2,7 @@ package api
 
 import (
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -96,7 +96,7 @@ func rolloutRoutes(api *http.ServeMux, local *Local, store *nodes.Store) {
 			writeErr(w, http.StatusConflict, err)
 			return
 		}
-		log.Printf("%s: started OS update %s on %d node(s)", userOf(r), j.ID, len(targets))
+		act(r, fmt.Sprintf("start OS update %s on %d node(s)", j.ID, len(targets)), nil)
 		writeJSON(w, http.StatusOK, map[string]any{"job": j})
 	})
 	api.HandleFunc("POST /api/rollout/stop", func(w http.ResponseWriter, r *http.Request) {

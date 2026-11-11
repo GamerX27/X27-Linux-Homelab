@@ -122,8 +122,8 @@ var All = []Tool{
 				disks = append(disks, fmt.Sprintf("%v (%v): %s of %s used (%.0f%%)", x["mount"], x["fs"], human(used), human(total), p))
 			}
 			out := map[string]any{"info": d.Info, "cpuPercent": int(d.Stats.CPUPercent), "load": d.Stats.Load,
-				"memory": human(float64(d.Stats.MemUsed)) + " of " + human(float64(d.Stats.MemTotal)),
-				"swap":   human(float64(d.Stats.SwapUsed)) + " of " + human(float64(d.Stats.SwapTotal)),
+				"memory":      human(float64(d.Stats.MemUsed)) + " of " + human(float64(d.Stats.MemTotal)),
+				"swap":        human(float64(d.Stats.SwapUsed)) + " of " + human(float64(d.Stats.SwapTotal)),
 				"uptimeHours": int(d.Stats.UptimeSec / 3600), "disks": disks, "temperatures": d.Stats.Temps}
 			if d.Docker != nil {
 				out["docker"] = map[string]any{"version": d.Docker["ServerVersion"], "containers": d.Docker["Containers"],
@@ -237,18 +237,122 @@ var All = []Tool{
 			return out, nil
 		}},
 	{Name: "container_logs", Scope: Read,
-		Params:      with(map[string]any{"container": str("Container name or id."), "tail": integer("Lines from the end, default 150, at most 1000.")}),
-		Required:    []string{"container"},
-		Description: "The last lines a container wrote (stdout and stderr, with timestamps). Use it to find out why an app fails or restarts.",
+		Params: with(map[string]any{
+			"container": str("Container name or id. Give this or stack."),
+			"stack":     str("A compose stack: every container's output, merged by time and named."),
+			"tail":      integer("Lines from the end of each container's log, default 150, at most 1000."),
+			"since":     enum("Only lines from this far back.", "15m", "1h", "24h", "7d"),
+			"stream":    enum("Only stdout or only stderr.", "stdout", "stderr"),
+			"grep":      str("Only lines containing this text (case-insensitive)."),
+		}),
+		Description: "What a container (or every container of a stack) wrote, with timestamps. Use it to find out why an app fails or restarts.",
 		Run: func(c Call) (any, error) {
 			tail := min(max(c.num("tail", 150), 1), 1000)
+			q := url.Values{"format": {"entries"}, "tail": {strconv.Itoa(tail)}}
+			if s := c.str("since"); s != "" {
+				q.Set("since", s)
+			}
+			if s := c.str("stream"); s != "" {
+				q.Set("stream", s)
+			}
+			path := "/docker/containers/" + seg(c.str("container")) + "/logs?"
+			if st := c.str("stack"); st != "" {
+				path = "/docker/stacks/" + seg(st) + "/logs?"
+			} else if c.str("container") == "" {
+				return nil, errors.New("give a container or a stack")
+			}
 			r, err := decode[struct {
-				Logs string `json:"logs"`
-			}](c.nodeGet("/docker/containers/" + seg(c.str("container")) + "/logs?tail=" + strconv.Itoa(tail)))
+				Entries []struct {
+					Time      int64  `json:"time"`
+					Stream    string `json:"stream"`
+					Container string `json:"container"`
+					Message   string `json:"message"`
+				} `json:"entries"`
+			}](c.nodeGet(path + q.Encode()))
 			if err != nil {
 				return nil, err
 			}
-			return r.Logs, nil
+			grep := strings.ToLower(c.str("grep"))
+			var sb strings.Builder
+			for _, e := range r.Entries {
+				if grep != "" && !strings.Contains(strings.ToLower(e.Message), grep) {
+					continue
+				}
+				fmt.Fprintf(&sb, "%s ", time.UnixMilli(e.Time).UTC().Format("2006-01-02 15:04:05"))
+				if c.str("stack") != "" {
+					fmt.Fprintf(&sb, "%s ", e.Container)
+				}
+				if e.Stream == "stderr" {
+					sb.WriteString("[stderr] ")
+				}
+				sb.WriteString(e.Message + "\n")
+			}
+			if sb.Len() == 0 {
+				return "No output matches.", nil
+			}
+			return sb.String(), nil
+		}},
+	{Name: "activity_log", Scope: Read,
+		Params: map[string]any{
+			"node":   str("Only this node (id or name from list_nodes); empty for every node."),
+			"user":   str("Only what this user did."),
+			"text":   str("Only entries whose action or error contains this (case-insensitive), e.g. a stack name or token name."),
+			"failed": boolean("Only actions that failed."),
+			"limit":  integer("Newest entries to return, default 50, at most 500."),
+		},
+		Description: "Who changed what and when, on every node: dashboard actions, API token (MCP) actions, logins and pairings, with whether each worked.",
+		Run: func(c Call) (any, error) {
+			q := url.Values{"limit": {strconv.Itoa(min(max(c.num("limit", 50), 1), 500))}}
+			if n := c.str("node"); n != "" {
+				base, err := c.node()
+				if err != nil {
+					return nil, err
+				}
+				q.Set("node", strings.TrimPrefix(base, "/api/n/"))
+			}
+			if u := c.str("user"); u != "" {
+				q.Set("user", u)
+			}
+			if t := c.str("text"); t != "" {
+				q.Set("q", t)
+			}
+			if c.boolean("failed") {
+				q.Set("failed", "1")
+			}
+			r, err := decode[struct {
+				Entries []struct {
+					Time   int64  `json:"time"`
+					User   string `json:"user"`
+					Via    string `json:"via"`
+					Action string `json:"action"`
+					OK     bool   `json:"ok"`
+					Error  string `json:"error"`
+					Node   string `json:"node"`
+				} `json:"entries"`
+				Unreachable []string `json:"unreachable"`
+			}](c.get("/api/activity?" + q.Encode()))
+			if err != nil {
+				return nil, err
+			}
+			var sb strings.Builder
+			for _, e := range r.Entries {
+				who := e.User
+				if who == "" {
+					who = "-"
+				}
+				fmt.Fprintf(&sb, "%s %s %s (%s): %s", time.UnixMilli(e.Time).UTC().Format("2006-01-02 15:04:05"), e.Node, who, e.Via, e.Action)
+				if !e.OK {
+					fmt.Fprintf(&sb, " FAILED: %s", e.Error)
+				}
+				sb.WriteString("\n")
+			}
+			if len(r.Unreachable) > 0 {
+				fmt.Fprintf(&sb, "Unreachable: %s\n", strings.Join(r.Unreachable, ", "))
+			}
+			if sb.Len() == 0 {
+				return "No activity matches.", nil
+			}
+			return sb.String(), nil
 		}},
 	{Name: "container_updates", Scope: Read, Params: with(nil),
 		Description: "Which container images on a node have a newer version in their registry, which containers and stacks use them, and the running or last update job.",
@@ -342,15 +446,15 @@ var All = []Tool{
 
 	// ---- operate ----
 	{Name: "container_action", Scope: Operate,
-		Params:   with(map[string]any{"container": str("Container name or id."), "action": enum("What to do.", "start", "stop", "restart")}),
-		Required: []string{"container", "action"},
+		Params:      with(map[string]any{"container": str("Container name or id."), "action": enum("What to do.", "start", "stop", "restart")}),
+		Required:    []string{"container", "action"},
 		Description: "Start, stop or restart one container.",
 		Run: func(c Call) (any, error) {
 			return output(c.nodePost("/docker/containers/"+seg(c.str("container"))+"/"+c.str("action"), nil))
 		}},
 	{Name: "stack_action", Scope: Operate,
-		Params:   with(map[string]any{"stack": str("Stack name from list_stacks."), "action": enum("start: compose up -d · stop · restart · recreate: pull newer images and recreate the containers (data in volumes is kept).", "start", "stop", "restart", "recreate")}),
-		Required: []string{"stack", "action"},
+		Params:      with(map[string]any{"stack": str("Stack name from list_stacks."), "action": enum("start: compose up -d · stop · restart · recreate: pull newer images and recreate the containers (data in volumes is kept).", "start", "stop", "restart", "recreate")}),
+		Required:    []string{"stack", "action"},
 		Description: "Start, stop, restart or pull & recreate a whole app (compose stack).",
 		Run: func(c Call) (any, error) {
 			return output(c.nodePost("/docker/stacks/"+seg(c.str("stack"))+"/"+c.str("action"), nil))

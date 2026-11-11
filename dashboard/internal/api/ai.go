@@ -19,6 +19,7 @@ import (
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/activity"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/apitokens"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
@@ -42,7 +43,8 @@ func dispatcher(api http.Handler) tools.Dispatch {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		rec := httptest.NewRecorder()
-		api.ServeHTTP(rec, withUser(req, user))
+		user, via, _ := strings.Cut(user, viaSep)
+		api.ServeHTTP(rec, withVia(withUser(req, user), via))
 		if rec.Code >= 300 {
 			var e struct{ Error string }
 			json.Unmarshal(rec.Body.Bytes(), &e)
@@ -52,6 +54,16 @@ func dispatcher(api http.Handler) tools.Dispatch {
 			return nil, errors.New(e.Error)
 		}
 		return rec.Body.Bytes(), nil
+	}
+}
+
+// viaSep joins the user and the token's name in a Dispatch's user, so the actions a tool
+// takes are logged as that token's (see viaDo).
+const viaSep = "\x00"
+
+func viaDo(do tools.Dispatch, via string) tools.Dispatch {
+	return func(user, method, path string, body any) (json.RawMessage, error) {
+		return do(user+viaSep+via, method, path, body)
 	}
 }
 
@@ -99,7 +111,7 @@ func newMCPServer(version string, scope tools.Scope, do tools.Dispatch) *mcp.Ser
 					}
 				}
 				who := fmt.Sprintf("mcp:%v/%s", ti.Extra["name"], ti.UserID)
-				v, err := t.Exec(tools.Call{User: ti.UserID, Do: do, Args: args})
+				v, err := t.Exec(tools.Call{User: ti.UserID, Do: viaDo(do, fmt.Sprintf("token:%v", ti.Extra["name"])), Args: args})
 				res := &mcp.CallToolResult{}
 				if err != nil {
 					log.Printf("%s: %s %s failed: %v", who, t.Name, logArgs(args), err)
@@ -145,6 +157,7 @@ func mcpHandler(version string, dev bool, tokens *apitokens.Store, do tools.Disp
 		t, err := tokens.Verify(token)
 		if err != nil {
 			log.Printf("mcp: refused a token from %s: %v", r.RemoteAddr, err)
+			activity.Add(activity.Entry{Via: "token", Action: "use an API token from " + r.RemoteAddr, Error: err.Error()})
 			return nil, fmt.Errorf("%w: %v", mcpauth.ErrInvalidToken, err)
 		}
 		if !dev && !auth.InWheel(t.Owner) {
@@ -205,7 +218,7 @@ func aiRoutes(mux *http.ServeMux, api *http.ServeMux, o Options) (*apitokens.Sto
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		log.Printf("%s: created %s API token %q", userOf(r), scope, t.Name)
+		act(r, fmt.Sprintf("create %s API token %q", scope, t.Name), nil)
 		writeJSON(w, http.StatusOK, map[string]any{"token": t, "secret": secret})
 	})
 	api.HandleFunc("DELETE /api/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
