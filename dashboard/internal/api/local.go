@@ -96,6 +96,7 @@ type Local struct {
 	stackJobs *docker.StackJobs
 	backups   *backup.Manager
 	files     files.Runner
+	fileJobs  *files.Jobs
 
 	osMu     sync.Mutex
 	osCached osupdate.Status
@@ -115,6 +116,18 @@ func NewLocal(version string, dev bool, up *websocket.Upgrader) *Local {
 	l := &Local{Version: version, Dev: dev, Upgrader: up,
 		sampler: system.NewSampler(), checker: osupdate.NewChecker(), docker: d, updater: docker.NewUpdater(d),
 		stackJobs: docker.NewStackJobs(d), backups: backup.New(d), files: files.Runner{Dev: dev}}
+	l.fileJobs = files.NewJobs(l.files)
+	l.fileJobs.OnDone = func(user string, j files.Job) {
+		what := "files " + j.Kind + " " + j.Name
+		switch j.Phase {
+		case "failed":
+			log.Printf("%s: %s failed: %s", user, what, j.Error)
+		case "cancelled":
+			log.Printf("%s: %s cancelled", user, what)
+		default:
+			log.Printf("%s: %s -> %s", user, what, j.Output)
+		}
+	}
 	l.stackJobs.Done = func(j docker.StackJob) {
 		if j.Action == "recreate" && j.Phase == "done" {
 			l.updater.Check() // clear its "update available" badge
@@ -731,8 +744,75 @@ func (l *Local) Handler() http.Handler {
 	mux.HandleFunc("POST /files/copy", fileOp("copy"))
 	mux.HandleFunc("POST /files/delete", fileOp("delete"))
 	mux.HandleFunc("POST /files/chmod", fileOp("chmod"))
-	mux.HandleFunc("POST /files/extract", fileOp("extract"))
-	mux.HandleFunc("POST /files/compress", fileOp("compress"))
+	// Extract and compress take their options and, with background, run as a job the page
+	// follows through GET /files/jobs (with progress, and a Cancel button).
+	archiveOp := func(op string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Path, To, Name, Format, Into, Conflict string
+				Paths                                  []string
+				Background                             bool
+			}
+			if err := readJSON(r, &body); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			a := files.Args{Root: fsRoot(r), Path: body.Path, Paths: body.Paths, To: body.To, Name: body.Name,
+				Format: body.Format, Into: body.Into, Conflict: body.Conflict}
+			names := []string{body.Path}
+			if op == "compress" {
+				names = body.Paths
+			}
+			ps := make([]string, len(names))
+			for i, p := range names {
+				ps[i] = fsWhere(r, p)
+			}
+			what := strings.Join(ps, ", ")
+			if body.Background {
+				job, err := l.fileJobs.Start(fsUser(r), op, a, what)
+				if err != nil {
+					log.Printf("%s: files %s %s failed: %v", userOf(r), op, what, err)
+					writeErr(w, http.StatusConflict, err)
+					return
+				}
+				log.Printf("%s: files %s %s started", userOf(r), op, what)
+				writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+				return
+			}
+			var out files.ExtractResult
+			err := l.files.Run(fsUser(r), op, a, nil, &out)
+			if err != nil {
+				log.Printf("%s: files %s %s failed: %v", userOf(r), op, what, err)
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			log.Printf("%s: files %s %s", userOf(r), op, what)
+			writeJSON(w, http.StatusOK, map[string]any{"output": out.Path, "skipped": out.Skipped, "renamed": out.Renamed, "replaced": out.Replaced})
+		}
+	}
+	mux.HandleFunc("POST /files/extract", archiveOp("extract"))
+	mux.HandleFunc("POST /files/compress", archiveOp("compress"))
+	mux.HandleFunc("GET /files/jobs", func(w http.ResponseWriter, r *http.Request) {
+		ok(w, map[string]any{"jobs": l.fileJobs.List(fsUser(r))}, nil)
+	})
+	// Cancels a running job, or clears a finished one from the list.
+	mux.HandleFunc("POST /files/jobs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if err := l.fileJobs.Cancel(fsUser(r), r.PathValue("id")); err != nil {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+	// What's in an archive, for the Extract dialog.
+	mux.HandleFunc("GET /files/archive", func(w http.ResponseWriter, r *http.Request) {
+		var out json.RawMessage
+		err := l.files.Run(fsUser(r), "archive", files.Args{Root: fsRoot(r), Path: r.URL.Query().Get("path")}, nil, &out)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
 	mux.HandleFunc("POST /files/upload", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		a := files.Args{Root: fsRoot(r), Path: q.Get("path"), Name: q.Get("name"), Overwrite: q.Get("overwrite") == "1", Parents: q.Get("parents") == "1"}

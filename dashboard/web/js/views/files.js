@@ -1,4 +1,4 @@
-import { h, clear, bytes, modal, confirmAction, toast, icon, menu, codeArea, modalOpen, menuOpen } from '../ui.js';
+import { h, clear, bytes, modal, confirmAction, toast, icon, menu, codeArea, modalOpen, menuOpen, progressBar } from '../ui.js';
 import { csrfToken } from '../api.js';
 
 // The logged-in user's home folder, or a network share's folder (?root=<share>, from the
@@ -19,6 +19,22 @@ const previewKind = (name) => PREVIEW.find(([re]) => re.test(name))?.[1] || null
 // Same list as files.ArchiveExts; a plain .gz/.bz2 unpacks to one file, not a folder.
 const ARCHIVE = /\.(tar\.(gz|bz2|xz|zst)|tgz|tbz2?|txz|tzst|tar|zip|7z|rar|gz|bz2)$/i;
 const SINGLE = /(?<!\.tar)\.(gz|bz2)$/i;
+const archiveStem = (name) => name.replace(ARCHIVE, '') || name;
+const FORMATS = [
+  ['zip', '.zip', 'Opens anywhere, including Windows and macOS.'],
+  ['tar.gz', '.tar.gz', 'Keeps Linux permissions and links. Opens on Linux and macOS.'],
+  ['tar.zst', '.tar.zst', 'Like tar.gz, but faster and smaller. Best for big folders and backups.'],
+];
+const CONFLICTS = [['keep', 'Keep both (the new one gets a number)'], ['skip', 'Skip them, keep what\'s there'], ['overwrite', 'Replace them']];
+
+// "about 3 min left" from how fast a job went since the last poll.
+function eta(left, rate) {
+  if (!(rate > 0) || !(left > 0)) return '';
+  const s = left / rate;
+  if (s < 60) return 'less than a minute left';
+  if (s < 3600) return `about ${Math.round(s / 60)} min left`;
+  return `about ${(s / 3600).toFixed(1)} h left`;
+}
 
 function fileIcon(e) {
   if (isDirEntry(e)) return '📁';
@@ -101,6 +117,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
   const tools = h('div.row', { style: { gap: '8px', flexWrap: 'wrap' } });
   const listBox = h('div.card.files-card');
   const uploads = h('div.uploads');
+  const jobsEl = h('div.uploads.file-jobs', { 'aria-live': 'polite' });
 
   // Home or one of the node's network shares; only shown once there are shares.
   const places = h('select.places', { 'aria-label': 'Folder to browse', class: 'hidden', onchange: () => {
@@ -121,6 +138,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
 
   clear(el, h('div.stack',
     h('div.row', places, crumbs, h('span.spacer'), tools, fileInput),
+    jobsEl,
     uploads,
     listBox));
 
@@ -225,7 +243,7 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
         h('button.btn', { onclick: () => download([...selected].map((n) => join(dir, n))) }, selected.size > 1 ? 'Download .zip' : 'Download'),
         h('button.btn', { onclick: () => copyTo([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Copy to…'),
         h('button.btn', { onclick: () => moveTo([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Move to…'),
-        h('button.btn', { onclick: () => compress([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Compress'),
+        h('button.btn', { onclick: () => compress([...selected]), disabled: readOnly, title: readOnly ? RO : null }, 'Compress…'),
         h('button.btn.danger', { onclick: delSelected, disabled: readOnly, title: readOnly ? RO : null }, 'Delete'),
         h('button.btn', { onclick: () => { selected.clear(); drawList(); }, title: 'Clear selection (Esc)' }, 'Clear'));
       return;
@@ -275,7 +293,8 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
       const isDir = isDirEntry(e);
       const path = join(dir, e.name);
       const kind = !isDir && previewKind(e.name);
-      const open = () => (isDir ? load(path) : kind ? preview(e) : edit(path));
+      const isArchive = !isDir && ARCHIVE.test(e.name);
+      const open = () => (isDir ? load(path) : kind ? preview(e) : isArchive ? extract(e) : edit(path));
       const box = h('input', { type: 'checkbox', checked: selected.has(e.name), 'aria-label': `Select ${e.name}`,
         onchange: (ev) => { ev.target.checked ? selected.add(e.name) : selected.delete(e.name); drawList(); } });
       return h('tr', { class: selected.has(e.name) ? 'selected' : '' },
@@ -287,12 +306,12 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
         h('td.num-cell.muted.col-mod', fmtTime(e.modTime)),
         h('td.mono.faint.col-perm', { style: { fontSize: '12px' } }, e.mode),
         h('td.actions', menu([
-          { label: isDir ? 'Open' : kind ? 'Preview' : readOnly ? 'View' : 'Edit', onclick: open },
+          { label: isDir ? 'Open' : kind ? 'Preview' : isArchive ? 'Show contents' : readOnly ? 'View' : 'Edit', onclick: open },
           { label: readOnly ? 'View as text' : 'Edit as text', onclick: () => edit(path), hidden: isDir || !kind },
           { label: isDir ? 'Download as .tar.gz' : 'Download', onclick: () => download([path]) },
           { label: 'Copy path', onclick: () => copyPath(path) },
-          { label: 'Extract here', onclick: () => extract(e), hidden: isDir || !ARCHIVE.test(e.name), disabled: readOnly && RO },
-          { label: 'Compress to .zip', onclick: () => compress([e.name]), disabled: readOnly && RO },
+          { label: 'Extract…', onclick: () => extract(e), hidden: isDir || !ARCHIVE.test(e.name), disabled: readOnly && RO },
+          { label: 'Compress…', onclick: () => compress([e.name]), disabled: readOnly && RO },
           { label: 'Duplicate', onclick: () => duplicate(e), disabled: readOnly && RO },
           { label: 'Rename', onclick: () => rename(e), disabled: readOnly && RO },
           { label: 'Copy to…', onclick: () => copyTo([e.name]), disabled: readOnly && RO },
@@ -381,23 +400,212 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
     if (await op('/files/move', { paths: names.map((n) => join(dir, n)), to }, `Moved to ${where(to)}.`)) { selected.clear(); load(); }
   }
 
+  // ---- Compress and extract ------------------------------------------------------------
+  // Both run as jobs on the node: the dialog starts one and the panel above the list follows it.
+
+  function destField(initial, onChange) {
+    let to = initial;
+    const text = h('span.mono.dest-path');
+    const show = () => { text.textContent = where(to); };
+    show();
+    const btn = h('button.btn.small', { type: 'button', onclick: async () => {
+      const p = await pickFolder('Choose a folder', 'Use this folder', to);
+      if (p !== null) { to = p; show(); onChange?.(to); }
+    } }, 'Change…');
+    return { el: h('div.row.dest-row', text, btn), get: () => to };
+  }
+
   async function compress(names) {
-    toast('Compressing…');
-    const r = await op('/files/compress', { paths: names.map((n) => join(dir, n)) });
-    if (!r) return;
-    toast(`Created ${r.output.split('/').pop()}.`);
-    selected.clear();
-    load();
+    const ents = names.map((n) => entries.find((x) => x.name === n)).filter(Boolean);
+    const dirs = ents.filter(isDirEntry).length;
+    const fileBytes = ents.filter((x) => !isDirEntry(x)).reduce((a, x) => a + (x.size || 0), 0);
+    let format = localStorage.getItem('files-format') || 'zip';
+    if (!FORMATS.some(([f]) => f === format)) format = 'zip';
+    const stem = names.length === 1 ? splitExt(names[0], dirs > 0)[0] : (dir ? dir.split('/').pop() : 'Archive');
+    const name = h('input', { type: 'text', value: stem, spellcheck: false, autocapitalize: 'off', 'aria-label': 'Archive name' });
+    const extEl = h('span.ext-suffix.mono');
+    const formatList = h('div.choice-list', { role: 'radiogroup', 'aria-label': 'Format' });
+    const drawFormats = () => {
+      extEl.textContent = FORMATS.find(([f]) => f === format)[1];
+      clear(formatList, FORMATS.map(([f, ext, hint]) => h('label.choice', { class: f === format ? 'on' : '' },
+        h('input', { type: 'radio', name: 'fmt', checked: f === format, onchange: () => { format = f; drawFormats(); } }),
+        h('span', h('strong', ext), h('span.faint', ` ${hint}`)))));
+    };
+    drawFormats();
+    const dest = destField(dir);
+    const err = h('div.error-text');
+    const what = names.length === 1 ? names[0] : plural(names.length, 'item');
+    const summary = [dirs ? `${plural(dirs, 'folder')} with everything in ${dirs === 1 ? 'it' : 'them'}` : null,
+      ents.length - dirs ? `${plural(ents.length - dirs, 'file')} (${bytes(fileBytes)})` : null].filter(Boolean).join(' and ');
+    const v = await modal(`Compress ${what}`, h('div.stack',
+      summary ? h('p.muted', { style: { margin: 0 } }, `${summary[0].toUpperCase()}${summary.slice(1)}.`) : null,
+      h('label.field', 'Name', h('div.name-ext', name, extEl)),
+      h('div.field', h('span', 'Format'), formatList),
+      h('div.field', h('span', 'Save in'), dest.el),
+      err), [
+      { label: 'Cancel', value: null },
+      { label: 'Compress', class: 'primary', onclick: async () => {
+        const n = name.value.trim();
+        if (!n) { err.textContent = 'Enter a name.'; return false; }
+        if (n.includes('/')) { err.textContent = 'A name can\'t contain /.'; return false; }
+        try {
+          localStorage.setItem('files-format', format);
+          const r = await api.post('/files/compress', { paths: names.map((x) => join(dir, x)), name: n, format, to: dest.get(), background: true });
+          trackJob(r.job, { what, to: dest.get() });
+          return true;
+        } catch (x) { err.textContent = x.message; return false; }
+      } },
+    ]);
+    if (v) { selected.clear(); drawList(); }
   }
 
   async function extract(e) {
-    toast(`Extracting ${e.name}…`);
-    const r = await op('/files/extract', { path: join(dir, e.name) });
-    if (!r) return;
-    const name = r.output.split('/').pop();
-    if (SINGLE.test(e.name)) { toast(`Extracted ${name}.`); load(); return; }
-    toast(`Extracted to ${name}.`);
-    load(r.output);
+    const single = SINGLE.test(e.name);
+    const path = join(dir, e.name);
+    const contents = h('div.archive-list', h('div.faint.archive-msg', 'Reading the archive…'));
+    const head = h('div.faint.archive-head');
+    const folderName = h('input', { type: 'text', value: archiveStem(e.name), spellcheck: false, autocapitalize: 'off', 'aria-label': 'Folder name' });
+    let into = single ? 'here' : 'folder';
+    const dest = destField(dir, () => { into = 'to'; drawWhere(); });
+    const conflict = h('select', { 'aria-label': 'If a file already exists' }, CONFLICTS.map(([v, l]) => h('option', { value: v }, l)));
+    const conflictRow = h('label.field', 'If a file already exists', conflict);
+    const topHint = h('div.faint.hint');
+    const whereList = h('div.choice-list', { role: 'radiogroup', 'aria-label': 'Where' });
+    const opt = (id, title, extra) => h('label.choice', { class: into === id ? 'on' : '' },
+      h('input', { type: 'radio', name: 'into', checked: into === id, onchange: () => { into = id; drawWhere(); } }),
+      h('span.choice-body', h('strong', title), extra));
+    const drawWhere = () => {
+      clear(whereList,
+        single ? null : opt('folder', 'Into a new folder', h('div.name-ext', folderName)),
+        opt('here', single ? `Here, in ${where(dir)}` : `Straight into ${where(dir)}`, topHint),
+        opt('to', 'Somewhere else', dest.el));
+      conflictRow.classList.toggle('hidden', into === 'folder' && !single);
+    };
+    drawWhere();
+    const err = h('div.error-text');
+
+    api.get(`/files/archive?path=${encodeURIComponent(path)}`).then((l) => {
+      const size = l.size >= 0 ? ` · ${bytes(l.size)} unpacked` : '';
+      head.textContent = l.single ? `Unpacks to one file, ${l.entries[0]?.name}.` : `${plural(l.count, 'item')}${size}`;
+      if (l.top && !single) {
+        const clash = entries.some((x) => x.name === l.top);
+        topHint.textContent = `Everything is already in one folder, ${l.top}, so this won't scatter files.${clash ? ` There's a ${l.top} here already.` : ''}`;
+        if (!clash && into === 'folder') { into = 'here'; drawWhere(); }
+      }
+      if (l.single) { clear(contents); contents.classList.add('hidden'); return; }
+      const shown = l.entries.slice(0, 300);
+      clear(contents, shown.map((x) => {
+        const depth = x.name.split('/').length - 1;
+        return h('div.archive-row', { style: { paddingLeft: `${8 + depth * 16}px` } },
+          h('span.file-icon', { 'aria-hidden': 'true' }, x.dir ? '📁' : '📄'),
+          h('span.archive-name', x.name.split('/').pop()),
+          h('span.faint.num-cell', x.dir || x.size < 0 ? '' : bytes(x.size)));
+      }), l.count > shown.length ? h('div.faint.archive-msg', `…and ${plural(l.count - shown.length, 'more item')}`) : null);
+    }).catch((x) => clear(contents, h('div.notice.warn', `Couldn't list what's inside: ${x.message}`)));
+
+    const v = await modal(readOnly ? `Contents of ${e.name}` : `Extract ${e.name}`, h('div.stack',
+      head, contents,
+      readOnly ? h('div.faint', `${RO}, so nothing can be extracted into it.`) : [h('div.field', h('span', 'Where to'), whereList), conflictRow],
+      err), [
+      { label: readOnly ? 'Close' : 'Cancel', value: null },
+      readOnly ? null : { label: 'Extract', class: 'primary', onclick: async () => {
+        const name = folderName.value.trim();
+        if (into === 'folder' && (!name || name.includes('/'))) { err.textContent = 'Enter a folder name without /.'; return false; }
+        const to = into === 'to' ? dest.get() : dir;
+        try {
+          const r = await api.post('/files/extract', { path, into, to: into === 'to' ? to : '', name: into === 'folder' ? name : '',
+            conflict: conflict.value, background: true });
+          trackJob(r.job, { what: e.name, to });
+          return true;
+        } catch (x) { err.textContent = x.message; return false; }
+      } },
+    ].filter(Boolean));
+    return v;
+  }
+
+  // Jobs started from this page (labels and where they write), and what the last poll saw.
+  const jobInfo = new Map();
+  const seen = new Map();
+  let jobTimer = null;
+
+  function trackJob(job, info) {
+    jobInfo.set(job.id, info);
+    seen.set(job.id, { phase: 'running' });
+    pollJobs();
+  }
+
+  async function pollJobs() {
+    clearTimeout(jobTimer);
+    let list = [];
+    try { list = (await nodeApi.get('/files/jobs')).jobs || []; } catch { list = null; }
+    if (stopped) return;
+    if (list) {
+      const now = Date.now();
+      // Running jobs, ones started here, and ones that ended in the last minute.
+      list = list.filter((j) => (j.root || '') === root && (j.phase === 'running' || jobInfo.has(j.id) || seen.has(j.id)
+        || (j.finishedAt && now - Date.parse(j.finishedAt) < 60000)));
+      for (const j of list) {
+        const before = seen.get(j.id);
+        if (before && before.phase === 'running' && j.phase !== 'running') jobEnded(j);
+        const rate = before?.at && j.done > before.done ? (j.done - before.done) / ((now - before.at) / 1000) : before?.rate;
+        seen.set(j.id, { phase: j.phase, done: j.done, at: now, rate });
+      }
+      drawJobs(list);
+    }
+    if (!list || list.some((j) => j.phase === 'running')) jobTimer = setTimeout(pollJobs, 1000);
+  }
+
+  const jobWhat = (j) => jobInfo.get(j.id)?.what || j.name.split(', ').map((p) => p.split('/').pop()).join(', ');
+  const jobLabel = (j) => {
+    if (j.phase === 'done') return j.kind === 'compress' ? `Compressed ${jobWhat(j)} → ${(j.output || '').split('/').pop()}` : `Extracted ${jobWhat(j)}`;
+    if (j.phase === 'failed') return `Couldn't ${j.kind} ${jobWhat(j)}`;
+    return `${j.kind === 'compress' ? 'Compressing' : 'Extracting'} ${jobWhat(j)}`;
+  };
+
+  function jobEnded(j) {
+    const info = jobInfo.get(j.id) || {};
+    if (j.phase === 'done') {
+      const out = j.output || '';
+      const extra = [j.skipped ? `${j.skipped} skipped` : '', j.renamed ? `${j.renamed} kept as numbered copies` : '', j.replaced ? `${j.replaced} replaced` : ''].filter(Boolean).join(', ');
+      toast(j.kind === 'compress' ? `Created ${out.split('/').pop()}.` : `Extracted ${jobWhat(j)}${extra ? ` (${extra})` : ''}.`);
+      if (dir === parent(out) || dir === out || dir === info.to) load();
+    } else if (j.phase === 'failed') toast(`${jobLabel(j)}: ${j.error}`, true);
+  }
+
+  function drawJobs(list) {
+    clear(jobsEl, list.map((j) => {
+      const label = jobLabel(j);
+      const known = j.total > 0;
+      const pct = known ? j.done / j.total * 100 : 0;
+      const dismiss = h('button.btn.small.ghost', { title: 'Hide', 'aria-label': 'Hide', onclick: async () => {
+        await nodeApi.post(`/files/jobs/${j.id}/cancel`).catch(() => {});
+        jobInfo.delete(j.id); seen.delete(j.id); pollJobs();
+      } }, '✕');
+      let status, actions;
+      if (j.phase === 'running') {
+        const s = seen.get(j.id);
+        status = known ? [`${Math.floor(pct)}% · ${bytes(j.done)} of ${bytes(j.total)}`, eta(j.total - j.done, s?.rate)].filter(Boolean).join(' · ') : 'Working…';
+        actions = h('button.btn.small', { onclick: async (ev) => {
+          ev.currentTarget.disabled = true;
+          try { await nodeApi.post(`/files/jobs/${j.id}/cancel`); toast(`${label}: cancelled.`); } catch (x) { toast(x.message, true); }
+          pollJobs();
+        } }, 'Cancel');
+      } else if (j.phase === 'done') {
+        const out = j.output || '';
+        const open = j.kind === 'extract' && !SINGLE.test(j.name)
+          ? () => load(out)
+          : () => { selected.clear(); selected.add(out.split('/').pop()); load(parent(out)); };
+        status = 'Done';
+        actions = [h('button.btn.small', { onclick: open }, j.kind === 'extract' && !SINGLE.test(j.name) ? 'Open folder' : 'Show'), dismiss];
+      } else {
+        status = j.phase === 'cancelled' ? 'Cancelled' : j.error;
+        actions = dismiss;
+      }
+      return h('div.upload-row.job-row', { class: j.phase },
+        h('span.job-label', h('span.file-icon', { 'aria-hidden': 'true' }, '📦'), label),
+        j.phase === 'running' ? h('div.job-bar', { class: known ? '' : 'indeterminate' }, progressBar(pct, label)) : h('span'),
+        h('span.job-status', h('span', { class: j.phase === 'failed' ? 'error-text' : 'muted' }, status), actions));
+    }));
   }
 
   async function del(e) {
@@ -420,8 +628,8 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
   }
 
   // A small folder browser for Copy/Move. Resolves to the chosen folder, or null.
-  async function pickFolder(title, okLabel) {
-    let at = dir;
+  async function pickFolder(title, okLabel, start = dir) {
+    let at = start;
     const crumbsEl = h('nav.crumbs', { 'aria-label': 'Destination' });
     const listEl = h('div.picker-list');
     const err = h('div.error-text');
@@ -643,5 +851,6 @@ export function renderFiles(el, { api: nodeApi, node, query }) {
   drawCrumbs();
   drawTools();
   load();
-  return () => { stopped = true; document.removeEventListener('keydown', onKey); };
+  pollJobs();
+  return () => { stopped = true; clearTimeout(jobTimer); document.removeEventListener('keydown', onKey); };
 }

@@ -9,11 +9,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -29,7 +32,15 @@ type Args struct {
 	Overwrite bool     `json:"overwrite,omitempty"`
 	Parents   bool     `json:"parents,omitempty"`
 	Recursive bool     `json:"recursive,omitempty"`
+	Format    string   `json:"format,omitempty"`   // compress: zip, tar.gz or tar.zst
+	Into      string   `json:"into,omitempty"`     // extract: folder, here or to
+	Conflict  string   `json:"conflict,omitempty"` // extract: keep, skip or overwrite
+	Progress  bool     `json:"progress,omitempty"` // report progress on stderr (see ProgressPrefix)
 }
+
+// ProgressPrefix starts the stderr lines a long fsop writes when Args.Progress is set:
+// "@progress <done> <total>". Anything else on stderr is the error.
+const ProgressPrefix = "@progress "
 
 // each runs fn for Path -> To, or for every entry in Paths -> To/<its name>. It goes
 // through all of them and reports every failure.
@@ -124,12 +135,26 @@ func Fsop(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(errors.New("permissions must be three octal digits, like 644"))
 		}
 		return out(map[string]bool{"ok": true}, each(a, func(p, _ string) error { return Chmod(home, p, os.FileMode(m), a.Recursive) }))
-	case "extract":
-		p, err := Extract(home, a.Path)
+	case "extract", "compress":
+		// Cancelling sends SIGTERM: remove the half-written output before exiting.
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			<-sig
+			RunCleanups()
+			fmt.Fprint(stderr, "cancelled")
+			os.Exit(1)
+		}()
+		prog := progressWriter(a.Progress, stderr)
+		if args[0] == "extract" {
+			r, err := ExtractWith(home, ExtractOpts{Path: a.Path, Into: a.Into, To: a.To, Name: a.Name, Conflict: a.Conflict, Progress: prog})
+			return out(r, err)
+		}
+		p, err := CompressWith(home, CompressOpts{Paths: a.Paths, Name: a.Name, Format: a.Format, To: a.To, Progress: prog})
 		return out(map[string]string{"path": p}, err)
-	case "compress":
-		p, err := Compress(home, a.Paths)
-		return out(map[string]string{"path": p}, err)
+	case "archive":
+		l, err := ListArchive(home, a.Path)
+		return out(l, err)
 	case "zip":
 		if err := Zip(home, a.Paths, stdout); err != nil {
 			return fail(err)
@@ -159,6 +184,24 @@ func Fsop(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	return fail(errors.New("unknown operation"))
+}
+
+// progressWriter writes progress lines to w, at most a few a second. It's safe to call from
+// several goroutines (xz and zstd read the archive in their own).
+func progressWriter(on bool, w io.Writer) Progress {
+	if !on {
+		return nil
+	}
+	var mu sync.Mutex
+	var last time.Time
+	return func(done, total int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		if now := time.Now(); now.Sub(last) >= 250*time.Millisecond || done == total {
+			last = now
+			fmt.Fprintf(w, "%s%d %d\n", ProgressPrefix, done, total)
+		}
+	}
 }
 
 // Runner starts `dashboard fsop` as the given user. In --dev it runs as whoever runs the
@@ -193,6 +236,8 @@ func (r Runner) Run(username, op string, a Args, stdin io.Reader, out any) error
 	switch op {
 	case "upload", "write", "delete", "move", "copy", "chmod", "extract", "compress":
 		timeout = 2 * time.Hour
+	case "archive":
+		timeout = 5 * time.Minute // listing a big .tar.gz means reading all of it
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
