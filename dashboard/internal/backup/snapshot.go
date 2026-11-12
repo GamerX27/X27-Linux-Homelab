@@ -68,6 +68,9 @@ func (m *Manager) pauseRunning(project string) ([]string, error) {
 	return paused, nil
 }
 
+// SnapshotPauseLimit: apps up to this size are paused while a full copy is taken.
+var SnapshotPauseLimit int64 = 256 << 20
+
 // SnapshotOut streams a copy of a stack to w. A running stack is paused for the copy, so
 // files (an sqlite database, say) aren't caught halfway through a write, and unpaused after.
 func (m *Manager) SnapshotOut(ctx context.Context, w io.Writer, o docker.Owner, name string) error {
@@ -84,8 +87,14 @@ func (m *Manager) SnapshotOut(ctx context.Context, w io.Writer, o docker.Owner, 
 	}
 	defer m.running.Unlock()
 	// Pause the containers that run (compose pause fails when one of them is stopped), and
-	// unpause exactly those afterwards.
-	paused, err := m.pauseRunning(name)
+	// unpause exactly those afterwards. A big app isn't paused: it would be frozen for the
+	// whole copy. Its copy may catch a file halfway; the synced mode avoids that.
+	var paused []string
+	if p.Size <= SnapshotPauseLimit {
+		paused, err = m.pauseRunning(name)
+	} else {
+		log.Printf("replica: %s holds %s; copying it without pausing it", name, human(p.Size))
+	}
 	defer func() {
 		for _, id := range paused {
 			if err := m.dk.ContainerAction(id, "unpause"); err != nil {

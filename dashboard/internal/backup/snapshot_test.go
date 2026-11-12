@@ -93,6 +93,15 @@ func TestSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("pause calls %v, state %s", fsrc.paused, fsrc.containers[1].State)
 	}
 
+	// A big app isn't paused at all.
+	fsrc.paused = nil
+	SnapshotPauseLimit = 1
+	snap()
+	SnapshotPauseLimit = 256 << 20
+	if len(fsrc.paused) != 0 {
+		t.Fatalf("paused a big app: %v", fsrc.paused)
+	}
+
 	// Half a stream changes nothing; a running app is never replaced.
 	write(filepath.Join(srcHome, "docker/notes/data/notes.db"), "row 2")
 	two := snap()
