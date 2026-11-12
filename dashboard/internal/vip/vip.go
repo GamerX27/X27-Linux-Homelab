@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -194,7 +195,7 @@ global_defs {
 
 # The dashboard answers on its port: if it stops, this node lets the address go.
 vrrp_script dashboard {
-    script "/usr/bin/curl -ks -o /dev/null --max-time 2 https://127.0.0.1:{{.Port}}/"
+    script "/usr/libexec/keepalived/dashboard-check {{.Port}}"
     interval 2
     fall 3
     rise 2
@@ -225,8 +226,8 @@ vrrp_instance dashboard {
     }
 {{- if eq .Role "standby"}}
     # The standby serves the full dashboard only while it holds the address.
-    notify_master "/usr/bin/systemctl restart dashboard.service"
-    notify_backup "/usr/bin/systemctl restart dashboard.service"
+    notify_master "/usr/libexec/keepalived/dashboard-notify"
+    notify_backup "/usr/libexec/keepalived/dashboard-notify"
 {{- end}}
 }
 `))
@@ -288,6 +289,35 @@ func Apply(c Config) error {
 	}
 	if out, err := run.Cmd(30*time.Second, "systemctl", "restart", unit); err != nil {
 		return fmt.Errorf("starting keepalived: %v %s", err, out)
+	}
+	return nil
+}
+
+// Refresh rewrites keepalived.conf when what this dashboard would write differs from it
+// (an update changed the template, or the interface's name changed), and restarts
+// keepalived. The dashboard calls it when it starts.
+func Refresh() error {
+	c := Load()
+	if !c.Enabled || Fake {
+		return nil
+	}
+	iface, err := FindInterface(c.Address, c.Prefix)
+	if err != nil {
+		return err
+	}
+	conf, err := Render(c, iface)
+	if err != nil {
+		return err
+	}
+	if old, err := os.ReadFile(ConfPath); err == nil && string(old) == conf {
+		return nil
+	}
+	log.Printf("virtual IP: updating %s", ConfPath)
+	if err := os.WriteFile(ConfPath, []byte(conf), 0o600); err != nil {
+		return err
+	}
+	if out, err := run.Cmd(30*time.Second, "systemctl", "restart", unit); err != nil {
+		return fmt.Errorf("restarting keepalived: %v %s", err, out)
 	}
 	return nil
 }

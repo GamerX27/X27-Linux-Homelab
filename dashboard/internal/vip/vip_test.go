@@ -16,7 +16,7 @@ func TestRender(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"interface enp1s0", "virtual_router_id 42", "priority 150", "preempt_delay 30",
-		"unicast_src_ip 192.168.1.10", "192.168.1.11", "auth_pass abcd1234", "192.168.1.50/24 dev enp1s0", "https://127.0.0.1:9090/"} {
+		"unicast_src_ip 192.168.1.10", "192.168.1.11", "auth_pass abcd1234", "192.168.1.50/24 dev enp1s0", "dashboard-check 9090"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
 		}

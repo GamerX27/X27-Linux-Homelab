@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run by keepalived on the virtual IP's standby when it takes or gives up the address: the
+# dashboard restarts to stand in for the main node there, or to stop doing so.
+exec /usr/bin/systemctl restart --no-block dashboard.service

@@ -327,6 +327,9 @@ func serve(args []string) {
 	// The virtual IP comes and goes; it's never one of the node's own addresses.
 	tlsutil.Skip, network.SkipAddress = vip.IsVIP, vip.IsVIP
 	vip.Fake = *dev && os.Getenv("DASHBOARD_FAKE_VIP") == "1"
+	if err := vip.Refresh(); err != nil {
+		log.Printf("virtual IP: %v", err)
+	}
 	if v := vip.Load(); cfg.Mode == config.ModeMain && v.Enabled && v.Role == vip.RoleMain {
 		if c, _, err = tlsutil.EnsureIPs(filepath.Join(config.StateDir, "tls"), []string{v.Address}); err != nil {
 			log.Fatalf("certificate: %v", err)
