@@ -285,6 +285,22 @@ func TestSharesReconcile(t *testing.T) {
 	if ns := byNode("own", "b"); ns.State != "failed" || !strings.Contains(ns.Error, "of its own") {
 		t.Errorf("clash: %+v", ns)
 	}
+	// The timed check doesn't try a failed share again right away; Once (a change) does.
+	f.calls = nil
+	r.run1(false)
+	for _, c := range f.calls {
+		if strings.Contains(c, "bad") || c == LocalID+" /storage/mounts" {
+			t.Errorf("retried a failed share too soon: %v", f.calls)
+		}
+	}
+	if st, _ := r.Status(); !strings.Contains(st["bad"][0].Error, "Host is down") {
+		t.Errorf("lost the error: %+v", st["bad"])
+	}
+	f.calls = nil
+	r.Once()
+	if len(f.calls) == 0 {
+		t.Error("Once didn't try again")
+	}
 
 	// Removing the share from the cluster removes it from every node.
 	f.down["a"] = false

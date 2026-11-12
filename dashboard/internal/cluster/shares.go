@@ -44,21 +44,34 @@ type Shares struct {
 	mu      sync.Mutex
 	status  map[string][]NodeShare // by share
 	applied map[string]int         // node/share → the password generation it has
+	failed  map[string]failure     // node/share → its last failed add or change
 	at      int64
 }
 
+// failure is a failed add or change; the timed check doesn't try it again for retryFailed,
+// so a node's activity log doesn't fill up with the same error.
+type failure struct {
+	at  time.Time
+	err string
+}
+
+const retryFailed = 30 * time.Minute
+
 func NewShares(n Nodes) *Shares {
-	return &Shares{nodes: n, kick: make(chan struct{}, 1), status: map[string][]NodeShare{}, applied: map[string]int{}}
+	return &Shares{nodes: n, kick: make(chan struct{}, 1), status: map[string][]NodeShare{}, applied: map[string]int{}, failed: map[string]failure{}}
 }
 
 // Loop reconciles every five minutes and whenever kicked.
 func (r *Shares) Loop() {
 	t := time.NewTicker(5 * time.Minute)
+	force := true
 	for {
-		r.Once()
+		r.run1(force)
 		select {
 		case <-t.C:
+			force = false
 		case <-r.kick:
+			force = true
 		}
 	}
 }
@@ -105,8 +118,10 @@ type mountBody struct {
 	Password string `json:"password"`
 }
 
-// Once reconciles every node now.
-func (r *Shares) Once() {
+// Once reconciles every node now, trying failed shares again too.
+func (r *Shares) Once() { r.run1(true) }
+
+func (r *Shares) run1(force bool) {
 	r.run.Lock()
 	defer r.run.Unlock()
 	st := Load()
@@ -121,7 +136,7 @@ func (r *Shares) Once() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = r.node(st, n, ids)
+			results[i] = r.node(st, n, ids, force)
 		}()
 	}
 	wg.Wait()
@@ -140,7 +155,7 @@ func (r *Shares) Once() {
 }
 
 // node makes one node's cluster shares match; it returns one NodeShare per share meant for it.
-func (r *Shares) node(st State, n NodeInfo, ids []string) []NodeShare {
+func (r *Shares) node(st State, n NodeInfo, ids []string, force bool) []NodeShare {
 	var mine []Share
 	for _, sh := range st.Shares {
 		if slices.Contains(sh.Targets(ids), n.ID) {
@@ -170,6 +185,13 @@ func (r *Shares) node(st State, n NodeInfo, ids []string) []NodeShare {
 		r.mu.Unlock()
 		var err error
 		var verb string
+		r.mu.Lock()
+		f, failedBefore := r.failed[key]
+		r.mu.Unlock()
+		if failedBefore && !force && time.Since(f.at) < retryFailed && (!ok || !cur.Cluster || cur.State != "mounted") {
+			out = append(out, NodeShare{Share: sh.Name, Node: n.ID, Name: n.Name, State: "failed", Error: f.err})
+			continue
+		}
 		switch {
 		case !ok:
 			verb = "add"
@@ -186,6 +208,9 @@ func (r *Shares) node(st State, n NodeInfo, ids []string) []NodeShare {
 		if verb != "" {
 			if err != nil {
 				res.State, res.Error = "failed", err.Error()
+				r.mu.Lock()
+				r.failed[key] = failure{at: time.Now(), err: err.Error()}
+				r.mu.Unlock()
 				log.Printf("cluster: %s share %s on %s: %v", verb, sh.Name, n.Name, err)
 			} else {
 				res.State = "mounted"
@@ -197,6 +222,7 @@ func (r *Shares) node(st State, n NodeInfo, ids []string) []NodeShare {
 		}
 		if err == nil && (verb != "" || !seen) {
 			r.mu.Lock()
+			delete(r.failed, key)
 			r.applied[key] = sh.PassGen
 			r.mu.Unlock()
 		}

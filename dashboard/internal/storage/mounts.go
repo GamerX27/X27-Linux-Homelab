@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/user"
@@ -505,8 +506,9 @@ func Save(in Mount, typed string, create bool) error {
 		return fmt.Errorf("there's no mount named %s", m.Name)
 	}
 	if create {
-		if e, err := os.ReadDir(where); err == nil && len(e) > 0 {
-			return fmt.Errorf("%s isn't empty; a share mounted there would hide its files", where)
+		if found := hiddenFiles(where, 3); len(found) > 0 {
+			return fmt.Errorf("%s isn't empty (%s); a share mounted there would hide those files. Move them away (or delete them), then try again",
+				where, strings.Join(found, ", "))
 		}
 	}
 	pw, err := password(m, typed)
@@ -622,6 +624,24 @@ func Action(name, action string) error {
 		return systemctl("daemon-reload")
 	}
 	return errors.New("unknown action")
+}
+
+// hiddenFiles lists up to max files (anything but a folder) under dir, which a share mounted
+// there would hide. Empty folders don't count: Docker makes them for a bind mount whose source
+// is missing, when a container starts before the share is there.
+func hiddenFiles(dir string, max int) []string {
+	var found []string
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || len(found) >= max {
+			return filepath.SkipAll
+		}
+		if !d.IsDir() {
+			rel, _ := filepath.Rel(dir, p)
+			found = append(found, rel)
+		}
+		return nil
+	})
+	return found
 }
 
 // Normalize is a mount as Save would keep it (trimmed, defaults filled in), for comparing

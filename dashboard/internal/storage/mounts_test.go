@@ -210,3 +210,18 @@ func TestHint(t *testing.T) {
 		t.Errorf("got %q", h)
 	}
 }
+
+func TestHiddenFiles(t *testing.T) {
+	dir := t.TempDir()
+	if f := hiddenFiles(filepath.Join(dir, "missing"), 3); len(f) != 0 {
+		t.Fatal(f)
+	}
+	os.MkdirAll(filepath.Join(dir, "movies/new"), 0o755) // what Docker leaves behind
+	if f := hiddenFiles(dir, 3); len(f) != 0 {
+		t.Fatalf("empty folders counted: %v", f)
+	}
+	os.WriteFile(filepath.Join(dir, "movies/a.mkv"), nil, 0o644)
+	if f := hiddenFiles(dir, 3); len(f) != 1 || f[0] != "movies/a.mkv" {
+		t.Fatalf("%v", f)
+	}
+}
