@@ -1052,6 +1052,7 @@ func (l *Local) Handler() http.Handler {
 	l.adminRoutes(mux)
 	l.storageRoutes(mux)
 	l.networkRoutes(mux)
+	l.moveRoutes(mux)
 	return mux
 }
 

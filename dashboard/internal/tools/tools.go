@@ -221,6 +221,31 @@ func (c Call) node() (string, error) {
 	return "/api/n/" + n, nil
 }
 
+// resolveNode turns a node's name or id into its id ("local" for the main node).
+func (c Call) resolveNode(n string) (string, error) {
+	if n == "" || n == "local" || n == "this" || n == "main" {
+		return "local", nil
+	}
+	var list []struct {
+		ID, Name string
+		Local    bool
+	}
+	raw, err := c.Do(c.User, "GET", "/api/nodes", nil)
+	if err != nil {
+		return "", err
+	}
+	json.Unmarshal(raw, &list)
+	for _, x := range list {
+		if strings.EqualFold(x.Name, n) || x.ID == n {
+			if x.Local {
+				return "local", nil
+			}
+			return x.ID, nil
+		}
+	}
+	return "", errors.New("unknown node " + n + "; list_nodes shows them")
+}
+
 func (c Call) get(path string) (json.RawMessage, error) { return c.Do(c.User, "GET", path, nil) }
 func (c Call) post(path string, body any) (json.RawMessage, error) {
 	if body == nil {

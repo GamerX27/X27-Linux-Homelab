@@ -246,13 +246,28 @@ several nodes at once, switch their channel, and update containers on all nodes.
 |---|---|
 | Overview | CPU, memory, disks, network, temperatures, uptime, OS version |
 | Updates | Current OS image, available update, last update and its log; update, reboot or roll back. The release channel, and switching it |
-| Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, remove. Logs per container or for a whole stack merged by time: search, follow, stdout/stderr, errors and warnings highlighted, download. Plus images, volumes and networks for cleanup |
+| Docker | Your apps (compose stacks) and their containers: start, stop, update, edit, remove, and move to another node (see [Moving an app](#moving-an-app-to-another-node)). Logs per container or for a whole stack merged by time: search, follow, stdout/stderr, errors and warnings highlighted, download. Plus images, volumes and networks for cleanup |
 | Files | **Files:** your home folder: browse, edit, upload, download, rename, delete, with the same permissions as over SSH; compress to zip, tar.gz or tar.zst and extract (see what's inside first, then pick where it goes and what happens to files that already exist), in the background with progress and Cancel. **Network shares:** NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
 | Backup | **Backups:** apps archived on a schedule or now, kept per app. **Export & import:** every app's config plus the server's own settings in one file, and restoring it here or on a new server |
 | Terminal | A shell in the browser, as your user |
 | System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint. **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download. **Activity:** who changed what and when, on this node or every node: dashboard actions, API token (MCP) actions, logins and pairings, and whether each worked |
 
 Each sub-tab has its own address, like `#/n/<node>/system/logs`, so a reload stays on it.
+
+### Moving an app to another node
+
+On **Docker**, a stack's **⋯ → Move to another node…** moves it with its folder
+(`~/docker/<app>`) and the named Docker volumes it uses. The dialog first checks both nodes:
+how much it copies, that there's room, that the folder, volumes and ports are free on the new
+node, and what won't come along (bind mounts outside the app's folder, unnamed volumes, volumes
+of other drivers).
+
+The app is stopped while it's copied. The main node streams it straight from one node to the
+other, without storing it. Then the app is started on the new node, and its containers are
+checked to see that they keep running. If it doesn't start there, the copy on the new node is
+removed and the app is started again where it was. The old copy is left stopped and marked
+**moved to …**. Remove it once the new one works, or tick **Delete it … once it runs** to have
+it removed for you. A move in progress is lost if the main node's dashboard restarts.
 
 Your sidebar picture comes from [Gravatar](https://gravatar.com): click your name and enter
 your email. Only a hash of it is stored.
@@ -400,7 +415,7 @@ token's name.
 |---|---|
 | read | Look only: status, logs, updates, compose files |
 | operate | Also start, stop, restart and update apps and containers, run backups |
-| admin | Also OS updates, reboots, channel, services, users' groups, editing and removing apps, mounting and unmounting network shares |
+| admin | Also OS updates, reboots, channel, services, users' groups, editing, removing and moving apps between nodes, mounting and unmounting network shares |
 
 
 Under **Integrations**, create a token (it's shown once). The page then shows every command

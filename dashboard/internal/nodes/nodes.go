@@ -6,6 +6,7 @@ package nodes
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -340,6 +341,26 @@ func (s *Store) do(n Node, method, path, user string, body io.Reader, timeout ti
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// Request calls a node's API and hands back the raw response, for streams: no overall
+// timeout, only ctx. The caller closes the body.
+func (s *Store) Request(ctx context.Context, n Node, method, path, user, via string, body io.Reader, contentType string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "https://"+n.Address+"/api/v1"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+n.Token)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if user != "" {
+		req.Header.Set(UserHeader, user)
+	}
+	if via != "" {
+		req.Header.Set(ViaHeader, via)
+	}
+	return s.client(n).Do(req)
 }
 
 // Proxy forwards a browser request (path already stripped to the node API path) to

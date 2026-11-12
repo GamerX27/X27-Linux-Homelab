@@ -2,6 +2,7 @@ import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct, when, me
 import { openStackEditor, showStackLog, STACK_ACTION, stackJobRunning, stackJobLine, stackJobResult } from './stackeditor.js';
 import { backupNow } from './backup.js';
 import { logView, guessLevel } from '../logview.js';
+import { moveStackDialog, showMove, runningMoves } from './move.js';
 
 const SECTIONS = ['Apps', 'Images', 'Storage'];
 const PROJECT = 'com.docker.compose.project';
@@ -108,6 +109,12 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
   const stackDismissed = new Set(); // stack job IDs whose result was dismissed
   const pendingCt = new Map(); // container ID → what is being done to it ("Stopping")
   const data = {};
+  const moveOf = (name) => (data.moves || []).find((m) => m.stack === name && (m.from === node.id || m.to === node.id));
+  const moveLine = (m) => {
+    const where = m.from === node.id ? `Moving to ${m.toName}` : `Moving in from ${m.fromName}`;
+    if (m.phase === 'copying') return `${where} · ${m.total ? Math.min(99, Math.round(m.done / m.total * 100)) : 0}%`;
+    return `${where} · ${{ starting: 'starting', verifying: 'checking', finishing: 'finishing' }[m.phase] || m.phase}…`;
+  };
   const expanded = new Map(); // group key → open? (only once the user toggled it)
   const body = h('div.stack');
   const nav = h('div.seg', { role: 'tablist' });
@@ -130,9 +137,9 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     const sec = section;
     try {
       if (sec === 'Apps') {
-        const [stacks, containers, updates] = await Promise.all([
-          api.get('/docker/stacks'), api.get('/docker/containers'), api.get('/docker/updates')]);
-        Object.assign(data, { stacks, containers, updates });
+        const [stacks, containers, updates, moves] = await Promise.all([
+          api.get('/docker/stacks'), api.get('/docker/containers'), api.get('/docker/updates'), runningMoves()]);
+        Object.assign(data, { stacks, containers, updates, moves });
         for (const sj of stacks.jobs || []) {
           if (!stackWatch.has(sj.id) || stackJobRunning(sj)) continue;
           stackWatch.delete(sj.id);
@@ -171,7 +178,7 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     timer = setTimeout(() => {
       if (menuOpen() || modalOpen()) schedule();
       else load();
-    }, jobRunning(data.updates?.job) || stackJobs().some(stackJobRunning) || pendingCt.size ? 2000
+    }, jobRunning(data.updates?.job) || stackJobs().some(stackJobRunning) || pendingCt.size || data.moves?.length ? 2000
       : data.updates?.checking ? 3000 : 5000);
   }
 
@@ -322,7 +329,8 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         if (opts.confirm && !await confirmAction(`${label}: ${s.name}`, opts.confirm, label, !!opts.danger)) return;
         runStack(s.name, action);
       };
-      const busyWhy = working ? `${stackJobLine(sj)} Wait for it to finish.` : false;
+      const mv = (data.moves || []).find((m) => m.stack === s.name && (m.from === node.id || m.to === node.id));
+      const busyWhy = working ? `${stackJobLine(sj)} Wait for it to finish.` : mv ? 'It\'s being moved. Wait for it to finish.' : false;
       let primary = null;
       if (working) {
         primary = h('button.btn.small', { title: 'Show what is happening', onclick: () => showStackLog(api, s.name) }, 'Log');
@@ -347,6 +355,8 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         { label: 'Logs (all containers)', hidden: !total, onclick: () => showStackLogs(s.name, g.containers.map(cname)) },
         { label: 'Show last log', hidden: !sj, onclick: () => showStackLog(api, s.name) },
         { label: 'Back up now', hidden: !s.inRoot, disabled: busyWhy, onclick: () => backupNow(api, [s.name], running > 0) },
+        { label: 'Move to another node…', hidden: !s.inRoot || !!s.movedTo, disabled: busyWhy,
+          onclick: () => moveStackDialog({ node, stack: s.name, onStarted: () => load() }) },
         { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: onSaved }) },
         { label: 'Remove…', danger: true, hidden: !total && !s.inRoot, disabled: busyWhy, onclick: () => removeStack(s) },
       ], `Actions for ${s.name}`)];
@@ -364,7 +374,10 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
           : updating ? h('span.badge.updating', { title: jobLine(job) }, h('span.spinner.small', { 'aria-hidden': 'true' }), `Updating · ${PHASE[job.phase] || 'working'}…`)
           : queued ? h('span.badge', { title: 'Updates after what is updating now' }, 'Queued')
           : updates ? h('span.badge.update', { title: `Updates for ${names.join(', ')}` }, `${updates > 1 ? 'Updates' : 'Update'}: ${shortList(names)}`) : null,
-          s && !s.filesExist ? h('span.badge', 'managed elsewhere') : s && !s.inRoot ? h('span.badge', 'outside ~/docker') : null),
+          s && !s.filesExist ? h('span.badge', 'managed elsewhere') : s && !s.inRoot ? h('span.badge', 'outside ~/docker') : null,
+          s?.movedTo ? h('span.badge.warn', { title: `This copy was moved to ${s.movedTo} and left stopped. Remove it once the new one works.` }, `moved to ${s.movedTo}`) : null,
+          s && moveOf(s.name) ? h('button.badge.updating.badge-btn', { title: 'Show the move', onclick: () => showMove(moveOf(s.name).id).then(() => load()) },
+            h('span.spinner.small', { 'aria-hidden': 'true' }), moveLine(moveOf(s.name))) : null),
         working && sj.lastLine ? h('div.sub.mono.job-line', { title: sj.lastLine }, sj.lastLine) : h('div.sub.mono', sub)),
       h('div.app-status', status),
       h('div.app-ports', portLinks(s ? s.ports : [], host)),

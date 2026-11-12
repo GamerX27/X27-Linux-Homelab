@@ -67,6 +67,19 @@ type Stack struct {
 	Total      int      `json:"total"`
 	Containers []string `json:"containers"`
 	Ports      []Port   `json:"ports"`
+	MovedTo    string   `json:"movedTo,omitempty"` // moved to this node; this copy is left stopped
+}
+
+// MovedFile marks a stack folder that was moved to another node: its first line is that node.
+const MovedFile = ".moved-to"
+
+func movedTo(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, MovedFile))
+	if err != nil {
+		return ""
+	}
+	first, _, _ := strings.Cut(string(b), "\n")
+	return strings.TrimSpace(first)
 }
 
 func findComposeFile(dir string) string {
@@ -97,7 +110,7 @@ func ListStacks(o Owner, cs []Container) []Stack {
 		if !ValidStackName(name) || byName[name] != nil {
 			continue
 		}
-		byName[name] = &Stack{Name: name, Dir: dir, File: f, InRoot: true, FilesExist: true}
+		byName[name] = &Stack{Name: name, Dir: dir, File: f, InRoot: true, FilesExist: true, MovedTo: movedTo(dir)}
 	}
 	for _, p := range Projects(cs) {
 		s := byName[p.Name]

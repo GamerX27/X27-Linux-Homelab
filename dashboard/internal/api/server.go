@@ -326,6 +326,7 @@ func NewMain(o Options) (http.Handler, error) {
 		writeJSON(w, http.StatusOK, map[string]any{"entries": all, "unreachable": failed, "more": more || len(all) == q.Limit})
 	})
 	rolloutRoutes(api, local, store)
+	moveMainRoutes(api, localAPI, store)
 	tokens, _, err := aiRoutes(mux, api, o)
 	if err != nil {
 		return nil, err

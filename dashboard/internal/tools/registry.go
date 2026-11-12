@@ -354,6 +354,29 @@ var All = []Tool{
 			}
 			return sb.String(), nil
 		}},
+	{Name: "move_stack", Scope: Admin,
+		Params: with(map[string]any{
+			"stack":        str("The stack (compose app in ~/docker) to move."),
+			"to":           str("The node to move it to (id or name from list_nodes)."),
+			"delete_after": boolean("Delete the stack and its data from the old node once it runs on the new one. Default: keep the old copy, stopped."),
+		}),
+		Required:    []string{"stack", "to"},
+		Description: "Move a stack with its folder and named volumes from one node (\"node\", default the main node) to another. It's stopped while it's copied, started on the new node and checked; if it doesn't start there, it's started again where it was. Returns the move; follow it with move_status.",
+		Run: func(c Call) (any, error) {
+			base, err := c.node()
+			if err != nil {
+				return nil, err
+			}
+			to, err := c.resolveNode(c.str("to"))
+			if err != nil {
+				return nil, err
+			}
+			return passthrough(c.post("/api/move", map[string]any{"from": strings.TrimPrefix(base, "/api/n/"), "stack": c.str("stack"),
+				"to": to, "deleteAfter": c.boolean("delete_after")}))
+		}},
+	{Name: "move_status", Scope: Read, Params: map[string]any{},
+		Description: "The stack moves between nodes that are running or ran recently: their step, how much is copied, warnings, errors and log.",
+		Run:         func(c Call) (any, error) { return passthrough(c.get("/api/move")) }},
 	{Name: "container_updates", Scope: Read, Params: with(nil),
 		Description: "Which container images on a node have a newer version in their registry, which containers and stacks use them, and the running or last update job.",
 		Run:         func(c Call) (any, error) { return passthrough(c.nodeGet("/docker/updates")) }},

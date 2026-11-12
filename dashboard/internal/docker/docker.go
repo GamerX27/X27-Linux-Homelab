@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -21,12 +22,21 @@ const Socket = "/var/run/docker.sock"
 
 type Client struct{ http *http.Client }
 
+// New talks to Docker on its socket, or the one DOCKER_HOST names (unix://…).
 func New() *Client {
+	if h, ok := strings.CutPrefix(os.Getenv("DOCKER_HOST"), "unix://"); ok && h != "" {
+		return NewAt(h)
+	}
+	return NewAt(Socket)
+}
+
+// NewAt talks to the Docker API on another socket (tests use a fake one).
+func NewAt(socket string) *Client {
 	return &Client{http: &http.Client{
 		Timeout: 60 * time.Second,
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, "unix", Socket)
+			return d.DialContext(ctx, "unix", socket)
 		}},
 	}}
 }
@@ -86,7 +96,20 @@ type Container struct {
 	Created int64             `json:"Created"`
 	Ports   []Port            `json:"Ports"`
 	Labels  map[string]string `json:"Labels"`
+	Mounts  []Mount           `json:"Mounts"`
 }
+
+// A Mount is a volume or bind mount of a container, as the container list has them.
+type Mount struct {
+	Type        string `json:"Type"` // volume, bind, tmpfs
+	Name        string `json:"Name"` // the volume's
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	Driver      string `json:"Driver"`
+}
+
+// Project is the compose project a container belongs to, or "".
+func (c Container) Project() string { return c.Labels[labelProject] }
 
 func (c Container) Name() string {
 	if len(c.Names) == 0 {
@@ -224,10 +247,31 @@ func (c *Client) RemoveImage(id string) error {
 }
 
 type Volume struct {
-	Name       string `json:"Name"`
-	Driver     string `json:"Driver"`
-	Mountpoint string `json:"Mountpoint"`
-	CreatedAt  string `json:"CreatedAt"`
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Mountpoint string            `json:"Mountpoint"`
+	CreatedAt  string            `json:"CreatedAt"`
+	Labels     map[string]string `json:"Labels"`
+}
+
+// VolumeProject is the compose project that created a volume, or "".
+func (v Volume) Project() string { return v.Labels[labelProject] }
+
+func (c *Client) VolumeInspect(name string) (Volume, error) {
+	var v Volume
+	err := c.do("GET", "/volumes/"+url.PathEscape(name), nil, &v)
+	return v, err
+}
+
+// VolumeCreate makes a local volume with these labels (compose's, so compose adopts it).
+func (c *Client) VolumeCreate(name string, labels map[string]string) (Volume, error) {
+	var v Volume
+	err := c.doBody("POST", "/volumes/create", nil, map[string]any{"Name": name, "Driver": "local", "Labels": labels}, &v)
+	return v, err
+}
+
+func (c *Client) VolumeRemove(name string) error {
+	return c.do("DELETE", "/volumes/"+url.PathEscape(name), nil, nil)
 }
 
 func (c *Client) Volumes() ([]Volume, error) {
