@@ -289,10 +289,10 @@ func (w *Watcher) reconcile(holds bool) {
 		switch {
 		case holds && up:
 			r.state, r.detail = "running", ""
-			push := a.Data == DataReplicated && !r.pushing && now.After(r.nextPush)
+			push := a.Copies() && !r.pushing && now.After(r.nextPush)
 			if push {
 				r.pushing = true
-				r.nextPush = now.Add(time.Duration(max(a.Interval, 60)) * time.Second)
+				r.nextPush = now.Add(time.Duration(max(a.Interval, 10)) * time.Second)
 			}
 			w.mu.Unlock()
 			w.heartbeat(a, now)
@@ -312,9 +312,7 @@ func (w *Watcher) reconcile(holds bool) {
 			w.mu.Unlock()
 			go w.stop(a, o)
 		default:
-			if r.state != "failed" || r.detail == "" {
-				r.state, r.detail = "standby", ""
-			}
+			r.state, r.detail = "standby", "" // it's down, as it should be here
 			r.lock = ""
 			w.mu.Unlock()
 		}
@@ -373,13 +371,16 @@ func (w *Watcher) start(st State, a HAApp, o docker.Owner) {
 			w.set(a.Name, func(r *appRun) { r.lock = "held by this node" })
 		}
 	}
-	if a.Data == DataReplicated {
+	if a.Copies() {
 		n, err := w.catchUp(st, a, o)
 		if errors.Is(err, errPeerRunning) {
 			wait(n)
 			return
 		}
 		note = n
+		if a.Data == DataSynced && backup.SyncInterrupted(config.StateDir, a.Name) {
+			note = strings.TrimPrefix(note+"; the last sync here broke off halfway, so some files may be from a moment earlier than others", "; ")
+		}
 	}
 	out, err := w.dk.StackAction(o, a.Name, "start")
 	if err != nil {
@@ -519,6 +520,24 @@ func (w *Watcher) catchUp(st State, a HAApp, o docker.Owner) (string, error) {
 			}
 		}
 	}
+	if best != nil && a.Data == DataSynced {
+		// The peer sends its changes here, as it does when it runs the app.
+		w.set(a.Name, func(r *appRun) { r.detail = "getting the latest changes from " + best.Name })
+		var out struct{ Pushes []Push }
+		err := store.PostBody(best.node, a.Owner, "/cluster/apps/"+url.PathEscape(a.Name)+"/push",
+			2*time.Hour, map[string]any{"only": []string{w.selfID()}, "handover": true}, &out)
+		if err == nil && (len(out.Pushes) == 0 || !out.Pushes[0].OK) {
+			err = errors.New("it couldn't reach this node")
+			if len(out.Pushes) > 0 {
+				err = errors.New(out.Pushes[0].Error)
+			}
+		}
+		record(fmt.Sprintf("get the latest changes of HA app %s from %s", a.Name, best.Name), err)
+		if err != nil {
+			return fmt.Sprintf("started from the copy synced %s; getting the latest from %s failed: %v", ago(mine.ReplicaAt), best.Name, err), nil
+		}
+		return unanswered(silent), nil
+	}
 	if best != nil {
 		w.set(a.Name, func(r *appRun) { r.detail = "getting the latest copy from " + best.Name })
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
@@ -605,20 +624,14 @@ func (w *Watcher) push(a HAApp, o docker.Owner, only []string) []Push {
 			continue
 		}
 		res := Push{Node: p.ID, Name: p.Name, At: time.Now().Unix()}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		pr, pw := io.Pipe()
-		go func() { pw.CloseWithError(w.bk.SnapshotOut(ctx, pw, o, a.Name)) }()
-		cr := &countReader{r: pr}
-		resp, err := store.Request(ctx, p.node, "POST", "/cluster/snapshot/in?stack="+url.QueryEscape(a.Name), a.Owner, "cluster", cr, "application/gzip")
-		if err == nil {
-			if resp.StatusCode != http.StatusOK {
-				err = errorOf(resp)
-			}
-			resp.Body.Close()
+		var n int64
+		var err error
+		if a.Data == DataSynced {
+			n, err = w.pushSync(store, p, a, o)
+		} else {
+			n, err = w.pushSnapshot(store, p, a, o)
 		}
-		pr.CloseWithError(errors.New("done"))
-		cancel()
-		res.Size, res.OK = cr.n, err == nil
+		res.Size, res.OK = n, err == nil
 		if err != nil {
 			res.Error = err.Error()
 			log.Printf("cluster: copying HA app %s to %s: %v", a.Name, p.Name, err)
@@ -627,6 +640,80 @@ func (w *Watcher) push(a HAApp, o docker.Owner, only []string) []Push {
 		w.set(a.Name, func(r *appRun) { r.pushes[p.ID] = res })
 	}
 	return results
+}
+
+// pushSnapshot sends a replicated app's full copy to one member.
+func (w *Watcher) pushSnapshot(store *nodes.Store, p peer, a HAApp, o docker.Owner) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	pr, pw := io.Pipe()
+	go func() { pw.CloseWithError(w.bk.SnapshotOut(ctx, pw, o, a.Name)) }()
+	cr := &countReader{r: pr}
+	resp, err := store.Request(ctx, p.node, "POST", "/cluster/snapshot/in?stack="+url.QueryEscape(a.Name), a.Owner, "cluster", cr, "application/gzip")
+	if err == nil {
+		if resp.StatusCode != http.StatusOK {
+			err = errorOf(resp)
+		}
+		resp.Body.Close()
+	}
+	pr.CloseWithError(errors.New("done"))
+	return cr.n, err
+}
+
+// syncPauseLimit: changes up to this size are sent with the app paused, so they match the
+// list; bigger ones (the first sync, say) are sent running, and the next sync catches up.
+const syncPauseLimit = 64 << 20
+
+// pushSync sends a synced app's changes to one member: the file list, then what it lacks.
+func (w *Watcher) pushSync(store *nodes.Store, p peer, a HAApp, o docker.Owner) (int64, error) {
+	idx, resume, err := w.bk.MakeSyncIndex(o, a.Name, true)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { resume() }()
+	var need struct{ Need []string }
+	if err := store.PostBody(p.node, a.Owner, "/cluster/sync/need?stack="+url.QueryEscape(a.Name), 5*time.Minute, idx, &need); err != nil {
+		return 0, err
+	}
+	if len(need.Need) == 0 {
+		// Nothing to send, but the member's copy is now this fresh.
+		need.Need = []string{}
+	}
+	sizes := map[string]int64{}
+	for _, e := range idx.Entries {
+		sizes[e.Path] = e.Size
+	}
+	var total int64
+	for _, n := range need.Need {
+		total += sizes[n]
+	}
+	if total > syncPauseLimit {
+		resume()
+		resume = func() {}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	pr, pw := io.Pipe()
+	go func() { pw.CloseWithError(w.bk.SyncOut(ctx, pw, o, idx, need.Need)) }()
+	cr := &countReader{r: pr}
+	resp, err := store.Request(ctx, p.node, "POST", "/cluster/sync/in?stack="+url.QueryEscape(a.Name), a.Owner, "cluster", cr, "application/gzip")
+	if err == nil {
+		if resp.StatusCode != http.StatusOK {
+			err = errorOf(resp)
+		}
+		resp.Body.Close()
+	}
+	pr.CloseWithError(errors.New("done"))
+	return cr.n, err
+}
+
+// selfID is this node in the main node's list.
+func (w *Watcher) selfID() string {
+	v := vip.Load()
+	if v.Self != "" {
+		return v.Self
+	}
+	return LocalID
 }
 
 // ---- What the API calls ----------------------------------------------------------------
@@ -670,19 +757,25 @@ func (w *Watcher) Received(name string, man backup.SnapshotManifest, size int64)
 	w.setLocal(name, func(l *AppLocal) { l.ReplicaAt, l.ReplicaFrom, l.ReplicaSize = man.TakenAt, man.Host, size })
 }
 
-// PushNow sends a replicated app's copy to the other members now (only: to those), and
-// waits for it.
-func (w *Watcher) PushNow(name string, only []string) ([]Push, error) {
+// PushNow sends an app's copy (replicated) or changes (synced) to the other members now
+// (only: to those), and waits for it. With handover, a member that doesn't hold the virtual
+// IP sends its copy too, if the app doesn't run there: the member taking over asks for it.
+func (w *Watcher) PushNow(name string, only []string, handover bool) ([]Push, error) {
 	a, ok := Load().App(name)
-	if !ok || a.Data != DataReplicated {
-		return nil, errors.New("no such replicated HA app")
-	}
-	if !vip.Holds() {
-		return nil, errors.New("this node doesn't hold the virtual IP")
+	if !ok || !a.Copies() {
+		return nil, errors.New("no such replicated or synced HA app")
 	}
 	o, err := w.owner(a)
 	if err != nil {
 		return nil, err
+	}
+	if !vip.Holds() && !handover {
+		return nil, errors.New("this node doesn't hold the virtual IP")
+	}
+	if handover && !vip.Holds() {
+		if cs, err := w.dk.Containers(); err != nil || running(cs, name) {
+			return nil, errors.New("it still runs here")
+		}
 	}
 	w.mu.Lock()
 	r := w.runOf(name)
@@ -711,7 +804,7 @@ func (w *Watcher) HandOff(to string) ([]string, error) {
 		}
 		w.set(a.Name, func(r *appRun) { r.busy = true; r.state = "stopping" })
 		w.stop(a, o)
-		if a.Data != DataReplicated {
+		if !a.Copies() {
 			continue
 		}
 		w.set(a.Name, func(r *appRun) { r.pushing = true })

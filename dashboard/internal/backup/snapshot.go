@@ -49,6 +49,25 @@ func (m *Manager) projectRunning(name string) (bool, error) {
 	return false, nil
 }
 
+// pauseRunning pauses a project's running containers and returns the ones it paused.
+func (m *Manager) pauseRunning(project string) ([]string, error) {
+	cs, err := m.dk.Containers()
+	if err != nil {
+		return nil, err
+	}
+	var paused []string
+	for _, c := range cs {
+		if c.Project() != project || c.State != "running" {
+			continue
+		}
+		if err := m.dk.ContainerAction(c.ID, "pause"); err != nil {
+			return paused, fmt.Errorf("%s: %w", c.Name(), err)
+		}
+		paused = append(paused, c.ID)
+	}
+	return paused, nil
+}
+
 // SnapshotOut streams a copy of a stack to w. A running stack is paused for the copy, so
 // files (an sqlite database, say) aren't caught halfway through a write, and unpaused after.
 func (m *Manager) SnapshotOut(ctx context.Context, w io.Writer, o docker.Owner, name string) error {
@@ -64,15 +83,18 @@ func (m *Manager) SnapshotOut(ctx context.Context, w io.Writer, o docker.Owner, 
 		return ErrRunning
 	}
 	defer m.running.Unlock()
-	if p.Running {
-		if out, err := m.dk.StackAction(o, name, "pause"); err != nil {
-			return fmt.Errorf("pausing %s: %w %s", name, err, strings.TrimSpace(out))
-		}
-		defer func() {
-			if out, err := m.dk.StackAction(o, name, "unpause"); err != nil {
-				log.Printf("replica: unpausing %s: %v %s", name, err, out)
+	// Pause the containers that run (compose pause fails when one of them is stopped), and
+	// unpause exactly those afterwards.
+	paused, err := m.pauseRunning(name)
+	defer func() {
+		for _, id := range paused {
+			if err := m.dk.ContainerAction(id, "unpause"); err != nil {
+				log.Printf("replica: unpausing a container of %s: %v", name, err)
 			}
-		}()
+		}
+	}()
+	if err != nil {
+		return fmt.Errorf("pausing %s: %w", name, err)
 	}
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)

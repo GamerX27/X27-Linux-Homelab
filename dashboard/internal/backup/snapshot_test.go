@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/docker"
@@ -82,6 +83,14 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(v.Mountpoint, "c.bin")); string(b) != "v2" {
 		t.Fatal("volume not replaced")
+	}
+
+	// A running app with a stopped container: only the running one is paused, then unpaused.
+	fsrc.containers = append(fsrc.containers, docker.Container{ID: "c2", Names: []string{"/notes-web-1"}, State: "running",
+		Labels: map[string]string{"com.docker.compose.project": "notes"}})
+	snap()
+	if strings.Join(fsrc.paused, " ") != "/containers/c2/pause /containers/c2/unpause" || fsrc.containers[1].State != "running" {
+		t.Fatalf("pause calls %v, state %s", fsrc.paused, fsrc.containers[1].State)
 	}
 
 	// Half a stream changes nothing; a running app is never replaced.

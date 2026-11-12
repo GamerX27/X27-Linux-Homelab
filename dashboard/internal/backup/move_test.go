@@ -24,6 +24,7 @@ type fakeDocker struct {
 	dir        string
 	containers []docker.Container
 	volumes    map[string]docker.Volume
+	paused     []string // pause/unpause calls
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +32,21 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	p := r.URL.Path
 	switch {
+	case r.Method == "POST" && strings.HasPrefix(p, "/containers/") && (strings.HasSuffix(p, "/pause") || strings.HasSuffix(p, "/unpause")):
+		id := strings.Split(p, "/")[2]
+		for i := range f.containers {
+			if f.containers[i].ID != id {
+				continue
+			}
+			if want := map[bool]string{true: "running", false: "paused"}[strings.HasSuffix(p, "/pause")]; f.containers[i].State != want {
+				w.WriteHeader(409)
+				w.Write([]byte(`{"message":"container ` + id + ` is not ` + want + `"}`))
+				return
+			}
+			f.containers[i].State = map[bool]string{true: "paused", false: "running"}[strings.HasSuffix(p, "/pause")]
+			f.paused = append(f.paused, p)
+		}
+		w.WriteHeader(204)
 	case p == "/containers/json":
 		json.NewEncoder(w).Encode(f.containers)
 	case p == "/volumes" && r.Method == "GET":

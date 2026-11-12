@@ -24,7 +24,23 @@ function ago(unix) {
   return `${Math.round(d / 86400)} days ago`;
 }
 
-const minutes = (sec) => sec % 3600 === 0 && sec >= 3600 ? `${sec / 3600} h` : `${Math.round(sec / 60)} min`;
+const minutes = (sec) => sec < 60 ? `${sec} s` : sec % 3600 === 0 && sec >= 3600 ? `${sec / 3600} h` : `${Math.round(sec / 60)} min`;
+
+const MODES = [['shared', 'Shared'], ['replicated', 'Replicated'], ['synced', 'Synced']];
+const copies = (mode) => mode === 'replicated' || mode === 'synced';
+// How often, per mode, in seconds.
+const INTERVALS = {
+  replicated: [[300, '5 minutes'], [900, '15 minutes'], [1800, '30 minutes'], [3600, '1 hour'], [21600, '6 hours'], [86400, '1 day']],
+  synced: [[10, '10 seconds'], [30, '30 seconds'], [60, '1 minute'], [300, '5 minutes'], [900, '15 minutes']],
+};
+const DEFAULT_INTERVAL = { replicated: 900, synced: 30 };
+
+// Fills the interval list for a mode, keeping the value when it fits.
+function setIntervals(sel, mode, value) {
+  const list = INTERVALS[mode] || [];
+  clear(sel, list.map(([v, l]) => h('option', { value: v }, l)));
+  sel.value = String(list.some(([v]) => v === value) ? value : DEFAULT_INTERVAL[mode] || '');
+}
 
 // The dialog that makes a stack highly available, from the Cluster page or a node's Docker tab.
 export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
@@ -41,20 +57,22 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
   const pick = h('select', { 'aria-label': 'Stack' }, h('option', { value: '' }, 'Loading…'));
   const data = h('div.seg', { role: 'tablist', 'aria-label': 'Data' });
   let mode = 'shared';
-  const interval = h('select', [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [360, '6 hours'], [1440, '1 day']]
-    .map(([v, l]) => h('option', { value: v * 60 }, l)));
-  interval.value = String(15 * 60);
+  const interval = h('select', { 'aria-label': 'How often' });
   const vipOnly = h('input', { type: 'checkbox' });
+  const ivLabel = h('span', 'Copy every');
+  const ivField = h('label.field', ivLabel, interval);
   const report = h('div.stack');
   const err = h('div.error-text');
   let check = null;
 
   const drawMode = () => {
     const sharedOK = check && check.check.problems.length === 0;
-    clear(data, [['shared', 'Shared'], ['replicated', 'Replicated']].map(([v, l]) => h('button.seg-btn', { type: 'button', role: 'tab',
+    clear(data, MODES.map(([v, l]) => h('button.seg-btn', { type: 'button', role: 'tab',
       class: v === mode ? 'active' : '', 'aria-selected': String(v === mode), disabled: v === 'shared' && check && !sharedOK,
       onclick: () => { mode = v; drawMode(); drawReport(); } }, l)));
-    interval.closest('label')?.classList.toggle('hidden', mode !== 'replicated');
+    if (copies(mode)) setIntervals(interval, mode, Number(interval.value));
+    ivLabel.textContent = mode === 'synced' ? 'Send changes every' : 'Copy every';
+    ivField.classList.toggle('hidden', !copies(mode));
   };
   const drawReport = () => {
     if (!check) { clear(report); return; }
@@ -63,11 +81,17 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
       mode === 'shared'
         ? (c.problems.length
           ? h('div.notice.warn', h('strong', 'Not all of its data is on cluster shares on every member:'), h('ul', c.problems.map((p) => h('li', p))),
-            'Use replicated, or move that data to a cluster share.')
+            'Use synced or replicated, or move that data to a cluster share.')
           : h('div.notice', `All of its data is on ${c.shares.length ? `the cluster share${c.shares.length > 1 ? 's' : ''} ${c.shares.join(', ')}` : 'cluster shares'}. A failover starts it on the next member at once.`))
-        : h('div.notice', 'Its folder and named volumes are copied to ', check.members.filter((n) => n !== check.holderName).join(', ') || 'the other members',
-          ' every ', h('strong', minutes(Number(interval.value))), '. A failover can lose up to that much. While a copy is taken, the app is paused for a moment.',
-          c.warnings.length ? h('ul', c.warnings.map((w) => h('li', w))) : null),
+        : mode === 'synced'
+          ? h('div.notice', 'Every ', h('strong', minutes(Number(interval.value))), ', the files of its folder and named volumes that changed are sent to ',
+            check.members.filter((n) => n !== check.holderName).join(', ') || 'the other members',
+            '. Only changes travel, so it suits bigger apps too; the first sync sends everything. A failover can lose up to that much. ',
+            'The app is paused for a moment while small changes are sent.',
+            c.warnings.length ? h('ul', c.warnings.map((w) => h('li', w))) : null)
+          : h('div.notice', 'Its whole folder and named volumes are copied to ', check.members.filter((n) => n !== check.holderName).join(', ') || 'the other members',
+            ' every ', h('strong', minutes(Number(interval.value))), '. A failover can lose up to that much. The app is paused while each copy is taken, so keep big data on a cluster share.',
+            c.warnings.length ? h('ul', c.warnings.map((w) => h('li', w))) : null),
       check.ports.length ? h('p.faint', { style: { margin: 0 } }, `Published ports: ${check.ports.join(', ')}.`) : null);
   };
   interval.addEventListener('change', drawReport);
@@ -77,7 +101,7 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
     if (!pick.value) { clear(report); drawMode(); return; }
     try {
       check = await api.post('/api/cluster/apps/check', { name: pick.value, node: cl.holder });
-      if (check.check.problems.length) mode = 'replicated';
+      if (check.check.problems.length && mode === 'shared') mode = 'synced';
     } catch (e) { err.textContent = e.message; clear(report); }
     drawMode(); drawReport();
   };
@@ -94,7 +118,7 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
     h('p.muted', { style: { margin: 0 } }, `It runs on whichever member holds the virtual IP, now ${holderName}. If that node goes down, the next member starts it.`),
     h('label.field', `Stack on ${holderName}`, pick),
     h('div.field', h('span', 'Its data'), data),
-    h('label.field', 'Copy every', interval),
+    ivField,
     report,
     h('label.check-row', vipOnly, h('span', h('strong', 'Ports only on the virtual IP'),
       h('span.muted', ` · ${cl.state.vip.address}:port reaches it; the nodes' own addresses don't. Nothing is blocked by a firewall: the ports just aren't published there.`))),
@@ -188,7 +212,7 @@ export function renderCluster(el, { menuButton }) {
   }
 
   async function moveVIP(m) {
-    const replicated = cl.state.apps.filter((a) => a.data === 'replicated').map((a) => a.name);
+    const replicated = cl.state.apps.filter((a) => copies(a.data)).map((a) => a.name);
     if (!await confirmAction(`Move the virtual IP to ${m.name}`,
       `The HA apps stop where they run now${replicated.length ? `, ${replicated.join(', ')} send${replicated.length === 1 ? 's' : ''} a final copy to ${m.name}` : ''}, and they start on ${m.name} once it holds the address. `
       + 'The dashboard on the virtual IP is away for a few seconds.', 'Move it', false)) return;
@@ -318,14 +342,17 @@ export function renderCluster(el, { menuButton }) {
   async function appEdit(a) {
     let mode = a.data;
     const seg = h('div.seg', { role: 'tablist' });
-    const interval = h('select', [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [360, '6 hours'], [1440, '1 day']]
-      .map(([v, l]) => h('option', { value: v * 60 }, l)));
-    interval.value = String(a.interval || 900);
-    const ivField = h('label.field', 'Copy every', interval);
+    const interval = h('select', { 'aria-label': 'How often' });
+    let wanted = a.interval;
+    interval.addEventListener('change', () => { wanted = Number(interval.value); });
+    const ivLabel = h('span', 'Copy every');
+    const ivField = h('label.field', ivLabel, interval);
     const drawSeg = () => {
-      clear(seg, [['shared', 'Shared'], ['replicated', 'Replicated']].map(([v, l]) => h('button.seg-btn', { type: 'button', class: v === mode ? 'active' : '',
+      clear(seg, MODES.map(([v, l]) => h('button.seg-btn', { type: 'button', class: v === mode ? 'active' : '',
         'aria-selected': String(v === mode), onclick: () => { mode = v; drawSeg(); } }, l)));
-      ivField.classList.toggle('hidden', mode !== 'replicated');
+      if (copies(mode)) setIntervals(interval, mode, wanted);
+      ivLabel.textContent = mode === 'synced' ? 'Send changes every' : 'Copy every';
+      ivField.classList.toggle('hidden', !copies(mode));
     };
     drawSeg();
     const vipOnly = h('input', { type: 'checkbox', checked: a.vipOnly });
@@ -357,12 +384,12 @@ export function renderCluster(el, { menuButton }) {
       return h('tr',
         h('td', h('strong', a.name), h('div.sub', `by ${a.owner}`)),
         h('td', a.data === 'shared' ? h('span', 'Shared', h('div.sub', a.shares?.length ? `on ${a.shares.join(', ')}` : ''))
-          : h('span', 'Replicated', h('div.sub', `every ${minutes(a.interval)}`))),
+          : h('span', a.data === 'synced' ? 'Synced' : 'Replicated', h('div.sub', `every ${minutes(a.interval)}`))),
         h('td', a.vipOnly ? h('span.badge', 'virtual IP only') : h('span.faint', 'every address')),
         h('td', h('div.node-chips', per.map(({ m, s }) => {
           if (!m.online || !s) return h('span.status.crit', { title: m.error || '' }, `${m.name}: ${m.online ? 'unknown' : 'offline'}`);
           const [cls, label] = APP_STATES[s.state] || ['idle', s.state];
-          const copy = a.data === 'replicated' && !s.running && s.replicaAt ? ` · copy ${ago(s.replicaAt)}` : '';
+          const copy = copies(a.data) && !s.running && s.replicaAt ? ` · ${a.data === 'synced' ? 'synced' : 'copy'} ${ago(s.replicaAt)}` : '';
           return h('span.status', { class: cls, title: [s.detail, s.lock].filter(Boolean).join('\n') }, `${m.name}: ${label}${copy}`);
         })),
         per.map(({ s }) => s?.detail ? h('div.sub', s.detail) : null),
@@ -371,7 +398,7 @@ export function renderCluster(el, { menuButton }) {
         h('td', last ? h('span', { title: when(last.s.activeFrom) }, `${last.m.name}, ${ago(last.s.activeFrom)}`) : h('span.faint', '—')),
         h('td.actions', menu([
           { label: 'Change…', disabled: ro(), onclick: () => appEdit(a) },
-          { label: 'Copy to the other members now', hidden: a.data !== 'replicated', onclick: async () => {
+          { label: a.data === 'synced' ? 'Send the changes now' : 'Copy to the other members now', hidden: !copies(a.data), onclick: async () => {
             toast(`Copying ${a.name}…`);
             try { await api.post(`/api/cluster/apps/${encodeURIComponent(a.name)}/replicate`); toast(`${a.name} copied.`); } catch (e) { toast(e.message, true); }
             load();
@@ -389,7 +416,8 @@ export function renderCluster(el, { menuButton }) {
         h('button.btn.primary', { disabled: !can, title: can ? '' : 'Set up the virtual IP first', onclick: () => makeHADialog({ onDone: load }) }, 'Make an app highly available')),
       h('p.muted', { style: { marginTop: 0 } }, 'Apps that run on whichever member holds the virtual IP. If that node goes offline, the next member starts them. ',
         h('strong', 'Shared'), ': all their data is on cluster shares, so the next member starts at once. ',
-        h('strong', 'Replicated'), ': their folder and volumes are copied to the other members on a timer, so a failover can lose up to one interval of changes. ',
+        h('strong', 'Synced'), ': the files that changed are sent to the other members every few seconds. ',
+        h('strong', 'Replicated'), ': their whole folder and volumes are copied on a timer. With both, a failover can lose up to one interval of changes. ',
         'Reach them on the virtual IP, like ', h('code', `${cl.state.vip.address || '192.168.1.50'}:8096`), '.'),
       cl.state.apps.length ? h('div.table-wrap', h('table',
         h('thead', h('tr', h('th', 'App'), h('th', 'Data'), h('th', 'Ports'), h('th', 'On each member'), h('th', 'Last started'), h('th', ''))),

@@ -510,7 +510,7 @@ var All = []Tool{
 			return output(c.post("/api/cluster/shares", body))
 		}},
 	{Name: "list_ha_apps", Scope: Read, Params: map[string]any{},
-		Description: "High-availability apps: stacks that run on whichever member holds the virtual IP. For each: where its data is (shared: on cluster shares; replicated: copied to the other members every interval), whether its ports are only on the virtual IP, and its state on each member (running, standby, waiting for another node's lock, failed), when it last started and how old each member's copy is.",
+		Description: "High-availability apps: stacks that run on whichever member holds the virtual IP. For each: where its data is (shared: on cluster shares; synced: changed files sent to the other members every few seconds; replicated: full copies every interval), whether its ports are only on the virtual IP, and its state on each member (running, standby, waiting for another node's lock, failed), when it last started and how old each member's copy is.",
 		Run: func(c Call) (any, error) {
 			cl, err := clusterState(c)
 			if err != nil {
@@ -544,8 +544,11 @@ var All = []Tool{
 					}
 				}
 				e := map[string]any{"stack": a.Name, "data": a.Data, "vipOnly": a.VIPOnly, "shares": a.Shares, "members": per}
-				if a.Data == "replicated" {
+				switch a.Data {
+				case "replicated":
 					e["intervalMinutes"] = a.Interval / 60
+				case "synced":
+					e["intervalSeconds"] = a.Interval
 				}
 				out = append(out, e)
 			}
@@ -555,8 +558,9 @@ var All = []Tool{
 		Params: map[string]any{
 			"stack":            str("Stack name, on the node that holds the virtual IP."),
 			"remove":           boolean("Make it an ordinary app again: it keeps running where it is; the other members' copies stay, stopped."),
-			"data":             enum("shared: all its data is on cluster shares on every member (instant failover). replicated: its folder and volumes are copied to the other members every interval (a failover can lose up to one interval).", "shared", "replicated"),
+			"data":             enum("shared: all its data is on cluster shares on every member (instant failover). synced: the files that changed are sent to the other members every interval_seconds (default 30). replicated: its whole folder and volumes are copied every interval_minutes. With synced or replicated a failover can lose up to one interval.", "shared", "synced", "replicated"),
 			"interval_minutes": integer("Replicated: minutes between copies (default 15)."),
+			"interval_seconds": integer("Synced: seconds between syncs, 10 to 3600 (default 30)."),
 			"vip_only":         boolean("Publish its ports only on the virtual IP, not on the nodes' own addresses."),
 		},
 		Required:    []string{"stack"},
@@ -571,6 +575,9 @@ var All = []Tool{
 				return nil, err
 			}
 			body := map[string]any{"name": name, "data": c.str("data"), "interval": c.num("interval_minutes", 15) * 60, "vipOnly": c.boolean("vip_only")}
+			if c.str("data") == "synced" {
+				body["interval"] = c.num("interval_seconds", 30)
+			}
 			for _, a := range cl.State.Apps {
 				if a.Name == name {
 					if body["data"] == "" {

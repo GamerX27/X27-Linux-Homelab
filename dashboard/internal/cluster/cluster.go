@@ -29,7 +29,14 @@ const LocalID = "local"
 const (
 	DataShared     = "shared"     // all its data is on cluster shares: failover is instant
 	DataReplicated = "replicated" // its folder and volumes are copied to the other members on a timer
+	DataSynced     = "synced"     // like replicated, but only what changed, every few seconds
 )
+
+// Copies reports whether an app's data is copied between the members (not on a share).
+func (a HAApp) Copies() bool { return a.Data == DataReplicated || a.Data == DataSynced }
+
+// DefaultSyncInterval is how often a synced app sends its changes unless set.
+const DefaultSyncInterval = 30
 
 // Member is one node of the virtual IP. The first member has the highest priority.
 type Member struct {
@@ -293,8 +300,15 @@ func ValidateApp(a *HAApp) error {
 		if a.Interval < 60 || a.Interval > 7*24*3600 {
 			return errors.New("copy a replicated app every 1 minute to 7 days")
 		}
+	case DataSynced:
+		if a.Interval == 0 {
+			a.Interval = DefaultSyncInterval
+		}
+		if a.Interval < 10 || a.Interval > 3600 {
+			return errors.New("sync an app every 10 seconds to 1 hour")
+		}
 	default:
-		return errors.New("choose where its data is: shared or replicated")
+		return errors.New("choose where its data is: shared, replicated or synced")
 	}
 	return nil
 }

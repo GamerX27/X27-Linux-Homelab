@@ -112,9 +112,12 @@ func (l *Local) clusterRoutes(mux *http.ServeMux) {
 		writeJSON(rw, http.StatusOK, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /cluster/apps/{name}/push", func(rw http.ResponseWriter, r *http.Request) {
-		var body struct{ Only []string }
+		var body struct {
+			Only     []string
+			Handover bool
+		}
 		readJSON(r, &body)
-		pushes, err := w.PushNow(r.PathValue("name"), body.Only)
+		pushes, err := w.PushNow(r.PathValue("name"), body.Only, body.Handover)
 		if err != nil {
 			act(r, "copy HA app "+r.PathValue("name")+" to the other members", err)
 			writeErr(rw, http.StatusConflict, err)
@@ -139,8 +142,8 @@ func (l *Local) clusterRoutes(mux *http.ServeMux) {
 		if !ok {
 			return docker.Owner{}, a, errors.New("no such HA app")
 		}
-		if a.Data != cluster.DataReplicated {
-			return docker.Owner{}, a, errors.New("that HA app isn't replicated")
+		if !a.Copies() {
+			return docker.Owner{}, a, errors.New("that HA app's data isn't copied between members")
 		}
 		if !l.Dev && userOf(r) != a.Owner {
 			return docker.Owner{}, a, errors.New("the app belongs to " + a.Owner)
@@ -164,6 +167,48 @@ func (l *Local) clusterRoutes(mux *http.ServeMux) {
 				writeErr(rw, http.StatusConflict, err)
 			}
 		}
+	})
+	// Synced apps: which files this node lacks, then those files.
+	mux.HandleFunc("POST /cluster/sync/need", func(rw http.ResponseWriter, r *http.Request) {
+		o, a, err := haApp(r)
+		if err != nil {
+			writeErr(rw, http.StatusBadRequest, err)
+			return
+		}
+		var idx backup.SyncIndex
+		if err := readJSONLimit(r, &idx, 256<<20); err != nil || idx.Stack != a.Name {
+			writeErr(rw, http.StatusBadRequest, errors.New("bad file list"))
+			return
+		}
+		need, err := l.backups.SyncNeed(o, idx)
+		if err != nil {
+			writeErr(rw, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(rw, http.StatusOK, map[string]any{"need": need})
+	})
+	mux.HandleFunc("POST /cluster/sync/in", func(rw http.ResponseWriter, r *http.Request) {
+		o, a, err := haApp(r)
+		if err != nil {
+			writeErr(rw, http.StatusBadRequest, err)
+			return
+		}
+		cr := &countingReader{r: r.Body}
+		man, err := l.backups.SyncIn(o, cr, config.StateDir)
+		if err == nil && man.Stack != a.Name {
+			err = errors.New("the changes are of another app")
+		}
+		if err != nil {
+			code := http.StatusBadRequest
+			if errors.Is(err, backup.ErrAppRunning) {
+				code = http.StatusConflict
+			}
+			log.Printf("cluster: changes of %s in: %v", a.Name, err)
+			writeErr(rw, code, err)
+			return
+		}
+		w.Received(a.Name, man, cr.n)
+		writeJSON(rw, http.StatusOK, man)
 	})
 	mux.HandleFunc("POST /cluster/snapshot/in", func(rw http.ResponseWriter, r *http.Request) {
 		o, a, err := haApp(r)
@@ -204,7 +249,7 @@ func (c *countingReader) Read(b []byte) (int, error) {
 // clusterPeer serves the main node's cluster API to the other members, who present the
 // cluster secret: their status checks and replicas, nothing else.
 func clusterPeer(localAPI http.Handler) http.Handler {
-	allowed := []string{"/cluster/local", "/cluster/snapshot/out", "/cluster/snapshot/in"}
+	allowed := []string{"/cluster/local", "/cluster/snapshot/out", "/cluster/snapshot/in", "/cluster/sync/need", "/cluster/sync/in"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		sec := cluster.Load().Secret
@@ -213,7 +258,8 @@ func clusterPeer(localAPI http.Handler) http.Handler {
 			return
 		}
 		p := strings.TrimPrefix(r.URL.Path, "/api/v1")
-		if !slices.Contains(allowed, p) {
+		push := strings.HasPrefix(p, "/cluster/apps/") && strings.HasSuffix(p, "/push")
+		if !slices.Contains(allowed, p) && !push {
 			writeErr(w, http.StatusNotFound, errors.New("not found"))
 			return
 		}
@@ -953,7 +999,7 @@ func (c *clusterMain) makeHA(r *http.Request, a cluster.HAApp, node string, crea
 			}
 		}
 	}
-	if a.Data == cluster.DataReplicated {
+	if a.Copies() {
 		go func() {
 			if err := c.nodes.JSON(a.Owner, holder, "POST", "/cluster/apps/"+url.PathEscape(a.Name)+"/push", map[string]any{}, nil, 2*time.Hour); err != nil {
 				log.Printf("cluster: first copy of %s: %v", a.Name, err)

@@ -316,7 +316,8 @@ editor's **Insert share path** adds the line for a share.
 
 An HA app runs on whichever member holds the virtual IP. If that node goes offline, the next
 member starts it. Make one from the Cluster page or a stack's **⋯ → Make highly available…**
-(on the node that holds the virtual IP). Where its data is, per app:
+(on the node that holds the virtual IP). Where its data is, per app (shared, replicated or
+synced):
 
 - **Shared:** all its data is on cluster shares mounted on every member (bind mounts under
   `/var/mnt/<share>`, or NFS volumes). Failover is instant. The dashboard refuses this mode and
@@ -328,6 +329,15 @@ member starts it. Make one from the Cluster page or a stack's **⋯ → Make hig
   failover can lose up to one interval of changes. A node taking over first asks the others
   whether one ran it after its copy, and gets the final copy from there if so; if nobody
   answers, it starts from its own copy and says how old it is.
+
+- **Synced:** like replicated, but only the files that changed travel, every 10 seconds to an
+  hour (default 30 seconds). The node running the app sends its file list, each member says
+  which files it lacks or has different, and only those are sent, with the list so deleted files
+  go too. Changed files land through a rename, so a member never has half a file. Small changes
+  are sent with the app paused for a moment; the first sync sends everything while it runs. A
+  failover can lose up to one interval; a node taking over first gets the last changes from the
+  node that ran it, if it answers. This suits apps with more data than you'd copy whole, like
+  Jellyfin's `config` (keep the media itself on a cluster share).
 
 **Ports only on the virtual IP** publishes the app's ports on that address only, so it isn't
 reachable on the nodes' own addresses. Nothing is blocked by a firewall; the ports just aren't
