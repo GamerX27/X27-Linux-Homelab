@@ -69,6 +69,7 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
     const sharedOK = check && check.check.problems.length === 0;
     clear(data, MODES.map(([v, l]) => h('button.seg-btn', { type: 'button', role: 'tab',
       class: v === mode ? 'active' : '', 'aria-selected': String(v === mode), disabled: v === 'shared' && check && !sharedOK,
+      title: v === 'shared' && check && !sharedOK ? `Not all of its data is on cluster shares:\n${check.check.problems.join('\n')}` : null,
       onclick: () => { mode = v; drawMode(); drawReport(); } }, l)));
     if (copies(mode)) setIntervals(interval, mode, Number(interval.value));
     ivLabel.textContent = mode === 'synced' ? 'Send changes every' : 'Copy every';
@@ -81,7 +82,7 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
       mode === 'shared'
         ? (c.problems.length
           ? h('div.notice.warn', h('strong', 'Not all of its data is on cluster shares on every member:'), h('ul', c.problems.map((p) => h('li', p))),
-            'Use synced or replicated, or move that data to a cluster share.')
+            'Choose Synced to keep that data on each node\'s own disk, the same on every member, or move it to a cluster share.')
           : h('div.notice', `All of its data is on ${c.shares.length ? `the cluster share${c.shares.length > 1 ? 's' : ''} ${c.shares.join(', ')}` : 'cluster shares'}. A failover starts it on the next member at once.`))
         : mode === 'synced'
           ? h('div.notice', 'Every ', h('strong', minutes(Number(interval.value))), ', the files of its folder and named volumes that changed are sent to ',
@@ -92,6 +93,10 @@ export async function makeHADialog({ stack = '', node = '', onDone } = {}) {
           : h('div.notice', 'Its whole folder and named volumes are copied to ', check.members.filter((n) => n !== check.holderName).join(', ') || 'the other members',
             ' every ', h('strong', minutes(Number(interval.value))), '. A failover can lose up to that much. The app is paused while each copy is taken, so keep big data on a cluster share.',
             c.warnings.length ? h('ul', c.warnings.map((w) => h('li', w))) : null),
+      mode !== 'shared' && c.problems.length ? h('details',
+        h('summary.muted', 'Why not shared?'),
+        h('ul', c.problems.map((p) => h('li', p))),
+        h('p.faint', { style: { margin: 0 } }, 'Shared needs every bind on a NAS share (/var/mnt/<share>/…). To keep that data on the nodes\' own disks instead, choose Synced: the same folder on every member, kept in step.')) : null,
       check.ports.length ? h('p.faint', { style: { margin: 0 } }, `Published ports: ${check.ports.join(', ')}.`) : null);
   };
   interval.addEventListener('change', drawReport);
