@@ -12,7 +12,7 @@ import { renderSettings } from './views/settings.js';
 import { renderRollout } from './views/rollout.js';
 import { renderUsers } from './views/users.js';
 import { renderLogs } from './views/logs.js';
-import { renderActivity } from './views/activity.js';
+import { renderActivity } from './views/changes.js';
 import { renderIntegrations } from './views/integrations.js';
 import { renderBackups, renderExport } from './views/backup.js';
 import { renderGroup } from './views/group.js';

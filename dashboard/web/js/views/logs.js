@@ -1,5 +1,5 @@
 import { h, clear } from '../ui.js';
-import { logView } from '../logview.js';
+import { logView } from '../lineview.js';
 
 const QUICK = [
   ['', 'Everything'], ['kernel', 'Kernel'], ['dashboard.service', 'Dashboard'], ['autoupdate.service', 'Automatic updates'],

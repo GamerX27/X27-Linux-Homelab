@@ -1,7 +1,7 @@
 import { h, clear, bytes, busy, confirmAction, modal, toast, icon, pct, when, menu, menuOpen, modalOpen, showLiveLog } from '../ui.js';
 import { openStackEditor, showStackLog, STACK_ACTION, stackJobRunning, stackJobLine, stackJobResult } from './stackeditor.js';
 import { backupNow } from './backup.js';
-import { logView, guessLevel } from '../logview.js';
+import { logView, guessLevel } from '../lineview.js';
 import { moveStackDialog, showMove, runningMoves } from './move.js';
 
 const SECTIONS = ['Apps', 'Images', 'Storage'];

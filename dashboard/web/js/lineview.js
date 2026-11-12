@@ -1,5 +1,6 @@
 import { h, clear, icon, toast } from './ui.js';
 
+// The file isn't called logview.js: ad blockers refuse to load scripts with "log" in the name.
 // A log viewer shared by the journal (System → Logs) and container logs: a dark list of
 // lines with a time, a source and a message, search with highlighted matches, follow,
 // line wrap, download, and colours by level (0 emergency … 7 debug, like syslog).
