@@ -174,6 +174,9 @@ func (r *Shares) node(st State, n NodeInfo, ids []string) []NodeShare {
 		case !ok:
 			verb = "add"
 			err = r.nodes.JSON("", n.ID, "POST", "/storage/mounts", mountBody{w, sh.Password}, nil, 2*time.Minute)
+		case !cur.Cluster && cur.Type == w.Type && cur.Server == w.Server && cur.Path == w.Path:
+			// The same share, unmarked: a dashboard from before cluster shares mounted it.
+			res.State, res.Error = "failed", fmt.Sprintf("%s mounted it but didn't mark it as a cluster share; its dashboard is probably older. Update %s, then remove the share there (Files → Network shares) so the cluster adds it again", n.Name, n.Name)
 		case !cur.Cluster:
 			res.State, res.Error = "failed", fmt.Sprintf("%s already has a share named %s of its own; rename or remove it there", n.Name, sh.Name)
 		case differs(cur, w) || (seen && gen != sh.PassGen) || (w.Type == "smb" && !w.Guest && !cur.HasPassword):

@@ -20,11 +20,13 @@ import (
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/activity"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/cluster"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/network"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/nodes"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/presets"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/tlsutil"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/vip"
 )
 
 type Options struct {
@@ -128,11 +130,26 @@ func NewMain(o Options) (http.Handler, error) {
 			Online  bool     `json:"online"`
 			Error   string   `json:"error,omitempty"`
 			Summary *Summary `json:"summary,omitempty"`
+			// A member standing in: StandIn on this node; Absent on the main node it stands
+			// in for, which it can't manage (Up: it answers anyway).
+			StandIn bool `json:"standIn,omitempty"`
+			Absent  bool `json:"absent,omitempty"`
+			Up      bool `json:"up,omitempty"`
 		}
 		host, _ := os.Hostname()
 		ls := local.summary()
 		out := []entry{{Public: nodes.Public{ID: "local", Name: host, Address: "this node", Fingerprint: fingerprint},
-			Local: true, Online: true, Summary: &ls}}
+			Local: true, Online: true, Summary: &ls, StandIn: o.StandbyFor != ""}}
+		if o.StandbyFor != "" {
+			m := entry{Public: nodes.Public{ID: standInMainID, Name: o.StandbyFor, Address: vip.Load().MainAddr}, Absent: true}
+			if mainUp(store, fingerprint) {
+				m.Up = true
+				m.Error = fmt.Sprintf("%s is up, but %s holds the virtual IP. Manage %s on its own address, or move the virtual IP back to it under Cluster.", o.StandbyFor, host, o.StandbyFor)
+			} else {
+				m.Error = fmt.Sprintf("%s doesn't answer: it's down, or %s can't reach it. %s holds the virtual IP and shows its dashboard here meanwhile.", o.StandbyFor, host, host)
+			}
+			out = append(out, m)
+		}
 		list := store.List()
 		rest := make([]entry, len(list))
 		var wg sync.WaitGroup
@@ -378,6 +395,21 @@ func NewMain(o Options) (http.Handler, error) {
 		api.ServeHTTP(w, withVia(withUser(r, s.User), "web"))
 	}))
 	return securityHeaders(fakeReboot(mux)), nil
+}
+
+// standInMainID is the main node in a stand-in's node list.
+const standInMainID = "main-node"
+
+// mainUp asks the main node's cluster API (with the cluster's secret) whether it answers;
+// fingerprint is the main node's certificate, which the stand-in serves too.
+func mainUp(store *nodes.Store, fingerprint string) bool {
+	v, st := vip.Load(), cluster.Load()
+	if v.MainAddr == "" || st.Secret == "" {
+		return false
+	}
+	var ls cluster.LocalStatus
+	n := nodes.Node{ID: "cluster-main", Name: v.MainName, Address: v.MainAddr, Token: st.Secret, Fingerprint: fingerprint}
+	return store.GetJSON(n, "/cluster/local", 3*time.Second, &ls) == nil
 }
 
 // NewNode serves only the API, to the one main node holding its token, plus /pair.

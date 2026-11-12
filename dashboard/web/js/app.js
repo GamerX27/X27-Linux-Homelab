@@ -119,10 +119,9 @@ function showApp() {
   app.addEventListener('click', (e) => { if (e.target.closest('.side-link, .nav-scrim')) app.classList.remove('nav-open'); });
   shell = { app, nav, main };
   // A standby holding the virtual IP while the main node is down.
-  const standby = state.me.standbyFor ? h('div.standby-banner', { role: 'status' },
-    h('strong', `Standing in for ${state.me.standbyFor}.`),
-    ` ${state.me.hostname} holds the virtual IP and shows ${state.me.standbyFor}'s dashboard here. Changes to nodes, API tokens and cluster settings made here aren't kept; make them on ${state.me.standbyFor}.`) : null;
-  clear(root, standby, app);
+  shell.banner = state.me.standbyFor ? h('div.standby-banner', { role: 'status' }) : null;
+  drawBanner();
+  clear(root, shell.banner, app);
   refreshNodes();
   clearInterval(state.nodesTimer);
   state.nodesTimer = setInterval(refreshNodes, 15000);
@@ -174,6 +173,7 @@ async function logout() {
 }
 
 function nodeStatus(n) {
+  if (n.absent && n.up) return ['warn', 'Up, not managed here'];
   if (!n.online) return ['crit', 'Offline'];
   if (autoPending(n.summary)) return ['good', `Online · update installs ${nextRun(n.summary.autoUpdateNext)}`];
   if (n.summary?.updateAvailable) return ['warn', 'OS update available'];
@@ -192,7 +192,22 @@ async function refreshNodes() {
   }
   renderNav();
   drawHead();
+  drawBanner();
   document.dispatchEvent(new CustomEvent('nodes', { detail: state.nodes }));
+}
+
+// A member holding the virtual IP while the main node is away: which nodes don't answer.
+function drawBanner() {
+  if (!shell?.banner) return;
+  const main = state.me.standbyFor;
+  const off = state.nodes.filter((n) => !n.online && !(n.absent && n.up)).map((n) => n.name);
+  const mainUp = state.nodes.some((n) => n.absent && n.up);
+  clear(shell.banner,
+    h('strong', `Standing in for ${main}.`),
+    ` ${state.me.hostname} holds the virtual IP and shows ${main}'s dashboard here`,
+    mainUp ? `, though ${main} is up again (move the virtual IP back under Cluster). ` : '. ',
+    off.length ? h('strong', `Offline: ${off.join(', ')}. `) : null,
+    `Changes to nodes, API tokens and cluster settings made here aren't kept; make them on ${main}.`);
 }
 
 function renderNav() {
@@ -200,7 +215,7 @@ function renderNav() {
   const cur = parseRoute();
   clear(shell.nav, state.nodes.map((n) => {
     const [cls, label] = nodeStatus(n);
-    return h('a.side-link', { href: `#/n/${n.id}/overview`, class: cur.id === n.id ? 'active' : '', title: `${n.name}: ${label}` },
+    return h('a.side-link', { href: n.absent ? '#/' : `#/n/${n.id}/overview`, class: cur.id === n.id ? 'active' : '', title: n.absent ? n.error : `${n.name}: ${label}` },
       h('span.dot', { class: cls, 'aria-label': label }), h('span.name', n.name),
       n.summary?.updateAvailable && !autoPending(n.summary) ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
@@ -225,7 +240,8 @@ function drawHead() {
       n.summary?.info?.prettyName ? h('span', `· ${n.summary.info.prettyName}`) : null,
       n.summary?.channel ? h('a.badge', { class: n.summary.channel === 'stable' ? '' : 'warn', href: `#/n/${encodeURIComponent(n.id)}/updates`,
         title: 'Release channel' }, n.summary.channel) : null,
-      n.local ? h('span.badge', 'main node') : h('span.faint', `· ${n.address || ''}`)));
+      n.standIn ? h('span.badge.warn', `standing in for ${state.me.standbyFor}`)
+      : n.local ? h('span.badge', 'main node') : h('span.faint', `· ${n.address || ''}`)));
 }
 
 function parseRoute() {

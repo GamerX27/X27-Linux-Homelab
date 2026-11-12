@@ -289,7 +289,8 @@ export function renderCluster(el, { menuButton }) {
         h('td', per.length ? h('div.node-chips', per.map((n) => {
           const [cls, label] = SHARE_STATES[n.state] || ['idle', n.state || 'unknown'];
           return h('span.status', { class: cls, title: n.error || '' }, `${n.name}: ${label}`);
-        })) : h('span.faint', 'checking…')),
+        })) : h('span.faint', 'checking…'),
+        per.filter((n) => n.error).map((n) => h('div.sub.error-text', { style: { whiteSpace: 'pre-wrap' } }, `${n.name}: ${n.error}`))),
         h('td.actions', menu([
           { label: 'Edit…', disabled: ro(), onclick: () => shareEdit(sh) },
           { label: 'Try again on every node', disabled: ro(), onclick: async () => {

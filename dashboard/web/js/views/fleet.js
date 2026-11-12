@@ -56,7 +56,7 @@ const go = (id, tab) => (e) => { e.stopPropagation(); location.hash = `#/n/${id}
 
 function nodeCard(n, refreshNodes) {
   const s = n.summary;
-  const actions = n.local ? null : menu([
+  const actions = n.local || n.absent ? null : menu([
     { label: 'Rename', onclick: async () => {
       const input = h('input', { type: 'text', value: n.name });
       const v = await modal('Rename node', h('label.field', 'Name', input), [
@@ -75,7 +75,8 @@ function nodeCard(n, refreshNodes) {
     } },
   ], `Actions for ${n.name}`);
 
-  const status = !n.online ? h('span.status.crit', 'Offline')
+  const status = n.absent && n.up ? h('span.status.warn', 'Up, not managed here')
+    : !n.online ? h('span.status.crit', 'Offline')
     : s?.updating ? h('span.status.warn', 'Updating OS…')
     : s?.channelSwitch ? h('span.status.warn', `Downloading ${switchProgress(s.channelSwitch).name}…`)
     : s?.updateStaged ? h('span.status.warn', 'Update downloaded, reboot to apply')
@@ -118,15 +119,19 @@ function nodeCard(n, refreshNodes) {
     content = h('div.notice', n.error || 'Not reachable.');
   }
 
-  return h('div.card.node-card', { class: n.online ? '' : 'offline', tabindex: 0, role: 'link',
-    onclick: (e) => { if (!e.target.closest('button, a, .menu')) location.hash = `#/n/${n.id}/overview`; },
-    onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) location.hash = `#/n/${n.id}/overview`; } },
+  // The main node a stand-in shows can't be opened from here.
+  const open = n.absent ? null : `#/n/${n.id}/overview`;
+  return h('div.card.node-card', { class: n.online ? '' : 'offline', tabindex: open ? 0 : null, role: open ? 'link' : null,
+    onclick: (e) => { if (open && !e.target.closest('button, a, .menu')) location.hash = open; },
+    onkeydown: (e) => { if (open && e.key === 'Enter' && e.target === e.currentTarget) location.hash = open; } },
   h('div.top',
     h('div', { style: { flex: 1, minWidth: 0 } },
-      h('div.row', { style: { gap: '8px' } }, h('span.title', n.name), n.local ? h('span.badge', 'main') : null,
+      h('div.row', { style: { gap: '8px' } }, h('span.title', n.name),
+        n.standIn ? h('span.badge.warn', { title: 'Holds the virtual IP and shows the main node\'s dashboard while it\'s away' }, 'standing in')
+        : n.local || n.absent ? h('span.badge', 'main') : null,
         s?.channel && s.channel !== 'stable' ? h('span.badge.warn', { title: 'Release channel' }, s.channel) : null,
         s?.channelOutdated ? h('span.badge.crit', { title: 'Runs an end-of-life OS version that gets no more updates. Move it on its Updates page.' }, 'end of life') : null),
-      h('div.addr', n.local ? 'this node' : n.address)),
+      h('div.addr', n.local ? 'this node' : n.address || 'main node')),
     status, actions),
   content);
 }
@@ -204,7 +209,10 @@ async function pollUntil(fn, everyMs, maxMs) {
 
 function progressList(map, nodesById) {
   if (!map.size) return null;
-  return h('ul.progress-list', [...map].map(([id, p]) => h('li',
+  // Only nodes in the list now: after the virtual IP moved, this page may be another node's.
+  const rows = [...map].filter(([id]) => nodesById.has(id));
+  if (!rows.length) return null;
+  return h('ul.progress-list', rows.map(([id, p]) => h('li',
     h('span', { class: `status ${p.cls}` }, nodesById.get(id)?.name || id),
     h('span.muted', p.msg),
     p.log ? h('button.link-btn', { onclick: () => modal(`Log: ${nodesById.get(id)?.name || id}`, h('pre.output', p.log),
