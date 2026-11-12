@@ -250,9 +250,26 @@ several nodes at once, switch their channel, and update containers on all nodes.
 | Files | **Files:** your home folder: browse, edit, upload, download, rename, delete, with the same permissions as over SSH; compress to zip, tar.gz or tar.zst and extract (see what's inside first, then pick where it goes and what happens to files that already exist), in the background with progress and Cancel. **Network shares:** NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
 | Backup | **Backups:** apps archived on a schedule or now, kept per app. **Export & import:** every app's config plus the server's own settings in one file, and restoring it here or on a new server |
 | Terminal | A shell in the browser, as your user |
-| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint. **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download. **Activity:** who changed what and when, on this node or every node: dashboard actions, API token (MCP) actions, logins and pairings, and whether each worked |
+| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint; on the main node, a [virtual IP](#a-virtual-ip-for-the-dashboard). **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download. **Activity:** who changed what and when, on this node or every node: dashboard actions, API token (MCP) actions, logins and pairings, and whether each worked |
 
 Each sub-tab has its own address, like `#/n/<node>/system/logs`, so a reload stays on it.
+
+### A virtual IP for the dashboard
+
+**System → Settings → Virtual IP** on the main node gives the dashboard one extra address on
+your LAN that keeps working when the main node is down. The main node holds it. A standby node
+you pick takes it over within a few seconds if the main node, or its dashboard, stops. The
+standby then shows the full dashboard on that address, with the main node's certificate and
+the paired nodes and API tokens the main node last copied to it (it does so every minute). When
+the main node is back, it takes the address back after 30 seconds.
+
+- Both nodes must be on the same network (VRRP through keepalived, unicast between them), and
+  the standby must be paired by its IPv4 address. Pick a free address in that subnet.
+- Setting it up makes the main node's certificate again so it includes the address. Browsers
+  and MCP clients see a new fingerprint once.
+- Changes made on the standby while it stands in (new nodes, API tokens) aren't kept. Apps
+  don't move with it: use [Moving an app](#moving-an-app-to-another-node) for that.
+- Logins are checked on the standby, so your user needs an account there too.
 
 ### Moving an app to another node
 

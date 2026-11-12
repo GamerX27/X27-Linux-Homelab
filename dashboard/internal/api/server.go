@@ -35,6 +35,11 @@ type Options struct {
 	Web     fs.FS
 	Auth    auth.Authenticator
 	Presets string // repository URL for compose presets (main node)
+
+	// A standby holding the virtual IP serves both: one Local for the two, and the main
+	// node's name for the banner saying it stands in.
+	Local      *Local
+	StandbyFor string
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -57,7 +62,10 @@ func NewMain(o Options) (http.Handler, error) {
 		return nil, err
 	}
 	// Same-origin websockets only (gorilla's default origin check).
-	local := NewLocal(o.Version, o.Dev, &websocket.Upgrader{})
+	local := o.Local
+	if local == nil {
+		local = NewLocal(o.Version, o.Dev, &websocket.Upgrader{})
+	}
 	local.Fingerprint = tlsutil.Fingerprint(o.Cert)
 	localAPI := local.Handler()
 	sessions := auth.NewManager(o.Auth, !o.Dev)
@@ -108,7 +116,7 @@ func NewMain(o Options) (http.Handler, error) {
 		host, _ := os.Hostname()
 		writeJSON(w, http.StatusOK, map[string]string{"user": s.User, "csrf": s.CSRF,
 			"version": o.Version, "hostname": host, "fingerprint": fingerprint,
-			"gravatar": profiles.Gravatar(s.User)})
+			"gravatar": profiles.Gravatar(s.User), "standbyFor": o.StandbyFor})
 	})
 
 	api := http.NewServeMux()
@@ -327,6 +335,9 @@ func NewMain(o Options) (http.Handler, error) {
 	})
 	rolloutRoutes(api, local, store)
 	moveMainRoutes(api, localAPI, store)
+	if o.StandbyFor == "" {
+		vipMainRoutes(api, local, store)
+	}
 	tokens, _, err := aiRoutes(mux, api, o)
 	if err != nil {
 		return nil, err
@@ -366,7 +377,10 @@ func NewMain(o Options) (http.Handler, error) {
 // NewNode serves only the API, to the one main node holding its token, plus /pair.
 func NewNode(o Options) http.Handler {
 	// The main node proxies browser websockets; the bearer token is the protection here.
-	local := NewLocal(o.Version, o.Dev, &websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }})
+	local := o.Local
+	if local == nil {
+		local = NewLocal(o.Version, o.Dev, &websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }})
+	}
 	fingerprint := tlsutil.Fingerprint(o.Cert)
 	local.Fingerprint = fingerprint
 	localAPI := local.Handler()
@@ -455,4 +469,22 @@ func NewNode(o Options) http.Handler {
 		http.StripPrefix("/api/v1", localAPI).ServeHTTP(w, withVia(withUser(r, r.Header.Get(nodes.UserHeader)), via))
 	}))
 	return securityHeaders(mux)
+}
+
+// NewSharedLocal is one Local for a standby that serves the node API and the dashboard.
+func NewSharedLocal(version string, dev bool) *Local {
+	return NewLocal(version, dev, &websocket.Upgrader{})
+}
+
+// StandbyHandler is a standby holding the virtual IP: the node API (for a main node that's
+// back) and everything else from the dashboard it stands in for.
+func StandbyHandler(node, main http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/api/v1/") || p == "/pair" || p == "/unpair" {
+			node.ServeHTTP(w, r)
+			return
+		}
+		main.ServeHTTP(w, r)
+	})
 }

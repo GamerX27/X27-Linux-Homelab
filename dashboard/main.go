@@ -29,6 +29,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/osupdate"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/storage"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/tlsutil"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/vip"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/web"
 )
 
@@ -323,6 +324,14 @@ func serve(args []string) {
 		log.Fatalf("certificate: %v", err)
 	}
 	activity.Init(filepath.Join(config.StateDir, "activity.jsonl"))
+	// The virtual IP comes and goes; it's never one of the node's own addresses.
+	tlsutil.Skip, network.SkipAddress = vip.IsVIP, vip.IsVIP
+	vip.Fake = *dev && os.Getenv("DASHBOARD_FAKE_VIP") == "1"
+	if v := vip.Load(); cfg.Mode == config.ModeMain && v.Enabled && v.Role == vip.RoleMain {
+		if c, _, err = tlsutil.EnsureIPs(filepath.Join(config.StateDir, "tls"), []string{v.Address}); err != nil {
+			log.Fatalf("certificate: %v", err)
+		}
+	}
 	fakeOS := os.Getenv("DASHBOARD_FAKE_OS")
 	osupdate.Fake = *dev && (fakeOS == "1" || fakeOS == "fail")
 	osupdate.FakeFail = osupdate.Fake && fakeOS == "fail"
@@ -339,6 +348,7 @@ func serve(args []string) {
 	}
 
 	var h http.Handler
+	var standbyCert *tls.Certificate
 	switch cfg.Mode {
 	case config.ModeMain:
 		if h, err = api.NewMain(opts); err != nil {
@@ -346,6 +356,27 @@ func serve(args []string) {
 		}
 	case config.ModeNode:
 		h = api.NewNode(opts)
+		// A standby holding the virtual IP stands in for the main node there, with its
+		// certificate and its copy of the paired nodes and tokens.
+		if v := vip.Load(); v.Enabled && v.Role == vip.RoleStandby && vip.Holds() {
+			mainCert, err := tls.LoadX509KeyPair(filepath.Join(vip.StandbyTLSDir(), "cert.pem"), filepath.Join(vip.StandbyTLSDir(), "key.pem"))
+			if err != nil {
+				log.Printf("virtual IP: holding it, but there's no copy of the main node's state yet: %v", err)
+				break
+			}
+			shared := api.NewSharedLocal(version, *dev)
+			nodeOpts, mainOpts := opts, opts
+			nodeOpts.Local, mainOpts.Local = shared, shared
+			mainOpts.Mode, mainOpts.Cert, mainOpts.StandbyFor = config.ModeMain, mainCert, v.MainName
+			mainH, err := api.NewMain(mainOpts)
+			if err != nil {
+				log.Printf("virtual IP: can't stand in for the main node: %v", err)
+				break
+			}
+			h = api.StandbyHandler(api.NewNode(nodeOpts), mainH)
+			standbyCert = &mainCert
+			log.Printf("virtual IP: holding %s, standing in for %s", v.Address, v.MainName)
+		}
 	default:
 		log.Fatalf("unknown mode %q", cfg.Mode)
 	}
@@ -359,6 +390,17 @@ func serve(args []string) {
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{c}, MinVersion: tls.VersionTLS12},
+	}
+	if standbyCert != nil {
+		// The main node's certificate on the virtual IP, this node's own everywhere else (the
+		// main node pins that one).
+		srv.TLSConfig.Certificates = nil
+		srv.TLSConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if a, ok := hello.Conn.LocalAddr().(*net.TCPAddr); ok && vip.IsVIP(a.IP.String()) {
+				return standbyCert, nil
+			}
+			return &c, nil
+		}
 	}
 	log.Printf("dashboard %s (%s) listening on %s, certificate %s", version, cfg.Mode, srv.Addr, tlsutil.Fingerprint(c))
 	if *dev && cfg.Mode == config.ModeMain {

@@ -85,8 +85,10 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
-func readJSON(r *http.Request, v any) error {
-	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(v); err != nil {
+func readJSON(r *http.Request, v any) error { return readJSONLimit(r, v, 1<<20) }
+
+func readJSONLimit(r *http.Request, v any, limit int64) error {
+	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit)).Decode(v); err != nil {
 		return errors.New("bad request body")
 	}
 	return nil
@@ -1053,6 +1055,7 @@ func (l *Local) Handler() http.Handler {
 	l.storageRoutes(mux)
 	l.networkRoutes(mux)
 	l.moveRoutes(mux)
+	l.vipRoutes(mux)
 	return mux
 }
 

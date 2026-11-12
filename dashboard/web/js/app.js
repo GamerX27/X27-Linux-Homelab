@@ -116,7 +116,11 @@ function showApp() {
     main);
   app.addEventListener('click', (e) => { if (e.target.closest('.side-link, .nav-scrim')) app.classList.remove('nav-open'); });
   shell = { app, nav, main };
-  clear(root, app);
+  // A standby holding the virtual IP while the main node is down.
+  const standby = state.me.standbyFor ? h('div.standby-banner', { role: 'status' },
+    h('strong', `Standing in for ${state.me.standbyFor}.`),
+    ` ${state.me.hostname} holds the virtual IP while ${state.me.standbyFor} is down. Changes to nodes and API tokens made here aren't kept when it's back.`) : null;
+  clear(root, standby, app);
   refreshNodes();
   clearInterval(state.nodesTimer);
   state.nodesTimer = setInterval(refreshNodes, 15000);

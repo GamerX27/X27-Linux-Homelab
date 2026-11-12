@@ -52,6 +52,10 @@ type Pending struct {
 
 var mu sync.Mutex
 
+// SkipAddress leaves an address out of a connection's current ones (the virtual IP, which
+// keepalived adds and takes away; it isn't part of the connection's settings).
+var SkipAddress func(ip string) bool
+
 func pendingPath() string { return filepath.Join(config.StateDir, "network-pending.json") }
 
 // kinds are the connection types shown; Docker's bridges and veths are left out by name.
@@ -144,7 +148,11 @@ func parseDetail(c *Conn, out string) {
 		case "ipv4.ignore-auto-dns":
 			c.IgnoreAutoDNS = v == "yes"
 		case "IP4.ADDRESS":
-			c.Current.Addresses = append(c.Current.Addresses, list(v)...)
+			for _, a := range list(v) {
+				if h, _, _ := strings.Cut(a, "/"); SkipAddress == nil || !SkipAddress(h) {
+					c.Current.Addresses = append(c.Current.Addresses, a)
+				}
+			}
 		case "IP4.GATEWAY":
 			c.Current.Gateway = v
 		case "IP4.DNS":

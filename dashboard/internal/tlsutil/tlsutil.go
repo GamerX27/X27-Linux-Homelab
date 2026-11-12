@@ -23,12 +23,43 @@ import (
 	"time"
 )
 
+// Skip leaves an address out of LocalIPs (the virtual IP, which comes and goes).
+var Skip func(ip string) bool
+
 // Ensure loads dir/cert.pem + dir/key.pem, making them first if needed.
 func Ensure(dir string) (tls.Certificate, error) {
+	c, _, err := EnsureIPs(dir, nil)
+	return c, err
+}
+
+// EnsureIPs is Ensure for a certificate that must also name these addresses (the virtual
+// IP): one that doesn't is made again, with a new fingerprint. changed says it was.
+func EnsureIPs(dir string, extra []string) (c tls.Certificate, changed bool, err error) {
 	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
 	if c, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		return c, nil
+		if leaf, err := x509.ParseCertificate(c.Certificate[0]); err == nil && hasIPs(leaf, extra) {
+			return c, false, nil
+		}
 	}
+	c, err = generate(dir, extra)
+	return c, err == nil, err
+}
+
+func hasIPs(leaf *x509.Certificate, ips []string) bool {
+	for _, want := range ips {
+		found := false
+		for _, have := range leaf.IPAddresses {
+			found = found || have.String() == want
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func generate(dir string, extra []string) (tls.Certificate, error) {
+	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return tls.Certificate{}, err
 	}
@@ -48,8 +79,10 @@ func Ensure(dir string) (tls.Certificate, error) {
 		BasicConstraintsValid: true,
 		DNSNames:              []string{host, "localhost"},
 	}
-	for _, ip := range LocalIPs() {
-		tmpl.IPAddresses = append(tmpl.IPAddresses, net.ParseIP(ip))
+	for _, ip := range append(LocalIPs(), extra...) {
+		if p := net.ParseIP(ip); p != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, p)
+		}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -123,7 +156,7 @@ func LocalIPs() []string {
 		addrs, _ := i.Addrs()
 		for _, a := range addrs {
 			ipn, ok := a.(*net.IPNet)
-			if !ok || ipn.IP.IsLinkLocalUnicast() {
+			if !ok || ipn.IP.IsLinkLocalUnicast() || Skip != nil && Skip(ipn.IP.String()) {
 				continue
 			}
 			out = append(out, ipn.IP.String())

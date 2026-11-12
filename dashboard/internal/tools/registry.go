@@ -377,6 +377,29 @@ var All = []Tool{
 	{Name: "move_status", Scope: Read, Params: map[string]any{},
 		Description: "The stack moves between nodes that are running or ran recently: their step, how much is copied, warnings, errors and log.",
 		Run:         func(c Call) (any, error) { return passthrough(c.get("/api/move")) }},
+	{Name: "vip_status", Scope: Read, Params: map[string]any{},
+		Description: "The dashboard's virtual IP: its address, the standby node, which node holds it now, and when the main node last copied its state to the standby.",
+		Run:         func(c Call) (any, error) { return passthrough(c.get("/api/vip")) }},
+	{Name: "set_vip", Scope: Admin,
+		Params: map[string]any{
+			"enabled": boolean("On, or off on both nodes."),
+			"address": str("A free IPv4 address in the same subnet as the main node and the standby, like 192.168.1.50."),
+			"prefix":  integer("The subnet's prefix length, like 24."),
+			"standby": str("The node (id or name from list_nodes) that takes the address over while the main node is down."),
+		},
+		Required:    []string{"enabled"},
+		Description: "Set up or turn off the dashboard's virtual IP. The main node's certificate is made again to include the address, and its dashboard restarts.",
+		Run: func(c Call) (any, error) {
+			body := map[string]any{"enabled": c.boolean("enabled"), "address": c.str("address"), "prefix": c.num("prefix", 24)}
+			if sb := c.str("standby"); sb != "" {
+				id, err := c.resolveNode(sb)
+				if err != nil {
+					return nil, err
+				}
+				body["standby"] = id
+			}
+			return output(c.post("/api/vip", body))
+		}},
 	{Name: "container_updates", Scope: Read, Params: with(nil),
 		Description: "Which container images on a node have a newer version in their registry, which containers and stacks use them, and the running or last update job.",
 		Run:         func(c Call) (any, error) { return passthrough(c.nodeGet("/docker/updates")) }},
