@@ -27,6 +27,10 @@ var (
 // marker is the first line of every file the dashboard writes; files without it aren't ours.
 const marker = "# Managed by dashboard"
 
+// clusterMarker is the second line of a cluster share's unit: the main node's Cluster page
+// owns it, so the node's own Network shares page doesn't change or remove it.
+const clusterMarker = "# Cluster share"
+
 // escapePath is `systemd-escape --path`: the unit name systemd expects for a mount point
 // ("/var/mnt/nas-media" → `var-mnt-nas\x2dmedia`). A unit with any other name is ignored.
 func escapePath(p string) string {

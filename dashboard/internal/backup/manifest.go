@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -54,6 +55,11 @@ type DashboardPart struct {
 
 type SharesPart struct {
 	Mounts []storage.Share `json:"mounts"`
+	// The main node's cluster shares (Cluster → Shared storage), with their passwords. They
+	// go back into the cluster settings, which mount them on the nodes again.
+	Cluster json.RawMessage `json:"cluster,omitempty"`
+	// ClusterNames are their names, for the import preview.
+	ClusterNames []string `json:"clusterNames,omitempty"`
 }
 
 type UpdatesPart struct {
@@ -140,6 +146,9 @@ type ServerHooks struct {
 	Restart func()           // restarts the dashboard after the port or presets changed; nil in --dev
 	Changed func()           // drops cached settings after the updates part was applied
 	Dev     bool             // --dev: the port is never changed
+	// The main node's cluster shares: export them, and import them into the cluster settings.
+	ClusterExport func() (json.RawMessage, []string)
+	ClusterImport func(json.RawMessage) (string, error)
 }
 
 // collect fills the server parts asked for from the same getters the UI uses. A part
@@ -167,7 +176,12 @@ func (m *Manager) collect(o docker.Owner, p Parts) Manifest {
 		man.Dashboard = d
 	}
 	if p.Shares {
-		man.Shares = &SharesPart{Mounts: storage.Export()}
+		// Cluster shares come from the cluster settings, not from this node's units.
+		sh := &SharesPart{Mounts: slices.DeleteFunc(storage.Export(), func(s storage.Share) bool { return s.Cluster })}
+		if m.Server.ClusterExport != nil {
+			sh.Cluster, sh.ClusterNames = m.Server.ClusterExport()
+		}
+		man.Shares = sh
 	}
 	if p.Updates {
 		all := features.Get()
@@ -257,6 +271,9 @@ func (man Manifest) Details() map[string]string {
 		var s []string
 		for _, m := range sh.Mounts {
 			s = append(s, m.Name+" ("+strings.ToUpper(m.Type)+")")
+		}
+		for _, n := range sh.ClusterNames {
+			s = append(s, n+" (cluster share)")
 		}
 		if len(s) == 0 {
 			s = []string{"none"}
@@ -367,7 +384,20 @@ func (m *Manager) importShares(sh *SharesPart) error {
 		have[x.Name] = true
 	}
 	var failed []string
+	if len(sh.Cluster) > 0 {
+		if m.Server.ClusterImport == nil {
+			m.logf("shares: the cluster shares (%s) are only taken by a main node", strings.Join(sh.ClusterNames, ", "))
+		} else if out, err := m.Server.ClusterImport(sh.Cluster); err != nil {
+			m.logf("shares: cluster shares: %v", err)
+			failed = append(failed, "cluster shares")
+		} else {
+			m.logf("shares: %s", out)
+		}
+	}
 	for _, s := range sh.Mounts {
+		if s.Cluster {
+			continue // the cluster settings mount it again
+		}
 		verb := "added"
 		if have[s.Name] {
 			verb = "changed"

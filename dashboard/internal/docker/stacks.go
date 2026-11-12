@@ -58,16 +58,17 @@ func LookupOwner(username string) (Owner, error) {
 func (o Owner) Root() string { return filepath.Join(o.Home, "docker") }
 
 type Stack struct {
-	Name       string   `json:"name"`
-	Dir        string   `json:"dir"`
-	File       string   `json:"file"`
-	InRoot     bool     `json:"inRoot"` // in ~/docker, so the UI may edit it
-	FilesExist bool     `json:"filesExist"`
-	Running    int      `json:"running"`
-	Total      int      `json:"total"`
-	Containers []string `json:"containers"`
-	Ports      []Port   `json:"ports"`
-	MovedTo    string   `json:"movedTo,omitempty"` // moved to this node; this copy is left stopped
+	Name       string    `json:"name"`
+	Dir        string    `json:"dir"`
+	File       string    `json:"file"`
+	InRoot     bool      `json:"inRoot"` // in ~/docker, so the UI may edit it
+	FilesExist bool      `json:"filesExist"`
+	Running    int       `json:"running"`
+	Total      int       `json:"total"`
+	Containers []string  `json:"containers"`
+	Ports      []Port    `json:"ports"`
+	MovedTo    string    `json:"movedTo,omitempty"` // moved to this node; this copy is left stopped
+	HA         *HAMarker `json:"ha,omitempty"`      // a high-availability app (see ha.go)
 }
 
 // MovedFile marks a stack folder that was moved to another node: its first line is that node.
@@ -110,7 +111,7 @@ func ListStacks(o Owner, cs []Container) []Stack {
 		if !ValidStackName(name) || byName[name] != nil {
 			continue
 		}
-		byName[name] = &Stack{Name: name, Dir: dir, File: f, InRoot: true, FilesExist: true, MovedTo: movedTo(dir)}
+		byName[name] = &Stack{Name: name, Dir: dir, File: f, InRoot: true, FilesExist: true, MovedTo: movedTo(dir), HA: ReadHA(dir)}
 	}
 	for _, p := range Projects(cs) {
 		s := byName[p.Name]
@@ -302,6 +303,10 @@ func (c *Client) stackProject(o Owner, name string, needsFiles bool) (Project, e
 	p := Project{Name: s.Name, Dir: s.Dir, FilesExist: true}
 	if s.File != "" {
 		p.Files = []string{s.File}
+		// An HA app's override (restart policy, ports on the virtual IP) comes with it.
+		if ov := filepath.Join(s.Dir, HAOverride); s.InRoot && exists(ov) {
+			p.Files = append(p.Files, ov)
+		}
 	}
 	return p, nil
 }
@@ -317,6 +322,10 @@ func stackSteps(action string) ([][]string, error) {
 		return [][]string{{"start"}}, nil
 	case "restart":
 		return [][]string{{"restart"}}, nil
+	case "pause": // freeze the containers for a consistent copy (replicated HA apps)
+		return [][]string{{"pause"}}, nil
+	case "unpause":
+		return [][]string{{"unpause"}}, nil
 	case "remove":
 		return [][]string{{"down"}}, nil
 	case "recreate":

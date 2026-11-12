@@ -51,6 +51,7 @@ export function icon(name, size = 18) {
     download: 'M12 3v12M7 10l5 5 5-5M5 21h14',
     upload: 'M12 21V9M7 14l5-5 5 5M5 3h14',
     plug: 'M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5',
+    cluster: 'M10 3h4v4h-4zM3 17h4v4H3zM17 17h4v4h-4zM12 7v5M5 17v-5h14v5',
   };
   const s = svg('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
     'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });

@@ -11,27 +11,30 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/nodes"
 )
 
-// A Bundle is what the main node copies to the standby so it can stand in: the paired
-// nodes (with their tokens), the API tokens, and the main node's certificate, so browsers
-// and MCP clients see the same one on the virtual IP whoever holds it.
+// A Bundle is what the main node copies to every other member of the virtual IP so it can
+// stand in: the paired nodes (with their tokens), the API tokens, the main node's
+// certificate (so browsers and MCP clients see the same one on the virtual IP whoever
+// holds it), and the cluster settings without their secrets.
 type Bundle struct {
 	MainName string          `json:"mainName"`
+	MainAddr string          `json:"mainAddr,omitempty"` // host:port where members reach the main node's cluster API
 	Nodes    []nodes.Node    `json:"nodes"`
 	Tokens   json.RawMessage `json:"tokens,omitempty"`
+	Cluster  json.RawMessage `json:"cluster,omitempty"`
 	Cert     []byte          `json:"cert"`
 	Key      []byte          `json:"key"`
 	At       int64           `json:"at"`
 }
 
-// StandbyTLSDir holds the main node's certificate on the standby.
+// StandbyTLSDir holds the main node's certificate on the other members.
 func StandbyTLSDir() string { return filepath.Join(config.StateDir, "standby-tls") }
 
-// MakeBundle collects the bundle on the main node, leaving out the standby's own entry (on
-// the standby, that node is "local").
-func MakeBundle(store *nodes.Store, standbyID, mainName string) (Bundle, error) {
+// MakeBundle collects the bundle on the main node, leaving out the member's own entry (on
+// the member, that node is "local").
+func MakeBundle(store *nodes.Store, memberID, mainName string) (Bundle, error) {
 	b := Bundle{MainName: mainName, At: time.Now().Unix(), Nodes: []nodes.Node{}}
 	for _, n := range store.List() {
-		if n.ID != standbyID {
+		if n.ID != memberID {
 			b.Nodes = append(b.Nodes, n)
 		}
 	}
@@ -59,12 +62,12 @@ func writeFile(p string, b []byte, mode os.FileMode) error {
 	return os.Rename(tmp, p)
 }
 
-// ReceiveBundle stores a bundle on the standby. Its dashboard reads it when it starts
-// serving the virtual IP.
+// ReceiveBundle stores a bundle on a member. Its dashboard reads it when it starts serving
+// the virtual IP. The cluster settings in it are the caller's to store.
 func ReceiveBundle(b Bundle) error {
 	c := Load()
-	if !c.Enabled || c.Role != RoleStandby {
-		return errors.New("this node isn't the virtual IP's standby")
+	if !c.Enabled || c.Role == RoleMain {
+		return errors.New("this node isn't a member of the virtual IP")
 	}
 	if len(b.Cert) == 0 || len(b.Key) == 0 {
 		return errors.New("the bundle has no certificate")
@@ -84,7 +87,7 @@ func ReceiveBundle(b Bundle) error {
 	if err := writeFile(filepath.Join(StandbyTLSDir(), "key.pem"), b.Key, 0o600); err != nil {
 		return err
 	}
-	c.MainName = b.MainName
+	c.MainName, c.MainAddr = b.MainName, b.MainAddr
 	c.SyncedAt = b.At
 	return save(c)
 }

@@ -378,27 +378,211 @@ var All = []Tool{
 		Description: "The stack moves between nodes that are running or ran recently: their step, how much is copied, warnings, errors and log.",
 		Run:         func(c Call) (any, error) { return passthrough(c.get("/api/move")) }},
 	{Name: "vip_status", Scope: Read, Params: map[string]any{},
-		Description: "The dashboard's virtual IP: its address, the standby node, which node holds it now, and when the main node last copied its state to the standby.",
-		Run:         func(c Call) (any, error) { return passthrough(c.get("/api/vip")) }},
+		Description: "The cluster's virtual IP: its address, the member nodes in priority order, which one holds it now, whether each member's keepalived runs, whether the address moves back to the first member by itself (failback), and when the main node last copied its state to each member.",
+		Run: func(c Call) (any, error) {
+			cl, err := clusterState(c)
+			if err != nil {
+				return nil, err
+			}
+			members := []map[string]any{}
+			for _, m := range cl.Members {
+				e := map[string]any{"node": m.NodeID, "name": m.Name, "priority": m.Priority, "online": m.Online}
+				if m.VIP != nil {
+					e["holds"], e["keepalived"] = m.VIP.Holds, m.VIP.Active
+					if m.VIP.Error != "" {
+						e["problem"] = m.VIP.Error
+					}
+				}
+				if m.Error != "" {
+					e["error"] = m.Error
+				}
+				if m.Sync != nil {
+					e["copiedAt"] = ago(m.Sync.At)
+					if m.Sync.Error != "" {
+						e["copyError"] = m.Sync.Error
+					}
+				}
+				members = append(members, e)
+			}
+			v := cl.State.VIP
+			return map[string]any{"enabled": v.Enabled, "address": v.Address, "prefix": v.Prefix, "failback": v.Failback,
+				"holder": cl.Holder, "members": members}, nil
+		}},
 	{Name: "set_vip", Scope: Admin,
 		Params: map[string]any{
-			"enabled": boolean("On, or off on both nodes."),
-			"address": str("A free IPv4 address in the same subnet as the main node and the standby, like 192.168.1.50."),
-			"prefix":  integer("The subnet's prefix length, like 24."),
-			"standby": str("The node (id or name from list_nodes) that takes the address over while the main node is down."),
+			"enabled":  boolean("On, or off on every member."),
+			"address":  str("A free IPv4 address in the same subnet as every member, like 192.168.1.50."),
+			"prefix":   integer("The subnet's prefix length, like 24."),
+			"members":  strList("Two or more nodes (ids or names from list_nodes), highest priority first. The main node may be left out."),
+			"failback": boolean("Move the address back to the first member by itself when it's healthy again. Leave off when there are HA apps: they'd restart on an out-of-date copy."),
 		},
 		Required:    []string{"enabled"},
-		Description: "Set up or turn off the dashboard's virtual IP. The main node's certificate is made again to include the address, and its dashboard restarts.",
+		Description: "Set up, change or turn off the cluster's virtual IP. The main node's certificate is made again to include the address, and its dashboard may restart.",
 		Run: func(c Call) (any, error) {
-			body := map[string]any{"enabled": c.boolean("enabled"), "address": c.str("address"), "prefix": c.num("prefix", 24)}
-			if sb := c.str("standby"); sb != "" {
-				id, err := c.resolveNode(sb)
+			body := map[string]any{"enabled": c.boolean("enabled"), "address": c.str("address"), "prefix": c.num("prefix", 24), "failback": c.boolean("failback")}
+			var ids []string
+			for _, m := range c.list("members") {
+				id, err := c.resolveNode(m)
 				if err != nil {
 					return nil, err
 				}
-				body["standby"] = id
+				ids = append(ids, id)
 			}
-			return output(c.post("/api/vip", body))
+			body["members"] = ids
+			return output(c.post("/api/cluster/vip", body))
+		}},
+	{Name: "vip_switchover", Scope: Admin,
+		Params:      map[string]any{"to": str("The member (id or name) that should hold the virtual IP.")},
+		Required:    []string{"to"},
+		Description: "Move the virtual IP to another member on purpose (also how it moves back when failback is off): the HA apps stop on the current holder, replicated ones send a final copy, and they start on the new holder.",
+		Run: func(c Call) (any, error) {
+			to, err := c.resolveNode(c.str("to"))
+			if err != nil {
+				return nil, err
+			}
+			return output(c.post("/api/cluster/switchover", map[string]any{"to": to}))
+		}},
+	{Name: "list_cluster_shares", Scope: Read, Params: map[string]any{},
+		Description: "Cluster shares: NFS/SMB shares the main node mounts at /var/mnt/<name> on every node or chosen nodes, so compose files can use the same path anywhere. Shows each share's server and path and its state on each node (mounted, failed, offline). Never includes passwords.",
+		Run: func(c Call) (any, error) {
+			cl, err := clusterState(c)
+			if err != nil {
+				return nil, err
+			}
+			out := []map[string]any{}
+			for _, sh := range cl.State.Shares {
+				nodes := sh.Nodes
+				if len(nodes) == 0 {
+					nodes = []string{"every node"}
+				}
+				out = append(out, map[string]any{"name": sh.Name, "type": sh.Type, "server": sh.Server, "path": sh.Path,
+					"mountPoint": "/var/mnt/" + sh.Name, "readOnly": sh.ReadOnly, "nodes": nodes, "state": cl.Shares[sh.Name]})
+			}
+			return out, nil
+		}},
+	{Name: "set_cluster_share", Scope: Admin,
+		Params: map[string]any{
+			"name":         str("Share name: lowercase letters, digits and dashes. It's mounted at /var/mnt/<name>."),
+			"remove":       boolean("Remove the share from the cluster and unmount it from every node."),
+			"type":         enum("nfs or smb.", "nfs", "smb"),
+			"server":       str("The NAS's hostname or IP address."),
+			"path":         str("NFS: the export, like /export/media. SMB: the share, like media."),
+			"version":      str("Protocol version; empty lets client and server agree."),
+			"read_only":    boolean("Mount read-only."),
+			"automount":    boolean("Mount on first access instead of at boot."),
+			"docker_waits": boolean("Docker waits for the share at boot (default on)."),
+			"nodes":        strList("Nodes (ids or names) to mount it on; empty for every node, including ones paired later."),
+			"username":     str("SMB user. The password can't be set from here: guest shares, or shares that already have a password, only."),
+			"domain":       str("SMB domain (workgroup)."),
+			"guest":        boolean("SMB guest access, without a user."),
+		},
+		Required:    []string{"name"},
+		Description: "Add, change or remove a cluster share. It's tested on one of its nodes first, then mounted on each; a node that's offline gets it when it's back.",
+		Run: func(c Call) (any, error) {
+			name := c.str("name")
+			if c.boolean("remove") {
+				return output(c.Do(c.User, "DELETE", "/api/cluster/shares/"+seg(name), nil))
+			}
+			cl, err := clusterState(c)
+			if err != nil {
+				return nil, err
+			}
+			var ids []string
+			for _, n := range c.list("nodes") {
+				id, err := c.resolveNode(n)
+				if err != nil {
+					return nil, err
+				}
+				ids = append(ids, id)
+			}
+			waits := true
+			if _, set := c.Args["docker_waits"]; set {
+				waits = c.boolean("docker_waits")
+			}
+			body := map[string]any{"name": name, "type": c.str("type"), "server": c.str("server"), "path": c.str("path"),
+				"version": c.str("version"), "readOnly": c.boolean("read_only"), "automount": c.boolean("automount"),
+				"dockerWaits": waits, "nodes": ids, "username": c.str("username"), "domain": c.str("domain"), "guest": c.boolean("guest")}
+			for _, sh := range cl.State.Shares {
+				if sh.Name == name {
+					return output(c.post("/api/cluster/shares/"+seg(name), body))
+				}
+			}
+			return output(c.post("/api/cluster/shares", body))
+		}},
+	{Name: "list_ha_apps", Scope: Read, Params: map[string]any{},
+		Description: "High-availability apps: stacks that run on whichever member holds the virtual IP. For each: where its data is (shared: on cluster shares; replicated: copied to the other members every interval), whether its ports are only on the virtual IP, and its state on each member (running, standby, waiting for another node's lock, failed), when it last started and how old each member's copy is.",
+		Run: func(c Call) (any, error) {
+			cl, err := clusterState(c)
+			if err != nil {
+				return nil, err
+			}
+			out := []map[string]any{}
+			for _, a := range cl.State.Apps {
+				per := []map[string]any{}
+				for _, m := range cl.Members {
+					if m.Local == nil {
+						continue
+					}
+					for _, as := range m.Local.Apps {
+						if as.Name != a.Name {
+							continue
+						}
+						e := map[string]any{"node": m.Name, "state": as.State, "running": as.Running}
+						if as.Detail != "" {
+							e["detail"] = as.Detail
+						}
+						if as.Lock != "" {
+							e["lock"] = as.Lock
+						}
+						if as.ActiveFrom > 0 {
+							e["lastStarted"] = ago(as.ActiveFrom)
+						}
+						if as.ReplicaAt > 0 {
+							e["copyTaken"] = ago(as.ReplicaAt)
+						}
+						per = append(per, e)
+					}
+				}
+				e := map[string]any{"stack": a.Name, "data": a.Data, "vipOnly": a.VIPOnly, "shares": a.Shares, "members": per}
+				if a.Data == "replicated" {
+					e["intervalMinutes"] = a.Interval / 60
+				}
+				out = append(out, e)
+			}
+			return out, nil
+		}},
+	{Name: "set_ha_app", Scope: Admin,
+		Params: map[string]any{
+			"stack":            str("Stack name, on the node that holds the virtual IP."),
+			"remove":           boolean("Make it an ordinary app again: it keeps running where it is; the other members' copies stay, stopped."),
+			"data":             enum("shared: all its data is on cluster shares on every member (instant failover). replicated: its folder and volumes are copied to the other members every interval (a failover can lose up to one interval).", "shared", "replicated"),
+			"interval_minutes": integer("Replicated: minutes between copies (default 15)."),
+			"vip_only":         boolean("Publish its ports only on the virtual IP, not on the nodes' own addresses."),
+		},
+		Required:    []string{"stack"},
+		Description: "Make a stack a high-availability app, change one, or make it ordinary again. Shared mode is refused if any of its data is on a node's own disk; the reply lists what.",
+		Run: func(c Call) (any, error) {
+			name := c.str("stack")
+			if c.boolean("remove") {
+				return output(c.Do(c.User, "DELETE", "/api/cluster/apps/"+seg(name), nil))
+			}
+			cl, err := clusterState(c)
+			if err != nil {
+				return nil, err
+			}
+			body := map[string]any{"name": name, "data": c.str("data"), "interval": c.num("interval_minutes", 15) * 60, "vipOnly": c.boolean("vip_only")}
+			for _, a := range cl.State.Apps {
+				if a.Name == name {
+					if body["data"] == "" {
+						body["data"] = a.Data
+					}
+					return output(c.post("/api/cluster/apps/"+seg(name), body))
+				}
+			}
+			if body["data"] == "" {
+				return nil, errors.New("choose data: shared or replicated")
+			}
+			return output(c.post("/api/cluster/apps", body))
 		}},
 	{Name: "container_updates", Scope: Read, Params: with(nil),
 		Description: "Which container images on a node have a newer version in their registry, which containers and stacks use them, and the running or last update job.",
@@ -628,7 +812,7 @@ var All = []Tool{
 	{Name: "mount_action", Scope: Admin,
 		Params:      with(map[string]any{"mount": str("Mount name from list_mounts."), "action": enum("mount · unmount (fails while containers use it).", "mount", "unmount")}),
 		Required:    []string{"mount", "action"},
-		Description: "Mount or unmount one of a node's NFS/SMB shares. Adding, changing and removing mounts is only possible in the dashboard.",
+		Description: "Mount or unmount one of a node's NFS/SMB shares. Adding, changing and removing a node's own mounts is only possible in the dashboard; cluster shares are set with set_cluster_share.",
 		Run: func(c Call) (any, error) {
 			return output(c.nodePost("/storage/mounts/"+seg(c.str("mount"))+"/"+c.str("action"), nil))
 		}},

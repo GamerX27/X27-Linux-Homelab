@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os/user"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/run"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/system"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/terminal"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/vip"
 )
 
 type ctxKey struct{}
@@ -464,7 +466,14 @@ func (l *Local) Handler() http.Handler {
 			return
 		}
 		cs, err := l.docker.Containers()
-		ok(w, map[string]any{"root": o.Root(), "stacks": docker.ListStacks(o, cs), "jobs": l.stackJobs.List()}, err)
+		stacks := docker.ListStacks(o, cs)
+		holds := vip.Holds()
+		for i := range stacks {
+			if stacks[i].HA != nil {
+				stacks[i].HA.Here = holds
+			}
+		}
+		ok(w, map[string]any{"root": o.Root(), "stacks": stacks, "jobs": l.stackJobs.List()}, err)
 	})
 	// The running or last background action on a stack, with its output.
 	mux.HandleFunc("GET /docker/stacks/{name}/log", func(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +510,12 @@ func (l *Local) Handler() http.Handler {
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
+		}
+		if body.Start && !create {
+			if err := haGuard(o, name); err != nil {
+				writeErr(w, http.StatusConflict, err)
+				return
+			}
 		}
 		out, err := docker.SaveStack(o, name, body.Compose, body.Env, create)
 		verb := "save"
@@ -547,6 +562,13 @@ func (l *Local) Handler() http.Handler {
 		name, a := r.PathValue("name"), r.PathValue("action")
 		var body struct{ DeleteFolder, Background bool }
 		readJSON(r, &body) // an empty body: keep the folder, wait for the action
+		if slices.Contains(haActions, a) {
+			if err := haGuard(o, name); err != nil {
+				act(r, "stack "+a+" "+name, err)
+				writeErr(w, http.StatusConflict, err)
+				return
+			}
+		}
 		if body.Background && a != "update" {
 			job, err := l.stackJobs.Start(o, name, a, body.DeleteFolder)
 			what := "stack " + a + " " + name
@@ -1056,6 +1078,7 @@ func (l *Local) Handler() http.Handler {
 	l.networkRoutes(mux)
 	l.moveRoutes(mux)
 	l.vipRoutes(mux)
+	l.clusterRoutes(mux)
 	return mux
 }
 

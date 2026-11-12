@@ -112,12 +112,37 @@ export async function openStackEditor({ api, root, name, onDone }) {
     nameInput.addEventListener('input', () => { nameInput.dataset.auto = ''; });
   }
 
+  // Shares mounted on this node: one line puts the same /var/mnt/<name> path on any node that
+  // has the share (every node, for a cluster share).
+  const shareSel = h('select', { 'aria-label': 'Insert share path', style: { width: 'auto' } }, h('option', { value: '' }, 'Insert share path…'));
+  api.get('/storage/mounts').then((r) => {
+    const ms = r.mounts || [];
+    if (!ms.length) { shareSel.replaceChildren(h('option', { value: '' }, 'No network shares on this node')); shareSel.disabled = true; return; }
+    shareSel.append(...ms.map((m) => h('option', { value: m.name }, `${m.name}${m.cluster ? ' (cluster share)' : ''} · ${m.mountPoint}`)));
+  }).catch(() => { shareSel.classList.add('hidden'); });
+  shareSel.addEventListener('change', () => {
+    const name = shareSel.value;
+    shareSel.value = '';
+    if (!name) return;
+    // At the start of the cursor's line, indented like it, as a volumes entry.
+    const v = compose.value;
+    const at = compose.selectionStart;
+    const lineStart = v.lastIndexOf('\n', at - 1) + 1;
+    const line = v.slice(lineStart, v.indexOf('\n', at) < 0 ? v.length : v.indexOf('\n', at));
+    const indent = (line.match(/^\s*/) || [''])[0];
+    const text = `- /var/mnt/${name}:/${name}`;
+    if (line.trim() === '') compose.setRangeText(indent + text, lineStart, lineStart + line.length, 'end');
+    else compose.setRangeText(`\n${indent}${text}`, lineStart + line.length, lineStart + line.length, 'end');
+    compose.focus();
+  });
+
   const body = h('div.stack', { 'data-wide': '1' },
     create ? h('div.form-grid',
       h('label.field', 'Start from preset', presetSel, presetInfo),
       h('label.field', 'Name', nameInput, pathHint)) : h('div.faint.mono', files.file),
     note,
-    h('label.field', create ? 'compose.yml' : files.file.split('/').pop(), compose),
+    h('div.row', { style: { justifyContent: 'space-between' } }, h('span.muted', create ? 'compose.yml' : files.file.split('/').pop()), shareSel),
+    (compose.setAttribute('aria-label', 'compose.yml'), compose),
     envBox,
     h('p.faint', { style: { margin: 0, fontSize: '12.5px' } },
       'Checked with ', h('code', 'docker compose config'), ' before saving. Relative paths like ',

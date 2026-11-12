@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/storage"
@@ -12,6 +13,8 @@ type mountBody struct {
 	storage.Mount
 	Password string `json:"password"`
 }
+
+var errClusterShare = errors.New("this is a cluster share: change or remove it on the main node, under Cluster → Shared storage")
 
 // storageRoutes: NFS and SMB shares mounted on the node.
 func (l *Local) storageRoutes(mux *http.ServeMux) {
@@ -50,10 +53,20 @@ func (l *Local) storageRoutes(mux *http.ServeMux) {
 			return
 		}
 		body.Name = r.PathValue("name")
+		if storage.IsCluster(body.Name) && !body.Cluster {
+			writeErr(w, http.StatusConflict, errClusterShare)
+			return
+		}
 		result(w, r, "change mount "+body.Name, "", storage.Save(body.Mount, body.Password, false))
 	})
 	mux.HandleFunc("POST /storage/mounts/{name}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		name, action := r.PathValue("name"), r.PathValue("action")
+		var body struct{ Cluster bool }
+		readJSON(r, &body)
+		if action == "remove" && storage.IsCluster(name) && !body.Cluster {
+			writeErr(w, http.StatusConflict, errClusterShare)
+			return
+		}
 		result(w, r, "storage "+action+" "+name, "", storage.Action(name, action))
 	})
 }

@@ -1,5 +1,8 @@
 #!/bin/sh
-# keepalived's health check for the dashboard's virtual IP: the dashboard answers on its
-# port (any HTTP status counts). It lives here because SELinux lets keepalived run scripts
-# unconfined only from /usr/libexec/keepalived; a confined one can't reach the port.
+# keepalived's health check for the cluster's virtual IP: the dashboard answers on its port
+# (any HTTP status counts). While /run/dashboard/vip-release exists the check fails, so this
+# node gives the address up on purpose (Cluster → Move virtual IP). It lives here because
+# SELinux lets keepalived run scripts unconfined only from /usr/libexec/keepalived; a
+# confined one can't reach the port.
+[ -e /run/dashboard/vip-release ] && exit 1
 exec /usr/bin/curl -ks -o /dev/null --max-time 2 "https://127.0.0.1:${1:-9090}/"

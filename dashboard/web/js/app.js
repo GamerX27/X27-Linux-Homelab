@@ -14,6 +14,7 @@ import { renderUsers } from './views/users.js';
 import { renderLogs } from './views/logs.js';
 import { renderActivity } from './views/changes.js';
 import { renderIntegrations } from './views/integrations.js';
+import { renderCluster } from './views/cluster.js';
 import { renderBackups, renderExport } from './views/backup.js';
 import { renderGroup } from './views/group.js';
 
@@ -100,6 +101,7 @@ function showApp() {
     h('aside.sidebar',
       h('div.brand', icon('server', 22), 'Homelab'),
       h('a.side-link', { href: '#/', 'data-route': 'fleet' }, icon('grid', 16), h('span.name', 'All nodes')),
+      h('a.side-link', { href: '#/cluster', 'data-route': 'cluster' }, icon('cluster', 16), h('span.name', 'Cluster')),
       h('a.side-link', { href: '#/integrations', 'data-route': 'integrations' }, icon('plug', 16), h('span.name', 'Integrations')),
       h('div.side-label', 'Nodes'),
       nav,
@@ -119,7 +121,7 @@ function showApp() {
   // A standby holding the virtual IP while the main node is down.
   const standby = state.me.standbyFor ? h('div.standby-banner', { role: 'status' },
     h('strong', `Standing in for ${state.me.standbyFor}.`),
-    ` ${state.me.hostname} holds the virtual IP while ${state.me.standbyFor} is down. Changes to nodes and API tokens made here aren't kept when it's back.`) : null;
+    ` ${state.me.hostname} holds the virtual IP and shows ${state.me.standbyFor}'s dashboard here. Changes to nodes, API tokens and cluster settings made here aren't kept; make them on ${state.me.standbyFor}.`) : null;
   clear(root, standby, app);
   refreshNodes();
   clearInterval(state.nodesTimer);
@@ -202,7 +204,8 @@ function renderNav() {
       h('span.dot', { class: cls, 'aria-label': label }), h('span.name', n.name),
       n.summary?.updateAvailable && !autoPending(n.summary) ? h('span.badge.update', { title: 'OS update available' }, '') : null);
   }));
-  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update && !cur.integrations);
+  shell.app.querySelector('[data-route=fleet]').classList.toggle('active', !cur.id && !cur.update && !cur.integrations && !cur.cluster);
+  shell.app.querySelector('[data-route=cluster]').classList.toggle('active', !!cur.cluster);
   shell.app.querySelector('[data-route=integrations]').classList.toggle('active', !!cur.integrations);
 }
 
@@ -228,6 +231,7 @@ function drawHead() {
 function parseRoute() {
   if (/^#\/update\b/.test(location.hash)) return { id: null, update: true };
   if (/^#\/integrations\b/.test(location.hash)) return { id: null, integrations: true };
+  if (/^#\/cluster\b/.test(location.hash)) return { id: null, cluster: true };
   const m = location.hash.match(/^#\/n\/([^/?]+)\/?([a-z]*)\/?([a-z-]*)/);
   const query = new URLSearchParams(location.hash.split('?')[1] || '');
   if (!m) return { id: null };
@@ -264,6 +268,10 @@ function route() {
   }
   if (r.integrations) {
     state.cleanup = renderIntegrations(main, { menuButton });
+    return;
+  }
+  if (r.cluster) {
+    state.cleanup = renderCluster(main, { menuButton });
     return;
   }
   if (!r.id) {

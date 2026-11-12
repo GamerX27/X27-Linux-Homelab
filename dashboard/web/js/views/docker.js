@@ -3,6 +3,7 @@ import { openStackEditor, showStackLog, STACK_ACTION, stackJobRunning, stackJobL
 import { backupNow } from './backup.js';
 import { logView, guessLevel } from '../lineview.js';
 import { moveStackDialog, showMove, runningMoves } from './move.js';
+import { makeHADialog } from './cluster.js';
 
 const SECTIONS = ['Apps', 'Images', 'Storage'];
 const PROJECT = 'com.docker.compose.project';
@@ -310,7 +311,9 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     const running = g.containers.filter((c) => c.State === 'running').length;
     const active = g.containers.filter(ctActive).length;
     const total = s ? s.total : g.containers.length;
-    const troubled = total > 0 && running < total || g.containers.some(ctTrouble);
+    // An HA app's copy on a node without the virtual IP is meant to be stopped.
+    const haStandby = !!(s?.ha && !s.ha.here && running === 0);
+    const troubled = !haStandby && (total > 0 && running < total || g.containers.some(ctTrouble));
     const sj = key ? stackJob(key) : null;
     const working = stackJobRunning(sj);
     // A failed action, or one that left a container unwell, stays on the row until dismissed.
@@ -322,14 +325,15 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
     if (s) {
       title = s.name;
       sub = s.file || s.dir || '';
-      const cls = !total ? 'idle' : running === total ? 'good' : running ? 'warn' : 'crit';
-      status = h('span.status', { class: cls }, !total ? 'Not started' : `${running}/${total} running`);
+      const cls = !total || haStandby ? 'idle' : running === total ? 'good' : running ? 'warn' : 'crit';
+      status = h('span.status', { class: cls }, haStandby ? 'Standby' : !total ? 'Not started' : `${running}/${total} running`);
       const act = (action, opts = {}) => async () => {
         const label = STACK_ACTION[action].label;
         if (opts.confirm && !await confirmAction(`${label}: ${s.name}`, opts.confirm, label, !!opts.danger)) return;
         runStack(s.name, action);
       };
       const mv = (data.moves || []).find((m) => m.stack === s.name && (m.from === node.id || m.to === node.id));
+      const haAway = s.ha && !s.ha.here ? 'An HA app: it runs on the node that holds the virtual IP, and starts there on its own' : false;
       const busyWhy = working ? `${stackJobLine(sj)} Wait for it to finish.` : mv ? 'It\'s being moved. Wait for it to finish.' : false;
       let primary = null;
       if (working) {
@@ -342,12 +346,12 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
           if (!await confirmAction(`Update: ${s.name}`, `Pull the newer images for ${names.join(', ')} and recreate ${updates > 1 ? 'them' : 'it'}? Containers that depend on ${updates > 1 ? 'them' : 'it'} (like ones sharing its network) may restart too. Data in volumes and bind mounts is kept.`, 'Update', false)) return;
           startUpdate(btn, `/docker/stacks/${encodeURIComponent(s.name)}/update`);
         } }, `Update ${updates}`);
-      } else if (active === 0 && s.filesExist) {
+      } else if (active === 0 && s.filesExist && !haAway) {
         primary = h('button.btn.small', { class: result || !total ? 'primary' : '', onclick: act('start') }, 'Start');
       }
       actions = [primary, menu([
-        { label: 'Start', onclick: act('start'), hidden: active > 0 || !s.filesExist, disabled: busyWhy },
-        { label: 'Start all', onclick: act('start'), hidden: active === 0 || active >= total || !s.filesExist, disabled: busyWhy },
+        { label: 'Start', onclick: act('start'), hidden: active > 0 || !s.filesExist, disabled: busyWhy || haAway },
+        { label: 'Start all', onclick: act('start'), hidden: active === 0 || active >= total || !s.filesExist, disabled: busyWhy || haAway },
         { label: 'Stop', onclick: act('stop'), hidden: active === 0, disabled: busyWhy },
         { label: 'Restart', onclick: act('restart'), hidden: active === 0, disabled: busyWhy },
         { label: 'Pull & recreate all', hidden: !s.filesExist, disabled: busyWhy, onclick: act('recreate', {
@@ -355,8 +359,11 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
         { label: 'Logs (all containers)', hidden: !total, onclick: () => showStackLogs(s.name, g.containers.map(cname)) },
         { label: 'Show last log', hidden: !sj, onclick: () => showStackLog(api, s.name) },
         { label: 'Back up now', hidden: !s.inRoot, disabled: busyWhy, onclick: () => backupNow(api, [s.name], running > 0) },
-        { label: 'Move to another node…', hidden: !s.inRoot || !!s.movedTo, disabled: busyWhy,
+        { label: 'Move to another node…', hidden: !s.inRoot || !!s.movedTo || !!s.ha, disabled: busyWhy,
           onclick: () => moveStackDialog({ node, stack: s.name, onStarted: () => load() }) },
+        { label: 'Make highly available…', hidden: !s.inRoot || !!s.ha || !!s.movedTo, disabled: busyWhy,
+          onclick: () => makeHADialog({ stack: s.name, node: node.id, onDone: () => load() }) },
+        { label: 'High-availability settings', hidden: !s.ha, onclick: () => { location.hash = '#/cluster'; } },
         { label: 'Edit compose file', hidden: !s.inRoot, onclick: () => openStackEditor({ api, root: data.stacks?.root, name: s.name, onDone: onSaved }) },
         { label: 'Remove…', danger: true, hidden: !total && !s.inRoot, disabled: busyWhy, onclick: () => removeStack(s) },
       ], `Actions for ${s.name}`)];
@@ -375,6 +382,10 @@ export function renderDocker(el, { api, node, getNode, refreshNodes }) {
           : queued ? h('span.badge', { title: 'Updates after what is updating now' }, 'Queued')
           : updates ? h('span.badge.update', { title: `Updates for ${names.join(', ')}` }, `${updates > 1 ? 'Updates' : 'Update'}: ${shortList(names)}`) : null,
           s && !s.filesExist ? h('span.badge', 'managed elsewhere') : s && !s.inRoot ? h('span.badge', 'outside ~/docker') : null,
+          s?.ha ? h('a.badge', { href: '#/cluster', class: s.ha.here ? 'good' : '',
+            title: s.ha.here ? 'High-availability app: it runs here because this node holds the virtual IP.'
+              : 'High-availability app: this is a standby copy. It starts here if this node takes over the virtual IP.' },
+          s.ha.here ? 'HA' : 'HA · standby copy') : null,
           s?.movedTo ? h('span.badge.warn', { title: `This copy was moved to ${s.movedTo} and left stopped. Remove it once the new one works.` }, `moved to ${s.movedTo}`) : null,
           s && moveOf(s.name) ? h('button.badge.updating.badge-btn', { title: 'Show the move', onclick: () => showMove(moveOf(s.name).id).then(() => load()) },
             h('span.spinner.small', { 'aria-hidden': 'true' }), moveLine(moveOf(s.name))) : null),

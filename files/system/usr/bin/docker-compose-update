@@ -112,6 +112,27 @@ require_deps() {
   detect_compose
 }
 
+# ha_elsewhere FILE: the folder holds a high-availability app (dashboard → Cluster) and
+# this host doesn't hold its virtual IP, so the app doesn't run here and isn't updated here.
+ha_elsewhere() {
+  local marker vip
+  marker="$(dirname "$1")/.x27-ha"
+  [[ -f "$marker" ]] || return 1
+  vip=$(sed -n 's/^vip=//p' "$marker" | head -n1)
+  [[ -n "$vip" ]] || return 1
+  ! ip -o addr show 2>/dev/null | grep -qwF "$vip"
+}
+
+# compose_files FILE: -f arguments for FILE, plus the HA override the dashboard writes next
+# to it (restart policy, ports on the virtual IP).
+compose_files() {
+  local file="$1" ov
+  ov="$(dirname "$file")/compose.x27-ha.yml"
+  printf '%s\n' -f "$file"
+  [[ -f "$ov" && -f "$(dirname "$file")/.x27-ha" ]] && printf '%s\n' -f "$ov"
+  return 0
+}
+
 compose_images() {
   local file="$1"
   [[ ${#COMPOSE_CMD[@]} -gt 0 ]] || return 0
@@ -280,6 +301,10 @@ collect_compose() {
   local file image abs
   for file in "${files[@]}"; do
     abs=$(abspath "$file"); SCANNED_FILES[$abs]=1
+    if ha_elsewhere "$file"; then
+      echo "› ${C_BOLD}$file${C_RESET} ${C_DIM}(HA app; it runs on the node that holds the virtual IP, update it there)${C_RESET}"
+      continue
+    fi
     echo "› ${C_BOLD}$file${C_RESET}"
     local -a imgs=(); mapfile -t imgs < <(compose_images "$file")
     if [[ ${#imgs[@]} -eq 0 ]]; then
@@ -518,7 +543,8 @@ apply_updates() {
   local f
   for f in "${!files[@]}"; do
     info "Recreating affected services from ${C_BOLD}$f${C_RESET}"
-    "${COMPOSE_CMD[@]}" -f "$f" up -d && ok "Updated services in $f" || warn "compose up failed for $f"
+    local -a fargs=(); mapfile -t fargs < <(compose_files "$f")
+    "${COMPOSE_CMD[@]}" "${fargs[@]}" up -d && ok "Updated services in $f" || warn "compose up failed for $f"
   done
 
   # 3) External / Portainer stacks: image is pulled, redeploy needed.

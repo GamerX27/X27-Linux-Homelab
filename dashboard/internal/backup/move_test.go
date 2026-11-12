@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/docker"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/storage"
 )
 
 // fakeDocker answers the few Docker API calls a move makes, with volumes kept in folders.
@@ -107,17 +108,21 @@ func TestMoveRoundTrip(t *testing.T) {
 		Labels: map[string]string{"com.docker.compose.project": "web", "com.docker.compose.volume": "db"}}
 	fsrc.containers = []docker.Container{{ID: "c1", Names: []string{"/web-app-1"}, State: "exited",
 		Labels: map[string]string{"com.docker.compose.project": "web"},
-		Mounts: []docker.Mount{{Type: "bind", Source: "/srv/media", Destination: "/media"}, {Type: "volume", Name: "web_db"}},
-		Ports:  []docker.Port{{PublicPort: 8080}}}}
+		Mounts: []docker.Mount{{Type: "bind", Source: "/srv/media", Destination: "/media"}, {Type: "volume", Name: "web_db"},
+			{Type: "bind", Source: "/var/mnt/films/new", Destination: "/films"}},
+		Ports: []docker.Port{{PublicPort: 8080}}}}
 	msrc := &Manager{dk: startFake(t, fsrc)}
 
 	plan, err := msrc.PlanMove(src, "web")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Volumes) != 1 || plan.Volumes[0].Name != "web_db" || len(plan.Warnings) != 1 || plan.Ports[0] != 8080 {
+	if len(plan.Volumes) != 1 || plan.Volumes[0].Name != "web_db" || len(plan.Warnings) != 1 || plan.Ports[0] != 8080 ||
+		len(plan.Shares) != 1 || plan.Shares[0] != "films" {
 		t.Fatalf("plan %+v", plan)
 	}
+	shareAvailable = func(name string) bool { return false }
+	defer func() { shareAvailable = storage.Available }()
 
 	// The new node already uses port 8080.
 	dstHome := t.TempDir()
@@ -125,10 +130,11 @@ func TestMoveRoundTrip(t *testing.T) {
 	fdst := &fakeDocker{dir: t.TempDir(), volumes: map[string]docker.Volume{}}
 	fdst.containers = []docker.Container{{ID: "x", Names: []string{"/other"}, State: "running", Ports: []docker.Port{{PublicPort: 8080}}}}
 	mdst := &Manager{dk: startFake(t, fdst)}
-	if c := mdst.CheckMoveIn(dst, plan); len(c.Problems) != 1 || !strings.Contains(c.Problems[0], "8080") {
+	if c := mdst.CheckMoveIn(dst, plan); len(c.Problems) != 2 || !strings.Contains(c.Problems[0], "/var/mnt/films") || !strings.Contains(c.Problems[1], "8080") {
 		t.Fatalf("check %+v", c)
 	}
 	fdst.containers = nil
+	shareAvailable = func(name string) bool { return name == "films" }
 
 	var buf bytes.Buffer
 	if err := msrc.MoveOut(context.Background(), &buf, src, "web", false); err != nil {

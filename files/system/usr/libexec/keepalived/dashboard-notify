@@ -1,4 +1,8 @@
 #!/bin/sh
-# Run by keepalived on the virtual IP's standby when it takes or gives up the address: the
-# dashboard restarts to stand in for the main node there, or to stop doing so.
+# Run by keepalived on every member of the virtual IP when it takes the address, gives it up
+# or fails: dashboard-notify <role> <master|backup|fault>. A member that isn't the main node
+# (role standby) restarts its dashboard to stand in for the main node there, or to stop
+# doing so. The dashboard starts and stops HA apps on its own; it watches the address.
+role=${1:-standby}
+[ "$role" = main ] && exit 0
 exec /usr/bin/systemctl restart --no-block dashboard.service

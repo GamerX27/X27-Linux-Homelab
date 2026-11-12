@@ -30,6 +30,7 @@ type Mount struct {
 	ReadOnly    bool   `json:"readOnly"`
 	Automount   bool   `json:"automount"`   // mount on first access, not at boot
 	DockerWaits bool   `json:"dockerWaits"` // docker.service starts after this mount
+	Cluster     bool   `json:"cluster"`     // a cluster share: the main node's Cluster page manages it
 	// SMB only
 	Username string `json:"username,omitempty"`
 	Domain   string `json:"domain,omitempty"`
@@ -200,7 +201,11 @@ func fsOptions(m Mount, uid, gid, cred string) string {
 func mountUnit(m Mount, opts string) string {
 	where, _, _ := names(m.Name)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n# Name: %s\n", marker, m.Name)
+	b.WriteString(marker + "\n")
+	if m.Cluster {
+		b.WriteString(clusterMarker + "\n")
+	}
+	fmt.Fprintf(&b, "# Name: %s\n", m.Name)
 	if m.Owner != "" {
 		fmt.Fprintf(&b, "# Owner: %s\n", m.Owner)
 	}
@@ -228,6 +233,8 @@ func parseUnit(text string) (Mount, bool) {
 	for _, line := range strings.Split(text, "\n") {
 		if v, ok := strings.CutPrefix(line, "# Name: "); ok {
 			m.Name = v
+		} else if line == clusterMarker {
+			m.Cluster = true
 		} else if v, ok := strings.CutPrefix(line, "# Owner: "); ok {
 			m.Owner = v
 		} else if v, ok := strings.CutPrefix(line, "Where="); ok {
@@ -616,6 +623,38 @@ func Action(name, action string) error {
 	}
 	return errors.New("unknown action")
 }
+
+// Normalize is a mount as Save would keep it (trimmed, defaults filled in), for comparing
+// what's on a node with what it should be.
+func Normalize(m Mount) (Mount, error) { return clean(m) }
+
+// Available reports whether the share named name is mounted at /var/mnt/<name> (or waits
+// there to be mounted on first access), however it got there.
+func Available(name string) bool {
+	where, _, _ := names(name)
+	for _, m := range List() {
+		if m.Name == name && (m.State == "mounted" || m.State == "waiting") {
+			return true
+		}
+	}
+	return mounted(where)
+}
+
+// IsCluster reports whether name is a cluster share on this node.
+func IsCluster(name string) bool {
+	if Fake {
+		fake.Lock()
+		defer fake.Unlock()
+		return fake.mounts[name].Cluster
+	}
+	_, unit, _ := names(name)
+	text, ours, _ := readMarked(filepath.Join(unitDir, unit))
+	m, ok := parseUnit(text)
+	return ours && ok && m.Cluster
+}
+
+// MountRoot is where shares are mounted, /var/mnt.
+func MountRoot() string { return mountRoot }
 
 // Exports lists what an NFS server exports, for the path picker. NFSv4-only servers
 // don't run the service this asks.

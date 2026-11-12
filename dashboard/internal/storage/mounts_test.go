@@ -90,6 +90,7 @@ func TestUnitRoundTrip(t *testing.T) {
 		{Name: "v6", Type: "nfs", Server: "fd00::5", Path: "/"},
 		{Name: "films", Type: "smb", Server: "nas.lan", Path: "media/films", Version: "3.1.1", Username: "me", Owner: "sindre", FileMode: "0664", DirMode: "0775"},
 		{Name: "public", Type: "smb", Server: "nas", Path: "public", Guest: true, FileMode: "0644", DirMode: "0755", Automount: true},
+		{Name: "media", Type: "nfs", Server: "192.168.1.5", Path: "/export/media", Cluster: true},
 	} {
 		m, err := clean(in)
 		if err != nil {
@@ -107,6 +108,9 @@ func TestUnitRoundTrip(t *testing.T) {
 		if m.Automount == strings.Contains(text, "[Install]") {
 			t.Errorf("automount %v but [Install] is %v:\n%s", m.Automount, !m.Automount, text)
 		}
+	}
+	if m, _ := clean(Mount{Name: "media", Type: "nfs", Server: "nas", Path: "/m", Cluster: true}); !strings.HasPrefix(mountUnit(m, "rw"), marker+"\n"+clusterMarker+"\n") {
+		t.Error("the cluster marker should be the second line")
 	}
 	if _, ok := parseUnit("[Mount]\nWhat=nas:/x\nType=nfs\n"); ok {
 		t.Error("parsed a unit without the marker")

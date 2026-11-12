@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/docker"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/storage"
 )
 
 // Moving a stack to another node: the main node streams MoveOut on the old node straight
@@ -51,6 +52,7 @@ type MovePlan struct {
 	Size     int64        `json:"size"` // folder and volumes
 	Volumes  []MoveVolume `json:"volumes"`
 	Ports    []int        `json:"ports"`    // published on the host
+	Shares   []string     `json:"shares"`   // shares under /var/mnt it uses; the new node must have them too
 	Warnings []string     `json:"warnings"` // what won't come along
 }
 
@@ -105,7 +107,7 @@ func (m *Manager) PlanMove(o docker.Owner, name string) (MovePlan, error) {
 		return MovePlan{}, err
 	}
 	p := MovePlan{Stack: s.Name, Folder: filepath.Base(s.Dir), Running: s.Running > 0, Size: dirSize(s.Dir),
-		Volumes: []MoveVolume{}, Ports: []int{}, Warnings: []string{}}
+		Volumes: []MoveVolume{}, Ports: []int{}, Shares: []string{}, Warnings: []string{}}
 	vols := map[string]bool{}
 	for _, c := range cs {
 		for _, mt := range c.Mounts {
@@ -117,6 +119,15 @@ func (m *Manager) PlanMove(o docker.Owner, name string) (MovePlan, error) {
 				if src == s.Dir || strings.HasPrefix(src, s.Dir+"/") || slices.ContainsFunc(ignoredBinds, func(b string) bool {
 					return src == b || strings.HasPrefix(src, b+"/")
 				}) {
+					continue
+				}
+				// A share at the same /var/mnt/<name> on the new node (a cluster share, say)
+				// needs no copy; CheckMoveIn makes sure it's there.
+				if rest, ok := strings.CutPrefix(src, storage.MountRoot()+"/"); ok {
+					share, _, _ := strings.Cut(rest, "/")
+					if !slices.Contains(p.Shares, share) {
+						p.Shares = append(p.Shares, share)
+					}
 					continue
 				}
 				w := fmt.Sprintf("%s is mounted from %s, outside the stack's folder; it isn't copied", c.Name(), src)
@@ -219,6 +230,12 @@ func (m *Manager) CheckMoveIn(o docker.Owner, p MovePlan) MoveCheck {
 			c.Problems = append(c.Problems, fmt.Sprintf("a volume named %s already exists here", v.Name))
 		}
 	}
+	for _, sh := range p.Shares {
+		if !shareAvailable(sh) {
+			c.Problems = append(c.Problems, fmt.Sprintf("the stack uses %s, but nothing is mounted there on this node; add the share here first (or make it a cluster share on this node too)",
+				filepath.Join(storage.MountRoot(), sh)))
+		}
+	}
 	used := map[int]string{}
 	for _, x := range cs {
 		if x.State != "running" {
@@ -256,6 +273,9 @@ func (m *Manager) CheckMoveIn(o docker.Owner, p MovePlan) MoveCheck {
 }
 
 func dockerRoot() string { return "/var/lib/docker" }
+
+// shareAvailable is storage.Available; moved in tests.
+var shareAvailable = storage.Available
 
 func sameFS(a, b string) bool {
 	var sa, sb syscall.Stat_t

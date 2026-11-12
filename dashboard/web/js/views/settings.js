@@ -8,10 +8,9 @@ export function renderSettings(el, { api, node, refreshNodes }) {
 
   async function load() {
     try {
-      const [s, zones, d, n, v] = await Promise.all([api.get('/settings'), api.get('/settings/timezones'),
-        api.get('/dashboard').catch(() => null), api.get('/settings/network').catch(() => null),
-        node.local ? mainApi.get('/api/vip').catch(() => null) : null]);
-      if (!stopped) draw(s, zones || [], d, n, v);
+      const [s, zones, d, n] = await Promise.all([api.get('/settings'), api.get('/settings/timezones'),
+        api.get('/dashboard').catch(() => null), api.get('/settings/network').catch(() => null)]);
+      if (!stopped) draw(s, zones || [], d, n);
     } catch (e) {
       clear(content, h('div.notice.warn', e.message));
     }
@@ -157,53 +156,15 @@ export function renderSettings(el, { api, node, refreshNodes }) {
         + 'with DHCP they replace the ones the network hands out. Leave them empty to use those.'));
   }
 
-  // One address that always reaches the dashboard: the main node holds it, and a standby node
-  // takes it over (with a copy of the paired nodes and tokens) while the main node is down.
-  function vipCard(v, d) {
-    if (!v || d?.mode !== 'main') return null;
-    const st = v.local || {};
-    const on = h('input', { type: 'checkbox', checked: !!st.enabled });
-    const addr = h('input', { type: 'text', value: st.address || '', placeholder: '192.168.1.50', spellcheck: false, style: { width: '170px' } });
-    const prefix = h('input', { type: 'number', min: 8, max: 30, value: st.prefix || 24, style: { width: '80px' } });
-    const standby = h('select', { 'aria-label': 'Standby node' }, h('option', { value: '' }, 'Loading nodes…'));
-    mainApi.get('/api/nodes').then((ns) => {
-      const others = ns.filter((x) => !x.local);
-      clear(standby, others.length ? others.map((x) => h('option', { value: x.id, disabled: !x.online }, x.online ? x.name : `${x.name} (offline)`))
-        : h('option', { value: '' }, 'No paired nodes'));
-      if (st.standby) standby.value = st.standby;
-    }).catch(() => {});
-    const save = h('button.btn.primary', { onclick: async () => {
-      const body = { enabled: on.checked, address: addr.value.trim(), prefix: Number(prefix.value), standby: standby.value };
-      if (body.enabled && (!body.address || !body.standby)) { toast('Enter an address and pick a standby node.', true); return; }
-      if (!body.enabled && !st.enabled) return;
-      const msg = body.enabled
-        ? `${body.address} will reach this dashboard from ${node.name}, or from the standby while ${node.name} is down. The dashboard's certificate is made again to include it, so browsers and MCP clients warn once more, and this page reloads.`
-        : 'Turn the virtual IP off on both nodes?';
-      if (!await confirmAction('Virtual IP', msg, body.enabled ? 'Set it up' : 'Turn off', false)) return;
-      const r = await busy(save, () => mainApi.post('/api/vip', body), body.enabled ? 'Virtual IP set up.' : 'Virtual IP turned off.');
-      if (r?.output === 'restart') setTimeout(() => location.reload(), 5000);
-      else if (r) setTimeout(load, 1500);
-    } }, 'Save');
-    const sb = v.standby;
-    const holder = st.holds ? node.name : sb?.holds ? v.standbyName : null;
-    const synced = v.syncedAt ? new Date(v.syncedAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
-    return h('div.card', h('div.card-head', h('h2', 'Virtual IP'),
-      st.enabled ? h('span.status', { class: holder ? 'good' : 'warn' }, holder ? `held by ${holder}` : 'nobody holds it') : h('span.badge', 'off')),
-      st.enabled ? h('dl.kv', { style: { marginBottom: '14px' } },
-        h('dt', 'Address'), h('dd.mono', `https://${st.address}:${d.port}`),
-        h('dt', 'Standby'), h('dd', v.standbyName || '—', v.standbyError ? h('span.error-text', ` · ${v.standbyError}`) : sb ? h('span.faint', sb.active ? ' · ready' : " · keepalived isn't running") : null),
-        h('dt', 'Copied to standby'), h('dd', v.syncError ? h('span.error-text', v.syncError) : synced ? `at ${synced} (every minute)` : 'not yet'),
-        st.error ? [h('dt', 'Problem'), h('dd.error-text', st.error)] : null) : null,
-      h('label.check-row', { style: { marginBottom: '12px' } }, on, h('span', h('strong', 'Use a virtual IP'),
-        h('div.faint', { style: { fontSize: '12.5px' } }, 'An extra address on your LAN for the dashboard. Pick a free one in the same subnet as both nodes.'))),
-      h('div.form-grid', h('label.field', 'Address', addr), h('label.field', 'Prefix', prefix), h('label.field', 'Standby node', standby), h('div.row', save)),
-      h('p.faint', { style: { marginBottom: 0 } },
-        'Both nodes must be on the same network. If this node or its dashboard stops, the standby takes the address within a few seconds and shows the dashboard there, ',
-        "with the paired nodes and API tokens it was last sent. Changes made there aren't kept: when this node is back it takes the address back. ",
-        "Apps don't move; use Move to another node for that."));
+  // The virtual IP is a cluster setting now; the main node's Settings point there.
+  function vipCard(d) {
+    if (d?.mode !== 'main') return null;
+    return h('div.card', h('h2', 'Virtual IP'),
+      h('p.muted', { style: { margin: 0 } }, 'The virtual IP is set up under ', h('a', { href: '#/cluster' }, 'Cluster'),
+        ', for all nodes together.'));
   }
 
-  function draw(s, zones, d, n, v) {
+  function draw(s, zones, d, n) {
     const hostname = h('input', { type: 'text', value: s.hostname, spellcheck: false });
     const saveHost = h('button.btn.primary', { onclick: async () => {
       if (await busy(saveHost, () => api.post('/settings/hostname', { hostname: hostname.value.trim() }), 'Hostname changed.')) {
@@ -250,7 +211,7 @@ export function renderSettings(el, { api, node, refreshNodes }) {
           power('Reboot', 'reboot', `Reboot ${node.name} now?`),
           power('Shut down', 'poweroff', `Shut ${node.name} down? You'll need physical or hypervisor access to turn it back on.`))),
       networkCard(n),
-      vipCard(v, d),
+      vipCard(d),
       dashboardCard(d));
   }
 

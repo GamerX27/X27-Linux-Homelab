@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/activity"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/api"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/auth"
+	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/cluster"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/config"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/files"
 	"github.com/gamerx27/x27-linux-homelab/dashboard/internal/network"
@@ -330,9 +332,21 @@ func serve(args []string) {
 	if err := vip.Refresh(); err != nil {
 		log.Printf("virtual IP: %v", err)
 	}
-	if v := vip.Load(); cfg.Mode == config.ModeMain && v.Enabled && v.Role == vip.RoleMain {
+	// The main node's certificate names the virtual IP: the members serve it there, even
+	// when the main node isn't a member itself.
+	if cv := cluster.Load().VIP; cfg.Mode == config.ModeMain && cv.Enabled && cv.Address != "" {
+		if c, _, err = tlsutil.EnsureIPs(filepath.Join(config.StateDir, "tls"), []string{cv.Address}); err != nil {
+			log.Fatalf("certificate: %v", err)
+		}
+	} else if v := vip.Load(); cfg.Mode == config.ModeMain && v.Enabled && v.Role == vip.RoleMain {
 		if c, _, err = tlsutil.EnsureIPs(filepath.Join(config.StateDir, "tls"), []string{v.Address}); err != nil {
 			log.Fatalf("certificate: %v", err)
+		}
+	}
+	if *dev {
+		// The dev server finds stacks in its own user's ~/docker, whoever logs in.
+		if u, err := user.Current(); err == nil {
+			cluster.OwnerOverride = u.Username
 		}
 	}
 	fakeOS := os.Getenv("DASHBOARD_FAKE_OS")
@@ -359,9 +373,9 @@ func serve(args []string) {
 		}
 	case config.ModeNode:
 		h = api.NewNode(opts)
-		// A standby holding the virtual IP stands in for the main node there, with its
-		// certificate and its copy of the paired nodes and tokens.
-		if v := vip.Load(); v.Enabled && v.Role == vip.RoleStandby && vip.Holds() {
+		// A member holding the virtual IP stands in for the main node there, with its
+		// certificate and its copy of the paired nodes, tokens and cluster settings.
+		if v := vip.Load(); v.Enabled && v.Role != vip.RoleMain && vip.Holds() {
 			mainCert, err := tls.LoadX509KeyPair(filepath.Join(vip.StandbyTLSDir(), "cert.pem"), filepath.Join(vip.StandbyTLSDir(), "key.pem"))
 			if err != nil {
 				log.Printf("virtual IP: holding it, but there's no copy of the main node's state yet: %v", err)

@@ -120,6 +120,7 @@ func NewMain(o Options) (http.Handler, error) {
 	})
 
 	api := http.NewServeMux()
+	var cl *clusterMain // set below; pairing a node kicks it
 	api.HandleFunc("GET /api/nodes", func(w http.ResponseWriter, r *http.Request) {
 		type entry struct {
 			nodes.Public
@@ -165,6 +166,7 @@ func NewMain(o Options) (http.Handler, error) {
 			return
 		}
 		act(r, fmt.Sprintf("pair node %s (%s)", n.Name, n.Address), nil)
+		cl.Kick() // cluster shares meant for every node go on this one too
 		writeJSON(w, http.StatusOK, n.Public())
 	})
 	api.HandleFunc("POST /api/nodes/{id}/rename", func(w http.ResponseWriter, r *http.Request) {
@@ -335,15 +337,19 @@ func NewMain(o Options) (http.Handler, error) {
 	})
 	rolloutRoutes(api, local, store)
 	moveMainRoutes(api, localAPI, store)
-	if o.StandbyFor == "" {
-		vipMainRoutes(api, local, store)
-	}
+	cl = clusterMainRoutes(api, local, localAPI, store, o.StandbyFor != "")
+	// The other members of the virtual IP reach the main node's cluster API with the
+	// cluster's secret (replicas, takeover checks).
+	mux.Handle("/api/v1/cluster/", clusterPeer(localAPI))
 	tokens, _, err := aiRoutes(mux, api, o)
 	if err != nil {
 		return nil, err
 	}
 	// Export & import carry the paired nodes and API tokens, which only the main node has.
 	local.backups.Server.Nodes, local.backups.Server.Tokens = store, tokens
+	if o.StandbyFor == "" {
+		local.backups.Server.ClusterExport, local.backups.Server.ClusterImport = exportClusterShares, cl.importShares
+	}
 	api.HandleFunc("/api/n/{id}/", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		prefix := "/api/n/" + id

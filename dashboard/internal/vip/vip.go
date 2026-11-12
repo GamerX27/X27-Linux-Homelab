@@ -1,9 +1,9 @@
-// Package vip gives the dashboard one address that always reaches it: a floating IPv4
-// address (VRRP, through keepalived) that the main node holds, and that a standby node takes
-// over when the main node or its dashboard goes down. The main node copies what the
-// dashboard needs to the standby (paired nodes, API tokens, its certificate), so the standby
-// can serve the full dashboard on that address. When the main node is back, it takes the
-// address back.
+// Package vip is one node's half of the cluster's virtual IP: a floating IPv4 address (VRRP,
+// through keepalived) that one of two or more member nodes holds, the one with the highest
+// priority whose dashboard answers. The cluster settings (internal/cluster) say which nodes
+// are members; the main node works out each member's half and sends it here. The main node
+// also copies what the dashboard needs to every member (paired nodes, API tokens, its
+// certificate), so whichever member holds the address can serve the full dashboard there.
 package vip
 
 import (
@@ -27,27 +27,55 @@ import (
 )
 
 const (
-	RoleMain    = "main"
+	// RoleMain is the main node itself: it serves its own dashboard and never stands in.
+	RoleMain = "main"
+	// RoleStandby is any other member: while it holds the address it stands in for the main
+	// node's dashboard there.
 	RoleStandby = "standby"
 
 	ConfPath = "/etc/keepalived/keepalived.conf"
 	unit     = "keepalived.service"
+
+	// ReleasePath makes this node give the address up on purpose (dashboard-check fails
+	// while it exists), for a controlled switchover to another member.
+	ReleasePath = "/run/dashboard/vip-release"
 )
 
-// Config is this node's half; the main node and the standby each keep their own.
+// Config is this node's half; every member keeps its own.
 type Config struct {
-	Enabled  bool   `json:"enabled"`
-	Address  string `json:"address"` // the floating address, like 192.168.1.50
-	Prefix   int    `json:"prefix"`  // its subnet's prefix length, like 24
-	Role     string `json:"role"`    // main or standby
-	Peer     string `json:"peer"`    // the other node's own address
-	Standby  string `json:"standby,omitempty"`
-	RouterID int    `json:"routerId"` // VRRP virtual router id, 1-255; the same on both
-	Password string `json:"password"` // VRRP auth, the same on both (at most 8 characters)
-	Port     int    `json:"port"`     // the dashboard's port, for the health check
+	Enabled   bool     `json:"enabled"`
+	Address   string   `json:"address"`  // the floating address, like 192.168.1.50
+	Prefix    int      `json:"prefix"`   // its subnet's prefix length, like 24
+	Role      string   `json:"role"`     // main or standby: whether this node stands in for the dashboard
+	Priority  int      `json:"priority"` // VRRP priority; the highest healthy member holds the address
+	Peers     []string `json:"peers"`    // the other members' own addresses
+	Nopreempt bool     `json:"nopreempt"`
+	RouterID  int      `json:"routerId"`       // VRRP virtual router id, 1-255; the same on every member
+	Password  string   `json:"password"`       // VRRP auth, the same on every member (at most 8 characters)
+	Port      int      `json:"port"`           // the dashboard's port, for the health check
+	Self      string   `json:"self,omitempty"` // this node's id in the main node's list ("local" on the main node)
 
-	MainName string `json:"mainName,omitempty"` // on the standby: the main node's name, for its banner
-	SyncedAt int64  `json:"syncedAt,omitempty"` // on the standby: when the main node last copied its state
+	MainName string `json:"mainName,omitempty"` // on other members: the main node's name, for the banner
+	MainAddr string `json:"mainAddr,omitempty"` // on other members: where the main node's cluster API answers
+	SyncedAt int64  `json:"syncedAt,omitempty"` // on other members: when the main node last copied its state
+
+	// From before the cluster settings: one main node and one standby.
+	Peer    string `json:"peer,omitempty"`
+	Standby string `json:"standby,omitempty"`
+}
+
+// upgrade fills the member fields from an old main/standby pair.
+func upgrade(c Config) Config {
+	if len(c.Peers) == 0 && c.Peer != "" {
+		c.Peers = []string{c.Peer}
+	}
+	if c.Priority == 0 && c.Enabled {
+		c.Priority = 100
+		if c.Role == RoleMain {
+			c.Priority = 150
+		}
+	}
+	return c
 }
 
 var (
@@ -68,6 +96,7 @@ func Load() Config {
 	if b, err := os.ReadFile(path()); err == nil {
 		json.Unmarshal(b, &c)
 	}
+	c = upgrade(c)
 	cached = &c
 	return c
 }
@@ -140,11 +169,16 @@ func FindInterface(addr string, prefix int) (Iface, error) {
 	return Iface{}, fmt.Errorf("this node has no address in %s/%d; the virtual IP must be in the same subnet as both nodes", addr, prefix)
 }
 
-// Holds reports whether this node has the floating address right now.
+// Holds reports whether this node has the floating address right now. With Fake, it holds
+// it while the file vip-fake-holds is in the state folder (and it isn't releasing it).
 func Holds() bool {
 	c := Load()
 	if !c.Enabled || c.Address == "" {
 		return false
+	}
+	if Fake {
+		_, err := os.Stat(filepath.Join(config.StateDir, "vip-fake-holds"))
+		return err == nil && !Releasing()
 	}
 	return hasAddress(c.Address)
 }
@@ -174,8 +208,16 @@ func Validate(c Config) error {
 	if c.Prefix < 8 || c.Prefix > 30 {
 		return errors.New("the prefix must be between 8 and 30, like 24")
 	}
-	if net.ParseIP(c.Peer).To4() == nil {
-		return errors.New("the other node's address must be an IPv4 address")
+	if len(c.Peers) == 0 {
+		return errors.New("the virtual IP needs at least two member nodes")
+	}
+	for _, p := range c.Peers {
+		if net.ParseIP(p).To4() == nil {
+			return fmt.Errorf("the other members' addresses must be IPv4 addresses (%q isn't)", p)
+		}
+	}
+	if c.Priority < 1 || c.Priority > 254 {
+		return errors.New("the priority must be between 1 and 254")
 	}
 	if c.Role != RoleMain && c.Role != RoleStandby {
 		return errors.New("role must be main or standby")
@@ -186,14 +228,15 @@ func Validate(c Config) error {
 	return nil
 }
 
-var confTmpl = template.Must(template.New("k").Parse(`# Written by the dashboard (System → Settings → Virtual IP). Changes here are overwritten.
+var confTmpl = template.Must(template.New("k").Parse(`# Written by the dashboard (Cluster → Virtual IP). Changes here are overwritten.
 global_defs {
     router_id dashboard_{{.Role}}
     enable_script_security
     script_user root
 }
 
-# The dashboard answers on its port: if it stops, this node lets the address go.
+# The dashboard answers on its port: if it stops (or /run/dashboard/vip-release exists),
+# this node lets the address go.
 vrrp_script dashboard {
     script "/usr/libexec/keepalived/dashboard-check {{.Port}}"
     interval 2
@@ -207,12 +250,18 @@ vrrp_instance dashboard {
     virtual_router_id {{.RouterID}}
     priority {{.Priority}}
     advert_int 1
-{{- if eq .Role "main"}}
+{{- if .Nopreempt}}
+    # No automatic failback: the address stays where it is until it's moved on purpose
+    # (Cluster → Move virtual IP), so apps never restart on an out-of-date copy.
+    nopreempt
+{{- else}}
     preempt_delay 30
 {{- end}}
     unicast_src_ip {{.Own}}
     unicast_peer {
-        {{.Peer}}
+{{- range .Peers}}
+        {{.}}
+{{- end}}
     }
     authentication {
         auth_type PASS
@@ -224,23 +273,24 @@ vrrp_instance dashboard {
     track_script {
         dashboard
     }
-{{- if eq .Role "standby"}}
-    # The standby serves the full dashboard only while it holds the address.
-    notify_master "/usr/libexec/keepalived/dashboard-notify"
-    notify_backup "/usr/libexec/keepalived/dashboard-notify"
-{{- end}}
+    # A member that isn't the main node serves the dashboard only while it holds the address.
+    notify_master "/usr/libexec/keepalived/dashboard-notify {{.Role}} master"
+    notify_backup "/usr/libexec/keepalived/dashboard-notify {{.Role}} backup"
+    notify_fault "/usr/libexec/keepalived/dashboard-notify {{.Role}} fault"
 }
 `))
 
 // Render is keepalived.conf for c on the interface it runs on.
 func Render(c Config, iface Iface) (string, error) {
-	pri := 100
-	if c.Role == RoleMain {
-		pri = 150
+	c = upgrade(c)
+	role := c.Role
+	if role != RoleMain {
+		role = RoleStandby
 	}
 	var sb strings.Builder
-	err := confTmpl.Execute(&sb, map[string]any{"Role": c.Role, "Port": c.Port, "Iface": iface.Name, "RouterID": c.RouterID,
-		"Priority": pri, "Own": iface.IP, "Peer": c.Peer, "Password": c.Password, "Address": c.Address, "Prefix": c.Prefix})
+	err := confTmpl.Execute(&sb, map[string]any{"Role": role, "Port": c.Port, "Iface": iface.Name, "RouterID": c.RouterID,
+		"Priority": c.Priority, "Nopreempt": c.Nopreempt, "Own": iface.IP, "Peers": c.Peers, "Password": c.Password,
+		"Address": c.Address, "Prefix": c.Prefix})
 	return sb.String(), err
 }
 
@@ -252,18 +302,26 @@ func Apply(c Config) error {
 	if err := Validate(c); err != nil {
 		return err
 	}
+	c = upgrade(c)
+	c.Peer, c.Standby = "", ""
 	if !c.Enabled {
 		if !Fake {
 			run.Cmd(30*time.Second, "systemctl", "disable", "--now", unit)
 		}
+		os.Remove(releasePath())
 		return save(c)
 	}
 	iface, err := FindInterface(c.Address, c.Prefix)
+	if err != nil && Fake {
+		iface, err = Iface{Name: "fake0", IP: "127.0.0.1"}, nil
+	}
 	if err != nil {
 		return err
 	}
-	if iface.IP == c.Peer && !Fake {
-		return errors.New("the other node's address is this node's own")
+	for _, p := range c.Peers {
+		if iface.IP == p && !Fake {
+			return errors.New("one of the other members' addresses is this node's own")
+		}
 	}
 	conf, err := Render(c, iface)
 	if err != nil {
@@ -322,24 +380,55 @@ func Refresh() error {
 	return nil
 }
 
-// Status is what the Settings card shows.
+// Status is what the Cluster page shows for one member.
 type Status struct {
 	Config
-	Password string `json:"-"`
-	Holds    bool   `json:"holds"`  // this node has the address now
-	Active   bool   `json:"active"` // keepalived runs
-	Iface    string `json:"iface,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Password  string `json:"-"`
+	Holds     bool   `json:"holds"`               // this node has the address now
+	Active    bool   `json:"active"`              // keepalived runs
+	Releasing bool   `json:"releasing,omitempty"` // giving the address up on purpose
+	Iface     string `json:"iface,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func releasePath() string {
+	if Fake {
+		return filepath.Join(config.StateDir, "vip-release")
+	}
+	return ReleasePath
+}
+
+// Release makes this node give the address up (on) or compete for it again (off).
+func Release(on bool) error {
+	p := releasePath()
+	if !on {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+// Releasing reports whether this node is giving the address up on purpose.
+func Releasing() bool {
+	_, err := os.Stat(releasePath())
+	return err == nil
 }
 
 func GetStatus() Status {
 	c := Load()
-	s := Status{Config: c, Holds: Holds()}
+	s := Status{Config: c, Holds: Holds(), Releasing: Releasing()}
 	if !c.Enabled {
 		return s
 	}
 	if iface, err := FindInterface(c.Address, c.Prefix); err == nil {
 		s.Iface = iface.Name
+	} else if Fake {
+		s.Iface = "fake0"
 	} else {
 		s.Error = err.Error()
 	}

@@ -331,3 +331,65 @@ func with(extra map[string]any) map[string]any {
 	}
 	return m
 }
+
+// clusterView is the part of GET /api/cluster the cluster tools read.
+type clusterView struct {
+	State struct {
+		VIP struct {
+			Enabled  bool   `json:"enabled"`
+			Address  string `json:"address"`
+			Prefix   int    `json:"prefix"`
+			Failback bool   `json:"failback"`
+		} `json:"vip"`
+		Shares []struct {
+			Name     string   `json:"name"`
+			Type     string   `json:"type"`
+			Server   string   `json:"server"`
+			Path     string   `json:"path"`
+			ReadOnly bool     `json:"readOnly"`
+			Nodes    []string `json:"nodes"`
+		} `json:"shares"`
+		Apps []struct {
+			Name     string   `json:"name"`
+			Data     string   `json:"data"`
+			Interval int      `json:"interval"`
+			VIPOnly  bool     `json:"vipOnly"`
+			Shares   []string `json:"shares"`
+		} `json:"apps"`
+	} `json:"state"`
+	Holder  string `json:"holder"`
+	Members []struct {
+		NodeID   string `json:"nodeId"`
+		Name     string `json:"name"`
+		Priority int    `json:"priority"`
+		Online   bool   `json:"online"`
+		Error    string `json:"error"`
+		VIP      *struct {
+			Holds  bool   `json:"holds"`
+			Active bool   `json:"active"`
+			Error  string `json:"error"`
+		} `json:"vip"`
+		Local *struct {
+			Apps []struct {
+				Name       string `json:"name"`
+				State      string `json:"state"`
+				Running    bool   `json:"running"`
+				Detail     string `json:"detail"`
+				Lock       string `json:"lock"`
+				ActiveFrom int64  `json:"activeFrom"`
+				ReplicaAt  int64  `json:"replicaAt"`
+			} `json:"apps"`
+		} `json:"local"`
+		Sync *struct {
+			At    int64  `json:"at"`
+			Error string `json:"error"`
+		} `json:"sync"`
+	} `json:"members"`
+	Shares map[string][]struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+		Error string `json:"error,omitempty"`
+	} `json:"shares"`
+}
+
+func clusterState(c Call) (clusterView, error) { return decode[clusterView](c.get("/api/cluster")) }

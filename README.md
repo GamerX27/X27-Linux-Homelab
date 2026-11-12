@@ -240,6 +240,10 @@ password. To use the terminal on a node, your user needs an account in `wheel` t
 **For all nodes (main page):** see every node with its version and channel, update the OS on
 several nodes at once, switch their channel, and update containers on all nodes.
 
+**Cluster (sidebar):** settings for all nodes together: a [virtual IP](#cluster) with two or
+more member nodes, [shares mounted on every node](#cluster-shares), and
+[high-availability apps](#high-availability-apps) that run wherever the virtual IP is.
+
 **For each node:**
 
 | Tab | What's on it |
@@ -250,26 +254,91 @@ several nodes at once, switch their channel, and update containers on all nodes.
 | Files | **Files:** your home folder: browse, edit, upload, download, rename, delete, with the same permissions as over SSH; compress to zip, tar.gz or tar.zst and extract (see what's inside first, then pick where it goes and what happens to files that already exist), in the background with progress and Cancel. **Network shares:** NFS and SMB shares from a NAS, mounted under `/var/mnt` for your containers: add, test, mount, unmount, remove |
 | Backup | **Backups:** apps archived on a schedule or now, kept per app. **Export & import:** every app's config plus the server's own settings in one file, and restoring it here or on a new server |
 | Terminal | A shell in the browser, as your user |
-| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint; on the main node, a [virtual IP](#a-virtual-ip-for-the-dashboard). **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download. **Activity:** who changed what and when, on this node or every node: dashboard actions, API token (MCP) actions, logins and pairings, and whether each worked |
+| System | **Settings:** hostname, time zone, network time, reboot and shut down; IPv4 per connection (DHCP or static, gateway, DNS), undone after 2 minutes unless kept; the dashboard's port, addresses and certificate fingerprint; the virtual IP is under [Cluster](#cluster). **Users:** wheel and docker membership, login shell, password, lock, add and delete. **Features:** automatic updates, Gotify messages, NetBird, and turning services (SSH, smartd, Docker…) on or off. **Logs:** the system journal, the kernel, or one service; filter, follow live, download. **Activity:** who changed what and when, on this node or every node: dashboard actions, API token (MCP) actions, logins and pairings, and whether each worked |
 
 Each sub-tab has its own address, like `#/n/<node>/system/logs`, so a reload stays on it.
 
-### A virtual IP for the dashboard
+### Cluster
 
-**System → Settings → Virtual IP** on the main node gives the dashboard one extra address on
-your LAN that keeps working when the main node is down. The main node holds it. A standby node
-you pick takes it over within a few seconds if the main node, or its dashboard, stops. The
-standby then shows the full dashboard on that address, with the main node's certificate and
-the paired nodes and API tokens the main node last copied to it (it does so every minute). When
-the main node is back, it takes the address back after 30 seconds.
+The **Cluster** page in the sidebar holds settings that belong to no single node. It's on the
+main node (a member standing in for it shows it too, read-only).
 
-- Both nodes must be on the same network (VRRP through keepalived, unicast between them), and
-  the standby must be paired by its IPv4 address. Pick a free address in that subnet.
-- Setting it up makes the main node's certificate again so it includes the address. Browsers
-  and MCP clients see a new fingerprint once.
-- Changes made on the standby while it stands in (new nodes, API tokens) aren't kept. Apps
-  don't move with it: use [Moving an app](#moving-an-app-to-another-node) for that.
-- Logins are checked on the standby, so your user needs an account there too.
+#### Virtual IP
+
+One extra address on your LAN that reaches the dashboard, and your
+[HA apps](#high-availability-apps), whichever node is up. Pick a free address in the same
+subnet as the members, and **two or more member nodes** in priority order. The first member
+that's up holds the address; if it, or its dashboard, stops, the next one takes it within a few
+seconds (VRRP through keepalived, unicast between the members).
+
+- The main node doesn't have to be a member. Then the address lives only on other nodes, and
+  whichever holds it shows the full dashboard there.
+- A member that holds the address while it isn't the main node *stands in*: it serves the
+  dashboard with the main node's certificate and the paired nodes, API tokens and cluster
+  settings the main node last copied to it (every minute, to every member). Changes made there
+  aren't kept. Logins are checked on that node, so your user needs an account there too.
+- **Move back to the first member by itself** (failback) is off by default once there are HA
+  apps: moving back on its own would restart a replicated app on an out-of-date copy. Use
+  **Move virtual IP here** on a member instead: the HA apps stop where they run, replicated
+  ones send a final copy, every other member gives the address up, and the apps start on the
+  new holder.
+- Members must be paired by their IPv4 address. Setting the address up makes the main node's
+  certificate again so it includes it; browsers and MCP clients see a new fingerprint once.
+- A virtual IP set up before the Cluster page (main node + standby) becomes a cluster virtual
+  IP with those two members when the main node starts.
+
+#### Cluster shares
+
+**Shared storage** is one NFS or SMB share mounted at the same `/var/mnt/<name>` on **every
+node** (including nodes paired later) or on the nodes you pick. The main node adds it to each
+node's [Network shares](#network-shares), where it shows as **Managed by Cluster** and can only
+be changed here. Each node tests the share before mounting it; the page shows the result per
+node, and a node that was off gets it when it's back (checked every 5 minutes and when a node
+is paired). **Docker waits for this share at boot** is on by default.
+
+Because the path is the same everywhere, a compose file works on any node:
+
+```yaml
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    volumes:
+      - ./config:/config              # local, or replicated if it's an HA app
+      - /var/mnt/media:/media:ro      # cluster share "media", mounted on every node
+    ports: ["8096:8096"]
+```
+
+Moving Jellyfin, or failing it over, only carries `./config`; the media stays on the NAS.
+Moving an app to a node that doesn't have a `/var/mnt/<name>` it uses is refused. The stack
+editor's **Insert share path** adds the line for a share.
+
+#### High-availability apps
+
+An HA app runs on whichever member holds the virtual IP. If that node goes offline, the next
+member starts it. Make one from the Cluster page or a stack's **⋯ → Make highly available…**
+(on the node that holds the virtual IP). Where its data is, per app:
+
+- **Shared:** all its data is on cluster shares mounted on every member (bind mounts under
+  `/var/mnt/<share>`, or NFS volumes). Failover is instant. The dashboard refuses this mode and
+  lists what's on a node's own disk otherwise. A lock file on the share
+  (`/var/mnt/<share>/.x27-ha/<app>.lock`, refreshed every 10 s) keeps two nodes from running it
+  at once when they can't see each other: a node waits until another node's lock is 30 s old.
+- **Replicated:** its folder and named volumes are copied from the node running it to the other
+  members every interval (default 15 minutes), paused for a moment while the copy is taken. A
+  failover can lose up to one interval of changes. A node taking over first asks the others
+  whether one ran it after its copy, and gets the final copy from there if so; if nobody
+  answers, it starts from its own copy and says how old it is.
+
+**Ports only on the virtual IP** publishes the app's ports on that address only, so it isn't
+reachable on the nodes' own addresses. Nothing is blocked by a firewall; the ports just aren't
+published there.
+
+The dashboard never edits your `compose.yml`. It writes `compose.x27-ha.yml` next to it
+(`restart: on-failure`, so Docker doesn't start the app at boot on a node without the virtual
+IP, and the ports on the virtual IP) and a `.x27-ha` marker, and copies `compose.yml` and
+`.env` to every member, again every 5 minutes after you edit it. On a node without the virtual
+IP the stack shows **HA · standby copy**, Start is refused, and `docker-compose-update` skips
+it. HA apps need Docker Compose 2.24 or newer.
 
 ### Moving an app to another node
 
@@ -365,6 +434,7 @@ services:
   page shows **Failed** with the reason under **⋯ → Logs**.
 - **Remove** unmounts it and deletes the mount and its stored password. The files on the server
   aren't touched. Unmounting fails while containers use the share: stop them first.
+- To mount the same share on several nodes, add it as a [cluster share](#cluster-shares).
 
 <details>
 <summary>Where things are stored</summary>
